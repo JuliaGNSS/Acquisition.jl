@@ -78,6 +78,8 @@ end
     #plotlyjs()
     #surface(doppler_steps, 1:4000, power_bins)
     #gui()
+    #using PyPlot
+    #surf(doppler_steps, 1:4000, power_bins)
 end
 
 
