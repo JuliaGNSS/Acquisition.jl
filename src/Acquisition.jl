@@ -35,7 +35,7 @@ module Acquisition
     end
     
     function power_over_code(signal, code_freq_domain, doppler, sample_freq, interm_freq)
-        replica_carrier = GNSSSignals.gen_carrier(1:length(signal), interm_freq, doppler, sample_freq)
+        replica_carrier = GNSSSignals.gen_carrier(1:length(signal), interm_freq + doppler, 0.0, sample_freq)
         signal_baseband_freq_domain = fft(signal .* conj(replica_carrier))
         powers = abs2.(ifft(code_freq_domain .* conj(signal_baseband_freq_domain)))
         return powers[1:Int(sample_freq * 1e-3)]
