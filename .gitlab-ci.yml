@@ -3,7 +3,7 @@ image: julia:0.6
 testjob:
   before_script:
     - apt-get update && apt-get install bzip2
-
+    - julia -e 'Pkg.clone(pwd())'
 
   script:
     - julia -e 'Pkg.test("Acquisition", coverage=true)'
