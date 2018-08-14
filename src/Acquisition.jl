@@ -1,8 +1,10 @@
 module Acquisition
 
-    using DocStringExtensions, GNSSSignals
+    using DocStringExtensions, GNSSSignals, PyPlot
 
-    export acquire
+    include("plots.jl")
+
+    export acquire, plot_acquisition_results
 
     struct AcquisitionResults
         acquired::Bool                # Sat acquired?
