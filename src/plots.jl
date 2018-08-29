@@ -3,10 +3,12 @@ $(SIGNATURES)
 
 Plot the result of the acquisition 'power_bins' over the 'max_doppler' frequency into the figure 'fig' onto 'position' or default position (1,1,1). 
 """
-function plot_acquisition_results(power_bins, max_doppler, fig, position = (1,1,1))
+function plot_acquisition_results(acquisition_results, fig = figure(), position = (1,1,1))
     PyPlot.pyimport("mpl_toolkits.mplot3d.axes3d")
     ax = fig[:add_subplot](position..., projection = "3d")
-    X = linspace(-max_doppler, max_doppler, size(power_bins, 2)) .* ones(1, size(power_bins, 1))
-    Y = (1:size(power_bins, 1))' .* ones(size(power_bins, 2), 1)
-    ax[:plot_surface](X', Y', power_bins, rstride=1, cstride=1000, cmap="viridis")
+    num_dopplers = size(acquisition_results.power_bins, 2)
+    num_code_phases = size(acquisition_results.power_bins, 1)
+    X = acquisition_results.doppler_steps .* num_code_phases
+    Y = (1:num_code_phases)' .* ones(num_dopplers, 1)
+    ax[:plot_surface](X', Y', acquisition_results.power_bins, rstride=1, cstride=1000, cmap="viridis")
 end
