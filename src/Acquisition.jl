@@ -14,12 +14,12 @@ module Acquisition
         power_bins::Array{Float64, 2} # Cross corr powers in code_bins x doppler_bins
     end
     
-    function acquire(signal, sample_freq, interm_freq, code_freq, code, max_doppler, threshold)
-        code_period = length(code) / code_freq
+    function acquire(signal, sample_freq, interm_freq, code_freq, gen_sampled_code, code_length, sat_prn, max_doppler, threshold)
+        code_period = code_length / code_freq
         integration_time = length(signal) / sample_freq
         doppler_step = 2 / 3 / integration_time
         doppler_steps = -max_doppler:doppler_step:max_doppler
-        cross_corr_powers = power_over_doppler_and_code(signal, code, doppler_steps, sample_freq, interm_freq, code_freq)
+        cross_corr_powers = power_over_doppler_and_code(signal, gen_sampled_code, sat_prn, doppler_steps, sample_freq, interm_freq, code_freq)
         signal_power, noise_power, signal_index = est_signal_noise_power(cross_corr_powers, doppler_steps, integration_time, sample_freq, code_freq)
         C╱N₀ = 10 * log10(signal_power / noise_power / code_period)
         if C╱N₀ >= threshold
@@ -31,8 +31,8 @@ module Acquisition
         end
     end
     
-    function power_over_doppler_and_code(signal, code, doppler_steps, sample_freq, interm_freq, code_freq)
-        code_freq_domain = fft(GNSSSignals.gen_sat_code(1:length(signal), code_freq, 0, sample_freq, code))
+    function power_over_doppler_and_code(signal, gen_sampled_code, sat_prn, doppler_steps, sample_freq, interm_freq, code_freq)
+        code_freq_domain = fft(gen_sampled_code(1:length(signal), code_freq, 0, sample_freq, sat_prn))
         return mapreduce(doppler -> power_over_code(signal, code_freq_domain, doppler, sample_freq, interm_freq), hcat, doppler_steps)
     end
     
