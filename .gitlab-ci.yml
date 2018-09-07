@@ -1,4 +1,4 @@
-image: julia:0.6
+image: julia:0.7
 
 testjob:
   before_script:
@@ -8,11 +8,10 @@ testjob:
     - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add - > /dev/null
     - mkdir -p ~/.ssh
     - chmod 700 ~/.ssh
-    - julia -e 'Pkg.clone("git@git.rwth-aachen.de:nav/GNSSSignals.jl.git")'
-    - julia -e 'Pkg.clone(pwd())'
+    - julia -e 'using Pkg; Pkg.add(PackageSpec(url="git@git.rwth-aachen.de:nav/GNSSSignals.jl.git", rev="v0.7"))'
+    - julia -e "using Pkg; Pkg.develop(PackageSpec(url=pwd()))"
 
   script:
-    - julia -e 'Pkg.test("Acquisition", coverage=true)'
-    - julia -e 'Pkg.add("Coverage"); cd(Pkg.dir("Acquisition"));
+    - julia -e 'using Pkg; Pkg.add("Coverage"); Pkg.test("Acquisition", coverage=true);
       using Coverage; cl, tl = get_summary(process_folder());
       println("(", cl/tl*100, "%) covered")'
