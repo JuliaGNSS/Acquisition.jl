@@ -8,7 +8,8 @@ function plot_acquisition_results(acquisition_results, fig = figure(), position 
     ax = fig[:add_subplot](position..., projection = "3d")
     num_dopplers = size(acquisition_results.power_bins, 2)
     num_code_phases = size(acquisition_results.power_bins, 1)
-    X = acquisition_results.doppler_steps .* num_code_phases
-    Y = (1:num_code_phases)' .* ones(num_dopplers, 1)
-    ax[:plot_surface](X', Y', acquisition_results.power_bins, rstride=1, cstride=1000, cmap="viridis")
+    X = acquisition_results.doppler_steps
+    Y = collect(1:num_code_phases) .* ones(num_dopplers, 1)'
+
+    ax[:plot_surface](X, Y, acquisition_results.power_bins, rstride=1, cstride=1000, cmap="viridis")
 end
