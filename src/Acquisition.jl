@@ -1,6 +1,7 @@
 module Acquisition
 
     using DocStringExtensions, GNSSSignals, PyPlot
+    import Unitful: s, Hz
 
     include("plots.jl")
 
@@ -8,7 +9,7 @@ module Acquisition
 
     struct AcquisitionResults
         acquired::Bool                # Sat acquired?
-        f_d::Float64                  # Doppler frequency
+        f_d::typeof(1.0Hz)            # Doppler frequency
         φ_c::Float64                  # Code phase
         C╱N₀::Float64                 # C╱N₀ in dB
         power_bins::Array{Float64, 2} # Cross corr powers in code_bins x doppler_bins
@@ -22,13 +23,13 @@ module Acquisition
         doppler_steps = -max_doppler:doppler_step:max_doppler
         cross_corr_powers = power_over_doppler_and_code(gnss_system, signal, sat_prn, doppler_steps, sample_freq, interm_freq)
         signal_power, noise_power, signal_index = est_signal_noise_power(cross_corr_powers, doppler_steps, integration_time, sample_freq, gnss_system.code_freq)
-        C╱N₀ = 10 * log10(signal_power / noise_power / code_period)
+        C╱N₀ = 10 * log10(signal_power / noise_power / code_period / 1.0Hz)
         if C╱N₀ >= threshold
             c_idx, d_idx = ind2sub(cross_corr_powers, signal_index)
             doppler = (d_idx - 1) * doppler_step - max_doppler
-            AcquisitionResults(true, doppler, (c_idx - 1) / (sample_freq / gnss_system.code_freq), C╱N₀, cross_corr_powers, doppler_steps)
+            AcquisitionResults(true, doppler, (c_idx - 1) / (sample_freq / gnss_system.code_freq), C╱N₀, cross_corr_powers, doppler_steps / 1.0Hz)
         else
-            AcquisitionResults(false, NaN, NaN, C╱N₀, cross_corr_powers, doppler_steps)
+            AcquisitionResults(false, NaN, NaN, C╱N₀, cross_corr_powers, doppler_steps / 1.0Hz)
         end
     end
     
@@ -41,7 +42,7 @@ module Acquisition
         replica_carrier = gen_carrier(1:length(signal), interm_freq + doppler, 0.0, sample_freq)
         signal_baseband_freq_domain = fft(signal .* conj(replica_carrier))
         powers = abs2.(ifft(code_freq_domain .* conj(signal_baseband_freq_domain)))
-        return powers[1:Int(sample_freq * 1e-3)]
+        return powers[1:Int(sample_freq * 1e-3s)]
     end
     
     function est_signal_noise_power(power_bins, doppler_steps, integration_time, sample_freq, code_freq)
