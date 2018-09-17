@@ -3,8 +3,6 @@ module Acquisition
     using DocStringExtensions, GNSSSignals, PyPlot
     import Unitful: s, Hz
 
-    include("plots.jl")
-
     export acquire, plot_acquisition_results
 
     struct AcquisitionResults
@@ -63,5 +61,5 @@ module Acquisition
         return signal_power, noise_power, index
     end
     
-
+    include("plots.jl")
 end
