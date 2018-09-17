@@ -10,6 +10,8 @@ function plot_acquisition_results(acquisition_results, fig = figure(), position 
     num_code_phases = size(acquisition_results.power_bins, 1)
     X = acquisition_results.doppler_steps
     Y = collect(1:num_code_phases) .* ones(num_dopplers, 1)'
-
+    xlabel("Doppler in Hz")
+    ylabel("Codephase")
+    zlabel("Relative Power")
     ax[:plot_surface](X, Y, acquisition_results.power_bins, rstride=1, cstride=1000, cmap="viridis")
 end
