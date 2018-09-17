@@ -1,4 +1,3 @@
-
 """
 $(SIGNATURES)
 
@@ -13,6 +12,6 @@ function plot_acquisition_results(acquisition_results, gnss_system::T, sample_fr
     Y = collect(1:num_code_phases) .* ones(num_dopplers, 1)' .* sample_freq ./ gnss_system.code_freq
     xlabel("Doppler in Hz")
     ylabel("Code-Phase in Chips")
-    zlabel("Relative Power in []")
+    zlabel("Relative Leistung")
     ax[:plot_surface](X, Y, acquisition_results.power_bins, rstride=1, cstride=1000, cmap="viridis")
 end
