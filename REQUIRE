@@ -4,3 +4,4 @@ GNSSSignals
 DocStringExtensions
 PyPlot
 FFTW
+Unitful

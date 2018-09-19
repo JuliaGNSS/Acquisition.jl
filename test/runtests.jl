@@ -1,4 +1,5 @@
 using Test, FFTW, Acquisition, GNSSSignals, Random
+import Unitful: Hz, s
 
 const SAMPLE_CODE = [1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0]
 
@@ -41,8 +42,8 @@ const SAMPLE_CODE2 = [1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.
 end
 
 @testset "Power over code" begin
-    integration_time = 2e-3
-    interm_freq = 2e6; code_freq = 1023e3; sample_freq = 4e6; doppler = 1000; f_0 = 1575420e3; code_delay = -5e-4; range = 1:sample_freq * integration_time
+    integration_time = 2e-3s
+    interm_freq = 2e6Hz; code_freq = 1023e3Hz; sample_freq = 4e6Hz; doppler = 1000Hz; f_0 = 1575420e3Hz; code_delay = -5e-4s; range = 1:convert(Int, sample_freq * integration_time)
     carrier =  cis.((2 * π * (interm_freq + doppler) / sample_freq) .* range)
     code_doppler = doppler / (f_0 / code_freq)
     code_phase = -code_delay * (code_freq + code_doppler)
@@ -53,7 +54,7 @@ end
     code_freq_dom = fft(replica_code)
     power_bins = Acquisition.power_over_code(signal, code_freq_dom, doppler, sample_freq, interm_freq)
     signal_power, index = findmax(power_bins)
-    @test isapprox(index / sample_freq, code_delay, rtol=2)
+    @test index / sample_freq ≈ code_delay rtol = 2
 
     #plotlyjs()
     #plot(power_bins)
@@ -61,8 +62,8 @@ end
 end
 
 @testset "Power over doppler and code" begin
-    integration_time = 2e-3
-    interm_freq = 2e6; code_freq = 1023e3; sample_freq = 4e6; doppler = 1000; f_0 = 1575420e3; code_delay = -5e-4; range = 1:sample_freq * integration_time
+    integration_time = 2e-3s
+    interm_freq = 2e6Hz; code_freq = 1023e3Hz; sample_freq = 4e6Hz; doppler = 1000Hz; f_0 = 1575420e3Hz; code_delay = -5e-4s; range = 1:convert(Int, sample_freq * integration_time)
     carrier =  cis.((2 * π * (interm_freq + doppler) / sample_freq) .* range)
     code_doppler = doppler / (f_0 / code_freq)
     code_phase = -code_delay * (code_freq + code_doppler)
@@ -70,14 +71,14 @@ end
     code = SAMPLE_CODE[1 .+ mod.(floor.(Int, (code_freq + code_doppler) / sample_freq * range .+ code_phase), code_length)]
     signal = carrier .* code
     doppler_step = 2 / 3 / integration_time
-    doppler_steps = -7000:doppler_step:7000
+    doppler_steps = -7000Hz:doppler_step:7000Hz
     gps_l1 = GPSL1() # sat_prn 1 == SAMPLE_CODE
     power_bins = Acquisition.power_over_doppler_and_code(gps_l1, signal, 1, doppler_steps, sample_freq, interm_freq)
     signal_power, index = findmax(power_bins)
     c_idx, d_idx = Tuple(CartesianIndices(power_bins)[index])
 
-    @test doppler_step * (d_idx - 1) - 7000 == 1000
-    @test isapprox(c_idx / sample_freq, code_delay, rtol=2)
+    @test doppler_step * (d_idx - 1) - 7000Hz == 1000Hz
+    @test c_idx / sample_freq ≈ code_delay rtol = 2
 
     #surface(doppler_steps, 1:4000, power_bins)
     #gui()
@@ -88,12 +89,12 @@ end
 
 @testset "Acquisition" begin
     Random.seed!(1234)
-    integration_time = 2e-3
-    interm_freq = 0.0; code_freq = 1023e3; sample_freq = 4e6; C╱N₀ = 45; doppler = 1000; f_0 = 1575420e3; code_delay = -5e-4; range = 1:sample_freq * integration_time
+    integration_time = 2e-3s
+    interm_freq = 0.0Hz; code_freq = 1023e3Hz; sample_freq = 4e6Hz; C╱N₀ = 45; doppler = 1000Hz; f_0 = 1575420e3Hz; code_delay = -5e-4s; range = 1:convert(Int, sample_freq * integration_time)
     codes = [SAMPLE_CODE SAMPLE_CODE2]
     #noise_power = 10 * log10(sample_freq)
     noise_power = 1
-    signal_power = C╱N₀ - 10 * log10(sample_freq)
+    signal_power = C╱N₀ - 10 * log10(sample_freq / 1.0Hz)
     noise = 1 / sqrt(2) * complex.(randn(length(range)), randn(length(range)))
     carrier =  cis.((2 * π * (interm_freq + doppler) / sample_freq) .* range)
     code_doppler = doppler / (f_0 / code_freq)
@@ -102,12 +103,12 @@ end
     code = SAMPLE_CODE[1 .+ mod.(floor.(Int, (code_freq + code_doppler) / sample_freq * range .+ code_phase), code_length)]
     signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
     gps_l1 = GPSL1() # sat_prn 1 == SAMPLE_CODE
-    acq_res = Acquisition.acquire(gps_l1, signal, sample_freq, interm_freq, 1, 7000, 30)
-    @test acq_res.f_d == 1000
+    acq_res = acquire(gps_l1, signal, sample_freq, interm_freq, 1, 7000Hz, 30)
+    @test acq_res.f_d == 1000Hz
     @test acq_res.acquired == true
 
-    @test isapprox(acq_res.φ_c, code_phase, atol = 1e-3)
-    @test isapprox(acq_res.C╱N₀, C╱N₀ + 10 * log10(integration_time / 1e-3), atol = 2)
+    @test acq_res.φ_c ≈ code_phase atol = 1e-3
+    @test acq_res.C╱N₀ ≈ C╱N₀ + 10 * log10(integration_time / 1e-3s) atol = 2
 
     #doppler_step = 2 / 3 / integration_time
     #doppler_steps = -7000:doppler_step:7000
