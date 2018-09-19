@@ -100,7 +100,7 @@ end
     code = SAMPLE_CODE[1 + mod.(floor.(Int, (code_freq + code_doppler) / sample_freq * range + code_phase), code_length)]
     signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
     gps_l1 = GPSL1() # sat_prn 1 == SAMPLE_CODE
-    acq_res = Acquisition.acquire(gps_l1, signal, sample_freq, interm_freq, 1, 7000Hz, 30)
+    acq_res = acquire(gps_l1, signal, sample_freq, interm_freq, 1, 7000Hz, 30)
     @test acq_res.f_d == 1000Hz
     @test acq_res.acquired == true
 
