@@ -1,6 +1,6 @@
 module Acquisition
 
-    using DocStringExtensions, GNSSSignals, PyPlot, FFTW
+    using DocStringExtensions, GNSSSignals, PyPlot, FFTW, Statistics
     import Unitful: s, Hz
 
     include("plots.jl")
@@ -28,37 +28,30 @@ module Acquisition
             doppler = (doppler_index - 1) * doppler_step - max_doppler
             AcquisitionResults(true, doppler, (code_index - 1) / (sample_freq / gnss_system.code_freq), C╱N₀, cross_corr_powers, first(doppler_steps) / 1.0Hz:step(doppler_steps) / 1.0Hz:last(doppler_steps) / 1.0Hz)
         else
-            AcquisitionResults(false, NaN, NaN, C╱N₀, cross_corr_powers, first(doppler_steps) / 1.0Hz:step(doppler_steps) / 1.0Hz:last(doppler_steps) / 1.0Hz)
+            AcquisitionResults(false, NaN * Hz, NaN, C╱N₀, cross_corr_powers, first(doppler_steps) / 1.0Hz:step(doppler_steps) / 1.0Hz:last(doppler_steps) / 1.0Hz)
         end
     end
 
     function power_over_doppler_and_code(gnss_system, signal, sat_prn, doppler_steps, sample_freq, interm_freq)
-        code_freq_domain = fft(gen_code(gnss_system, 1:length(signal), gnss_system.code_freq, 0, sample_freq, sat_prn))
-        return mapreduce(doppler -> power_over_code(signal, code_freq_domain, doppler, sample_freq, interm_freq), hcat, doppler_steps)
+        code_freq_domain = fft(gen_code.(Ref(gnss_system), 1:length(signal), gnss_system.code_freq, 0, sample_freq, sat_prn))
+        mapreduce(doppler -> power_over_code(gnss_system, signal, code_freq_domain, doppler, sample_freq, interm_freq), hcat, doppler_steps)
     end
 
-    function power_over_code(signal, code_freq_domain, doppler, sample_freq, interm_freq)
-        replica_carrier = gen_carrier(1:length(signal), interm_freq + doppler, 0.0, sample_freq)
+    function power_over_code(gnss_system, signal, code_freq_domain, doppler, sample_freq, interm_freq)
+        Δt = length(signal) / sample_freq
+        code_interval = gnss_system.code_length / gnss_system.code_freq
+        replica_carrier = gen_carrier.(1:length(signal), interm_freq + doppler, 0.0, sample_freq)
         signal_baseband_freq_domain = fft(signal .* conj(replica_carrier))
         powers = abs2.(ifft(code_freq_domain .* conj(signal_baseband_freq_domain)))
-        return powers[1:convert(Int, sample_freq * 1e-3s)]
+        powers[1:convert(Int, sample_freq * min(Δt, code_interval))]
     end
 
     function est_signal_noise_power(power_bins, doppler_steps, integration_time, sample_freq, code_freq)
         samples_per_chip = floor(Int, sample_freq / code_freq)
         signal_noise_power, index = findmax(power_bins)
-        c_idx, d_idx = Tuple(CartesianIndices(power_bins)[index])
-        max_index_self_interf_doppler = 1 / integration_time / step(doppler_steps)
-        max_index_self_intercode_freqode = samples_per_chip
-        code_circ_shift = ((c_idx - max_index_self_intercode_freqode < 1) - (c_idx + max_index_self_intercode_freqode > size(power_bins, 1))) * max_index_self_intercode_freqode
-        shifted_power_bins = circshift(power_bins, (code_circ_shift, 0))
-        c_lower_idx = Int(c_idx - max_index_self_intercode_freqode + code_circ_shift)
-        c_upper_idx = Int(c_idx + max_index_self_intercode_freqode + code_circ_shift)
-        d_lower_idx = floor(Int, max(1, d_idx - max_index_self_interf_doppler))
-        d_upper_idx = floor(Int, min(size(power_bins, 2), d_idx + max_index_self_interf_doppler))
-        signal_self_interf = shifted_power_bins[c_lower_idx:c_upper_idx, d_lower_idx:d_upper_idx]
-        noise_power = (sum(power_bins) - sum(signal_self_interf)) / (length(power_bins) - length(signal_self_interf))
+        linear_index = size(power_bins, 1) * (index[2] - 1) + index[1]
+        noise_power = median(power_bins[[1:linear_index - 1; linear_index + 1:length(power_bins)]])
         signal_power = signal_noise_power - noise_power
-        return signal_power, noise_power, c_idx, d_idx
+        signal_power, noise_power, index[1], index[2]
     end
 end

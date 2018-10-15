@@ -42,6 +42,7 @@ const SAMPLE_CODE2 = [1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.
 end
 
 @testset "Power over code" begin
+    gps_l1 = GPSL1()
     integration_time = 2e-3s
     interm_freq = 2e6Hz; code_freq = 1023e3Hz; sample_freq = 4e6Hz; doppler = 1000Hz; f_0 = 1575420e3Hz; code_delay = -5e-4s; range = 1:convert(Int, sample_freq * integration_time)
     carrier =  cis.((2 * π * (interm_freq + doppler) / sample_freq) .* range)
@@ -52,7 +53,7 @@ end
     replica_code = SAMPLE_CODE[1 .+ mod.(floor.(Int, code_freq / sample_freq * range), code_length)]
     signal = carrier .* code
     code_freq_dom = fft(replica_code)
-    power_bins = Acquisition.power_over_code(signal, code_freq_dom, doppler, sample_freq, interm_freq)
+    power_bins = Acquisition.power_over_code(gps_l1, signal, code_freq_dom, doppler, sample_freq, interm_freq)
     signal_power, index = findmax(power_bins)
     @test index / sample_freq ≈ code_delay rtol = 2
 
