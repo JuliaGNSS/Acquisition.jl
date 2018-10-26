@@ -8,7 +8,6 @@ module Acquisition
     export acquire, plot_acquisition_results
 
     struct AcquisitionResults
-        acquired::Bool                # Sat acquired?
         f_d::typeof(1.0Hz)            # Doppler frequency
         φ_c::Float64                  # Code phase
         C╱N₀::Float64                 # C╱N₀ in dB
@@ -16,20 +15,16 @@ module Acquisition
         doppler_steps::StepRangeLen{Float64,Base.TwicePrecision{Float64},Base.TwicePrecision{Float64}}
     end
 
-    function acquire(gnss_system::T, signal, sample_freq, interm_freq, sat_prn, max_doppler, threshold) where T <: AbstractGNSSSystem
+    function acquire(gnss_system::T, signal, sample_freq, interm_freq, sat_prn, max_doppler) where T <: AbstractGNSSSystem
         code_period = gnss_system.code_length / gnss_system.code_freq
         integration_time = length(signal) / sample_freq
-        doppler_step = 2 / 3 / integration_time
+        doppler_step = 1 / 3 / integration_time
         doppler_steps = -max_doppler:doppler_step:max_doppler
         cross_corr_powers = power_over_doppler_and_code(gnss_system, signal, sat_prn, doppler_steps, sample_freq, interm_freq)
         signal_power, noise_power, code_index, doppler_index = est_signal_noise_power(cross_corr_powers, doppler_steps, integration_time, sample_freq, gnss_system.code_freq)
         C╱N₀ = 10 * log10(signal_power / noise_power / code_period / 1.0Hz)
-        if C╱N₀ >= threshold
-            doppler = (doppler_index - 1) * doppler_step - max_doppler
-            AcquisitionResults(true, doppler, (code_index - 1) / (sample_freq / gnss_system.code_freq), C╱N₀, cross_corr_powers, first(doppler_steps) / 1.0Hz:step(doppler_steps) / 1.0Hz:last(doppler_steps) / 1.0Hz)
-        else
-            AcquisitionResults(false, NaN * Hz, NaN, C╱N₀, cross_corr_powers, first(doppler_steps) / 1.0Hz:step(doppler_steps) / 1.0Hz:last(doppler_steps) / 1.0Hz)
-        end
+        doppler = (doppler_index - 1) * doppler_step - max_doppler
+        AcquisitionResults(doppler, (code_index - 1) / (sample_freq / gnss_system.code_freq), C╱N₀, cross_corr_powers, first(doppler_steps) / 1.0Hz:step(doppler_steps) / 1.0Hz:last(doppler_steps) / 1.0Hz)
     end
 
     function power_over_doppler_and_code(gnss_system, signal, sat_prn, doppler_steps, sample_freq, interm_freq)

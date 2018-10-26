@@ -84,7 +84,7 @@ end
     #surface(doppler_steps, 1:4000, power_bins)
     #gui()
     #using PyPlot
-    #display(surf(doppler_steps, 1:4000, power_bins))
+    #surf(power_bins)
 end
 
 
@@ -104,16 +104,14 @@ end
     code = SAMPLE_CODE[1 .+ mod.(floor.(Int, (code_freq + code_doppler) / sample_freq * range .+ code_phase), code_length)]
     signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
     gps_l1 = GPSL1() # sat_prn 1 == SAMPLE_CODE
-    acq_res = acquire(gps_l1, signal, sample_freq, interm_freq, 1, 7000Hz, 30)
+    acq_res = acquire(gps_l1, signal, sample_freq, interm_freq, 1, 7000Hz)
     @test acq_res.f_d == 1000Hz
-    @test acq_res.acquired == true
 
     @test acq_res.φ_c ≈ code_phase atol = 1e-3
     @test acq_res.C╱N₀ ≈ C╱N₀ + 10 * log10(integration_time / 1e-3s) atol = 2
 
     #doppler_step = 2 / 3 / integration_time
     #doppler_steps = -7000:doppler_step:7000
-    #plotlyjs()
-    #surface(doppler_steps, 1:4000, acq_res.power_bins)
-    #gui()
+    #using PyPlot
+    #surf(acq_res.power_bins)
 end
