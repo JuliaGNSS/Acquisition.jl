@@ -18,7 +18,7 @@ module Acquisition
     function acquire(gnss_system::T, signal, sample_freq, interm_freq, sat_prn, max_doppler) where T <: AbstractGNSSSystem
         code_period = gnss_system.code_length / gnss_system.code_freq
         integration_time = length(signal) / sample_freq
-        doppler_step = 1 / 3 / integration_time
+        doppler_step = 1 / 10 / integration_time
         doppler_steps = -max_doppler:doppler_step:max_doppler
         cross_corr_powers = power_over_doppler_and_code(gnss_system, signal, sat_prn, doppler_steps, sample_freq, interm_freq)
         signal_power, noise_power, code_index, doppler_index = est_signal_noise_power(cross_corr_powers, doppler_steps, integration_time, sample_freq, gnss_system.code_freq)
