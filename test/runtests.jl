@@ -91,11 +91,11 @@ end
 @testset "Acquisition" begin
     Random.seed!(1234)
     integration_time = 2e-3s
-    interm_freq = 0.0Hz; code_freq = 1023e3Hz; sample_freq = 4e6Hz; C╱N₀ = 45; doppler = 1000Hz; f_0 = 1575420e3Hz; code_delay = -5e-4s; range = 1:convert(Int, sample_freq * integration_time)
+    interm_freq = 0.0Hz; code_freq = 1023e3Hz; sample_freq = 4e6Hz; CN0 = 45; doppler = 1000Hz; f_0 = 1575420e3Hz; code_delay = -5e-4s; range = 1:convert(Int, sample_freq * integration_time)
     codes = [SAMPLE_CODE SAMPLE_CODE2]
     #noise_power = 10 * log10(sample_freq)
     noise_power = 1
-    signal_power = C╱N₀ - 10 * log10(sample_freq / 1.0Hz)
+    signal_power = CN0 - 10 * log10(sample_freq / 1.0Hz)
     noise = 1 / sqrt(2) * complex.(randn(length(range)), randn(length(range)))
     carrier =  cis.((2 * π * (interm_freq + doppler) / sample_freq) .* range)
     code_doppler = doppler / (f_0 / code_freq)
@@ -105,10 +105,10 @@ end
     signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
     gps_l1 = GPSL1() # sat_prn 1 == SAMPLE_CODE
     acq_res = acquire(gps_l1, signal, sample_freq, interm_freq, 1, 7000Hz)
-    @test acq_res.f_d == 1000Hz
+    @test acq_res.carrier_doppler == 1000Hz
 
-    @test acq_res.φ_c ≈ code_phase atol = 1e-3
-    @test acq_res.C╱N₀ ≈ C╱N₀ + 10 * log10(integration_time / 1e-3s) atol = 2
+    @test acq_res.code_phase ≈ code_phase atol = 1e-3
+    @test acq_res.CN0 ≈ CN0 + 10 * log10(integration_time / 1e-3s) atol = 2
 
     #doppler_step = 2 / 3 / integration_time
     #doppler_steps = -7000:doppler_step:7000

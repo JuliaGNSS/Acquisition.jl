@@ -8,10 +8,10 @@ module Acquisition
     export acquire, plot_acquisition_results
 
     struct AcquisitionResults
-        f_d::typeof(1.0Hz)            # Doppler frequency
-        φ_c::Float64                  # Code phase
-        C╱N₀::Float64                 # C╱N₀ in dB
-        power_bins::Array{Float64, 2} # Cross corr powers in code_bins x doppler_bins
+        carrier_doppler::typeof(1.0Hz)
+        code_phase::Float64
+        CN0::Float64
+        power_bins::Array{Float64, 2}
         doppler_steps::StepRangeLen{Float64,Base.TwicePrecision{Float64},Base.TwicePrecision{Float64}}
     end
 
@@ -22,9 +22,9 @@ module Acquisition
         doppler_steps = -max_doppler:doppler_step:max_doppler
         cross_corr_powers = power_over_doppler_and_code(gnss_system, signal, sat_prn, doppler_steps, sample_freq, interm_freq)
         signal_power, noise_power, code_index, doppler_index = est_signal_noise_power(cross_corr_powers, doppler_steps, integration_time, sample_freq, gnss_system.code_freq)
-        C╱N₀ = 10 * log10(signal_power / noise_power / code_period / 1.0Hz)
+        CN0 = 10 * log10(signal_power / noise_power / code_period / 1.0Hz)
         doppler = (doppler_index - 1) * doppler_step - max_doppler
-        AcquisitionResults(doppler, (code_index - 1) / (sample_freq / gnss_system.code_freq), C╱N₀, cross_corr_powers, first(doppler_steps) / 1.0Hz:step(doppler_steps) / 1.0Hz:last(doppler_steps) / 1.0Hz)
+        AcquisitionResults(doppler, (code_index - 1) / (sample_freq / gnss_system.code_freq), CN0, cross_corr_powers, first(doppler_steps) / 1.0Hz:step(doppler_steps) / 1.0Hz:last(doppler_steps) / 1.0Hz)
     end
 
     function power_over_doppler_and_code(gnss_system, signal, sat_prn, doppler_steps, sample_freq, interm_freq)
