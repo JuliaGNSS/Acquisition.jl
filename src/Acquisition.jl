@@ -1,6 +1,6 @@
 module Acquisition
 
-    using DocStringExtensions, GNSSSignals, PyPlot, FFTW, Statistics
+    using DocStringExtensions, GNSSSignals, PyPlot, FFTW, Statistics, LinearAlgebra
     import Unitful: s, Hz
 
     include("plots.jl")
@@ -15,29 +15,32 @@ module Acquisition
         doppler_steps::StepRangeLen{Float64,Base.TwicePrecision{Float64},Base.TwicePrecision{Float64}}
     end
 
-    function acquire(gnss_system::T, signal, sample_freq, interm_freq, sat_prn, max_doppler) where T <: AbstractGNSSSystem
-        code_period = gnss_system.code_length / gnss_system.code_freq
+    function acquire(::Type{S}, signal, sample_freq, interm_freq, sat_prn, max_doppler) where S <: AbstractGNSSSystem
+        code_period = get_code_length(S) / get_code_frequency(S)
         integration_time = length(signal) / sample_freq
-        doppler_step = 1 / 10 / integration_time
+        doppler_step = 1 / 3 / integration_time
         doppler_steps = -max_doppler:doppler_step:max_doppler
-        cross_corr_powers = power_over_doppler_and_code(gnss_system, signal, sat_prn, doppler_steps, sample_freq, interm_freq)
-        signal_power, noise_power, code_index, doppler_index = est_signal_noise_power(cross_corr_powers, doppler_steps, integration_time, sample_freq, gnss_system.code_freq)
+        cross_corr_powers = power_over_doppler_and_code(S, signal, sat_prn, doppler_steps, sample_freq, interm_freq)
+        signal_power, noise_power, code_index, doppler_index = est_signal_noise_power(cross_corr_powers, doppler_steps, integration_time, sample_freq, get_code_frequency(S))
         CN0 = 10 * log10(signal_power / noise_power / code_period / 1.0Hz)
         doppler = (doppler_index - 1) * doppler_step - max_doppler
-        AcquisitionResults(doppler, (code_index - 1) / (sample_freq / gnss_system.code_freq), CN0, cross_corr_powers, first(doppler_steps) / 1.0Hz:step(doppler_steps) / 1.0Hz:last(doppler_steps) / 1.0Hz)
+        AcquisitionResults(doppler, (code_index - 1) / (sample_freq / get_code_frequency(S)), CN0, cross_corr_powers, first(doppler_steps) / 1.0Hz:step(doppler_steps) / 1.0Hz:last(doppler_steps) / 1.0Hz)
     end
 
-    function power_over_doppler_and_code(gnss_system, signal, sat_prn, doppler_steps, sample_freq, interm_freq)
-        code_freq_domain = fft(gen_code.(Ref(gnss_system), 1:length(signal), gnss_system.code_freq, 0, sample_freq, sat_prn))
-        mapreduce(doppler -> power_over_code(gnss_system, signal, code_freq_domain, doppler, sample_freq, interm_freq), hcat, doppler_steps)
+    function power_over_doppler_and_code(::Type{S}, signal, sat_prn, doppler_steps, sample_freq, interm_freq) where S <: AbstractGNSSSystem
+        code = get_code.(S, (1:length(signal)) .* get_code_frequency(S) ./ sample_freq, sat_prn)
+        fft_plan = plan_fft(code)
+        code_freq_domain = fft_plan * code
+        mapreduce(doppler -> power_over_code(S, signal, fft_plan, code_freq_domain, doppler, sample_freq, interm_freq), hcat, doppler_steps)
     end
 
-    function power_over_code(gnss_system, signal, code_freq_domain, doppler, sample_freq, interm_freq)
+    function power_over_code(::Type{S}, signal, fft_plan, code_freq_domain, doppler, sample_freq, interm_freq) where S <: AbstractGNSSSystem
         Δt = length(signal) / sample_freq
-        code_interval = gnss_system.code_length / gnss_system.code_freq
-        replica_carrier = gen_carrier.(1:length(signal), interm_freq + doppler, 0.0, sample_freq)
-        signal_baseband_freq_domain = fft(signal .* conj(replica_carrier))
-        powers = abs2.(ifft(code_freq_domain .* conj(signal_baseband_freq_domain)))
+        code_interval = get_code_length(S) / get_code_frequency(S)
+        signal_baseband = signal .* cis.(-2π .* (1:length(signal)) .* (interm_freq + doppler) ./ sample_freq)
+        signal_baseband_freq_domain = fft_plan * signal_baseband
+        code_freq_baseband_freq_domain = code_freq_domain .* conj(signal_baseband_freq_domain)
+        powers = abs2.(fft_plan \ code_freq_baseband_freq_domain)
         powers[1:convert(Int, sample_freq * min(Δt, code_interval))]
     end
 

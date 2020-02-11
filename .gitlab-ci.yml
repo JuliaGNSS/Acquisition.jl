@@ -1,15 +1,8 @@
-image: julia:1.0
+image: julia:1.1
 
 testjob:
   before_script:
     - apt-get update && apt-get -y install bzip2 python-dev python-matplotlib
-    - 'which ssh-agent || ( apt-get update -y && apt-get install openssh-client -y )'
-    - eval $(ssh-agent -s)
-    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add - > /dev/null
-    - mkdir -p ~/.ssh
-    - chmod 700 ~/.ssh
-    - julia -e 'using Pkg; Pkg.add(PackageSpec(url="git@git.rwth-aachen.de:nav/GNSSSignals.jl.git", rev="v0.7"))'
-    - julia -e "using Pkg; Pkg.develop(PackageSpec(url=pwd()))"
 
   script:
     - julia -e 'using Pkg; Pkg.add("Coverage"); Pkg.test("Acquisition", coverage=true);

@@ -3,16 +3,10 @@
 
 # Acquire GNSS signals
 
-## Features
-
-* GPS L1
-
 ## Getting started
 
 Install:
-```julia
-Pkg.clone("git@git.rwth-aachen.de:nav/Acquisition.jl.git")
-```
+
 
 ## Usage
 
