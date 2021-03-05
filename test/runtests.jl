@@ -10,7 +10,7 @@ const SAMPLE_CODE2 = [1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.
     # Peak in the middle
     power_bins = abs2.(1 / sqrt(2) * complex.(ones(1023,29), ones(1023,29)))
     power_bins[489,11] = power_bins[489,11] + 10^(15 / 10) # 15 dB SNR
-    signal_power, noise_power, code_index, doppler_index = Acquisition.est_signal_noise_power(power_bins, -7000:500:7000, 1e-3, 4e6, 1e6)
+    signal_power, noise_power, code_index, doppler_index = Acquisition.est_signal_noise_power(power_bins, 4e6, 1e6)
 
     @test noise_power ≈ 1
     @test signal_power ≈ 10^(15 / 10)
@@ -20,7 +20,7 @@ const SAMPLE_CODE2 = [1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.
     # Peak at doppler and code border
     power_bins = abs2.(1 / sqrt(2) * complex.(ones(1023,29), ones(1023,29)))
     power_bins[1,1] = power_bins[1,1] + 10^(15 / 10) # 15 dB SNR
-    signal_power, noise_power, code_index, doppler_index = Acquisition.est_signal_noise_power(power_bins, -7000:500:7000, 1e-3, 4e6, 1e6)
+    signal_power, noise_power, code_index, doppler_index = Acquisition.est_signal_noise_power(power_bins, 4e6, 1e6)
 
     @test noise_power ≈ 1
     @test signal_power ≈ 10^(15 / 10)
@@ -29,7 +29,7 @@ const SAMPLE_CODE2 = [1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.
 
     power_bins = abs2.(1 / sqrt(2) * complex.(ones(1023,29), ones(1023,29)))
     power_bins[1023,29] = power_bins[1023,29] + 10^(15 / 10) # 15 dB SNR
-    signal_power, noise_power, code_index, doppler_index = Acquisition.est_signal_noise_power(power_bins, -7000:500:7000, 1e-3, 4e6, 1e6)
+    signal_power, noise_power, code_index, doppler_index = Acquisition.est_signal_noise_power(power_bins, 4e6, 1e6)
 
     @test noise_power ≈ 1
     @test signal_power ≈ 10^(15 / 10)
@@ -53,7 +53,7 @@ end
     signal = carrier .* code
     code_freq_dom = fft(replica_code)
     fft_plan = plan_fft(signal)
-    power_bins = Acquisition.power_over_code(GPSL1, signal, fft_plan, code_freq_dom, doppler, sample_freq, interm_freq)
+    power_bins = Acquisition.power_over_code(GPSL1(), signal, fft_plan, code_freq_dom, doppler, sample_freq, interm_freq)
     signal_power, index = findmax(power_bins)
     @test index / sample_freq ≈ code_delay rtol = 2
 
@@ -73,7 +73,7 @@ end
     signal = carrier .* code
     doppler_step = 2 / 3 / integration_time
     doppler_steps = -7000Hz:doppler_step:7000Hz
-    power_bins = Acquisition.power_over_doppler_and_code(GPSL1, signal, 1, doppler_steps, sample_freq, interm_freq)
+    power_bins = Acquisition.power_over_doppler_and_code(GPSL1(), signal, 1, doppler_steps, sample_freq, interm_freq)
     signal_power, index = findmax(power_bins)
     c_idx, d_idx = Tuple(CartesianIndices(power_bins)[index])
 
@@ -102,7 +102,7 @@ end
     code_length = length(SAMPLE_CODE)
     code = SAMPLE_CODE[1 .+ mod.(floor.(Int, (code_freq + code_doppler) / sample_freq * range .+ code_phase), code_length)]
     signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
-    acq_res = acquire(GPSL1, signal, sample_freq, interm_freq, 1, 7000Hz)
+    acq_res = acquire(GPSL1(), signal, sample_freq, interm_freq, 1, 7000Hz)
     @test acq_res.carrier_doppler == 1000Hz
 
     @test acq_res.code_phase ≈ code_phase atol = 1e-3
