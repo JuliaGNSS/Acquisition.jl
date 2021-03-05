@@ -15,26 +15,26 @@ module Acquisition
         doppler_steps::StepRangeLen{Float64,Base.TwicePrecision{Float64},Base.TwicePrecision{Float64}}
     end
 
-    function acquire(::Type{S}, signal, sample_freq, interm_freq, sat_prn, max_doppler) where S <: AbstractGNSSSystem
+    function acquire(S::AbstractGNSS, signal, sample_freq, interm_freq, sat_prn, max_doppler)
         code_period = get_code_length(S) / get_code_frequency(S)
         integration_time = length(signal) / sample_freq
         doppler_step = 1 / 3 / integration_time
         doppler_steps = -max_doppler:doppler_step:max_doppler
         powers = power_over_doppler_and_code(S, signal, sat_prn, doppler_steps, sample_freq, interm_freq)
-        signal_power, noise_power, code_index, doppler_index = est_signal_noise_power(powers, doppler_steps, integration_time, sample_freq, get_code_frequency(S))
+        signal_power, noise_power, code_index, doppler_index = est_signal_noise_power(powers, sample_freq, get_code_frequency(S))
         CN0 = 10 * log10(signal_power / noise_power / code_period / 1.0Hz)
         doppler = (doppler_index - 1) * doppler_step - max_doppler
         AcquisitionResults(doppler, (code_index - 1) / (sample_freq / get_code_frequency(S)), CN0, powers, first(doppler_steps) / 1.0Hz:step(doppler_steps) / 1.0Hz:last(doppler_steps) / 1.0Hz)
     end
 
-    function power_over_doppler_and_code(::Type{S}, signal, sat_prn, doppler_steps, sample_freq, interm_freq) where S <: AbstractGNSSSystem
+    function power_over_doppler_and_code(S::AbstractGNSS, signal, sat_prn, doppler_steps, sample_freq, interm_freq)
         code = get_code.(S, (1:length(signal)) .* get_code_frequency(S) ./ sample_freq, sat_prn)
         fft_plan = plan_fft(code)
         code_freq_domain = fft_plan * code
         mapreduce(doppler -> power_over_code(S, signal, fft_plan, code_freq_domain, doppler, sample_freq, interm_freq), hcat, doppler_steps)
     end
 
-    function power_over_code(::Type{S}, signal, fft_plan, code_freq_domain, doppler, sample_freq, interm_freq) where S <: AbstractGNSSSystem
+    function power_over_code(S::AbstractGNSS, signal, fft_plan, code_freq_domain, doppler, sample_freq, interm_freq)
         Δt = length(signal) / sample_freq
         code_interval = get_code_length(S) / get_code_frequency(S)
         signal_baseband = signal .* cis.(-2π .* (1:length(signal)) .* (interm_freq + doppler) ./ sample_freq)
@@ -44,7 +44,7 @@ module Acquisition
         powers[1:convert(Int, sample_freq * min(Δt, code_interval))]
     end
 
-    function est_signal_noise_power(power_bins, doppler_steps, integration_time, sample_freq, code_freq)
+    function est_signal_noise_power(power_bins, sample_freq, code_freq)
         samples_per_chip = floor(Int, sample_freq / code_freq)
         signal_noise_power, index = findmax(power_bins)
         lower_code_phases = 1:index[1] - samples_per_chip
