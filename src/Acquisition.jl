@@ -7,6 +7,7 @@ module Acquisition
 
     struct AcquisitionResults{S<:AbstractGNSS}
         system::S
+        prn::Int
         sampling_frequency::typeof(1.0Hz)
         carrier_doppler::typeof(1.0Hz)
         code_phase::Float64
@@ -33,7 +34,7 @@ module Acquisition
         CN0 = 10 * log10(signal_power / noise_power / code_period / 1.0Hz)
         doppler = (doppler_index - 1) * step(dopplers) - last(dopplers)
         code_phase = (code_index - 1) / (sampling_freq / get_code_frequency(S))
-        AcquisitionResults(S, sampling_freq, doppler, code_phase, CN0, powers, dopplers / 1.0Hz)
+        AcquisitionResults(S, sat_prn, sampling_freq, doppler, code_phase, CN0, powers, dopplers / 1.0Hz)
     end
 
     function power_over_doppler_and_code(S::AbstractGNSS, signal, sat_prn, doppler_steps, sampling_freq, interm_freq)
