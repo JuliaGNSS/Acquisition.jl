@@ -9,7 +9,7 @@ module Acquisition
 
     import Unitful: s, Hz
 
-    export acquire, plot_acquisition_results
+    export acquire
 
     struct AcquisitionResults{S<:AbstractGNSS}
         system::S
