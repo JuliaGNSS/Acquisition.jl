@@ -1,6 +1,12 @@
 module Acquisition
 
-    using DocStringExtensions, GNSSSignals, RecipesBase, FFTW, Statistics, LinearAlgebra
+    using DocStringExtensions
+    using FFTW
+    using GNSSSignals
+    using LinearAlgebra
+    using RecipesBase
+    using Statistics
+
     import Unitful: s, Hz
 
     export acquire, plot_acquisition_results
@@ -26,6 +32,12 @@ module Acquisition
         acq_res.dopplers, y, log_scale ? 10 * log10.(acq_res.power_bins) : acq_res.power_bins
     end
 
+    """
+    $(SIGNATURES)
+    Perform the aquisition of the satellite `sat_prn` in System `S` in signal `signal`
+    sampled at rate `sampling_freq`. The aquisition is performed as parallel code phase
+    search using the doppler frequencies `dopplers`.
+    """
     function acquire(S::AbstractGNSS, signal, sampling_freq, sat_prn; interm_freq = 0.0Hz, dopplers = -5000.0Hz:1 / 3 / (length(signal) / sampling_freq):5000.0Hz)
         code_period = get_code_length(S) / get_code_frequency(S)
         integration_time = length(signal) / sampling_freq
