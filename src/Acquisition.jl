@@ -1,19 +1,12 @@
 module Acquisition
 
-    using DocStringExtensions
-    using FFTW
-    using GNSSSignals
-    using LinearAlgebra
-    using RecipesBase
-    using Statistics
-
+    using DocStringExtensions, GNSSSignals, RecipesBase, FFTW, Statistics, LinearAlgebra
     import Unitful: s, Hz
 
-    export acquire
+    export acquire, plot_acquisition_results, coarse_fine_acquire
 
     struct AcquisitionResults{S<:AbstractGNSS}
         system::S
-        prn::Int
         sampling_frequency::typeof(1.0Hz)
         carrier_doppler::typeof(1.0Hz)
         code_phase::Float64
@@ -32,21 +25,22 @@ module Acquisition
         acq_res.dopplers, y, log_scale ? 10 * log10.(acq_res.power_bins) : acq_res.power_bins
     end
 
-    """
-    $(SIGNATURES)
-    Perform the aquisition of the satellite `sat_prn` in System `S` in signal `signal`
-    sampled at rate `sampling_freq`. The aquisition is performed as parallel code phase
-    search using the doppler frequencies `dopplers`.
-    """
-    function acquire(S::AbstractGNSS, signal, sampling_freq, sat_prn; interm_freq = 0.0Hz, dopplers = -5000.0Hz:1 / 3 / (length(signal) / sampling_freq):5000.0Hz)
+    function acquire(S::AbstractGNSS, signal, sampling_freq, sat_prn; interm_freq = 0.0Hz, max_doppler = 7000Hz, dopplers = -max_doppler:1 / 3 / (length(signal) / sampling_freq):max_doppler)
         code_period = get_code_length(S) / get_code_frequency(S)
-        integration_time = length(signal) / sampling_freq
         powers = power_over_doppler_and_code(S, signal, sat_prn, dopplers, sampling_freq, interm_freq)
         signal_power, noise_power, code_index, doppler_index = est_signal_noise_power(powers, sampling_freq, get_code_frequency(S))
         CN0 = 10 * log10(signal_power / noise_power / code_period / 1.0Hz)
-        doppler = (doppler_index - 1) * step(dopplers) - last(dopplers)
+        doppler = (doppler_index - 1) * step(dopplers) + first(dopplers)
         code_phase = (code_index - 1) / (sampling_freq / get_code_frequency(S))
-        AcquisitionResults(S, sat_prn, sampling_freq, doppler, code_phase, CN0, powers, dopplers / 1.0Hz)
+        AcquisitionResults(S, sampling_freq, doppler, code_phase, CN0, powers, dopplers / 1.0Hz)
+    end
+
+    function coarse_fine_acquire(S::AbstractGNSS, signal, sampling_freq, sat_prn; interm_freq = 0.0Hz, max_doppler = 7000Hz)
+        coarse_step = 1 / 3 / (length(signal) / sampling_freq)
+        acq_res = acquire(S, signal, sampling_freq, sat_prn; interm_freq, dopplers = -max_doppler:coarse_step:max_doppler)
+        fine_step = 1 / 12 / (length(signal) / sampling_freq)
+        dopplers = acq_res.carrier_doppler - 2 * coarse_step:fine_step:acq_res.carrier_doppler + 2 * coarse_step
+        acquire(S, signal, sampling_freq, sat_prn; interm_freq, dopplers = dopplers)
     end
 
     function power_over_doppler_and_code(S::AbstractGNSS, signal, sat_prn, doppler_steps, sampling_freq, interm_freq)

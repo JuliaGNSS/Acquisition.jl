@@ -102,11 +102,18 @@ end
     code_length = length(SAMPLE_CODE)
     code = SAMPLE_CODE[1 .+ mod.(floor.(Int, (code_freq + code_doppler) / sample_freq * range .+ code_phase), code_length)]
     signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
-    acq_res = acquire(GPSL1(), signal, sample_freq, 1, dopplers = -7000.0Hz:1 / 3 / (length(signal) / sample_freq):7000.0Hz)
+    gpsl1 = GPSL1()
+    acq_res = acquire(gpsl1, signal, sample_freq, 1, dopplers = -7000.0Hz:1 / 3 / (length(signal) / sample_freq):7000.0Hz)
     @test acq_res.carrier_doppler == 1000Hz
 
     @test acq_res.code_phase ≈ code_phase atol = 1e-3
     @test acq_res.CN0 ≈ CN0 + 10 * log10(integration_time / 1e-3s) atol = 2
+
+    coarse_fine_acq_res = coarse_fine_acquire(gpsl1, signal, sample_freq, 1)
+    @test coarse_fine_acq_res.carrier_doppler == 1000Hz
+
+    @test coarse_fine_acq_res.code_phase ≈ code_phase atol = 1e-3
+    @test coarse_fine_acq_res.CN0 ≈ CN0 + 10 * log10(integration_time / 1e-3s) atol = 2
 
     #doppler_step = 2 / 3 / integration_time
     #doppler_steps = -7000:doppler_step:7000
