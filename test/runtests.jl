@@ -108,12 +108,14 @@ end
 
     @test acq_res.code_phase ≈ code_phase atol = 1e-3
     @test acq_res.CN0 ≈ CN0 + 10 * log10(integration_time / 1e-3s) atol = 2
+    @test acq_res.prn == 1
 
     coarse_fine_acq_res = coarse_fine_acquire(gpsl1, signal, sample_freq, 1)
     @test coarse_fine_acq_res.carrier_doppler == 1000Hz
 
     @test coarse_fine_acq_res.code_phase ≈ code_phase atol = 1e-3
     @test coarse_fine_acq_res.CN0 ≈ CN0 + 10 * log10(integration_time / 1e-3s) atol = 2
+    @test coarse_fine_acq_res.prn == 1
 
     #doppler_step = 2 / 3 / integration_time
     #doppler_steps = -7000:doppler_step:7000
