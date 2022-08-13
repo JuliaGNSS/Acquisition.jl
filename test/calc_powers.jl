@@ -1,5 +1,5 @@
 @testset "Power over code for $(get_system_string(system))" for system in [GPSL1(), GalileoE1B()]
-    Random.seed!(1234)
+    Random.seed!(2345)
     num_samples = 20000
     doppler = 1234Hz
     code_phase = 110.613261
@@ -54,7 +54,7 @@
 end
 
 @testset "Power over code and Doppler for $(get_system_string(system))" for system in [GPSL1(), GalileoE1B()]
-    Random.seed!(1234)
+    Random.seed!(2345)
     num_samples = 20000
     doppler = 1234Hz
     code_phase = 110.613261
