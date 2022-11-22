@@ -1,31 +1,28 @@
-function power_over_doppler_and_codes(S::AbstractGNSS, signal, sat_prns, dopplers, sampling_freq, interm_freq)
-    codes = [gen_code(length(signal), S, sat_prn, sampling_freq) for sat_prn in sat_prns]
-    signal_baseband = Vector{ComplexF32}(undef, length(signal))
-    signal_baseband_freq_domain = similar(signal_baseband)
-    code_freq_baseband_freq_domain = similar(signal_baseband)
-    code_baseband = similar(signal_baseband)
-    Δt = length(signal) / sampling_freq
-    code_interval = get_code_length(S) / get_code_frequency(S)
-    signal_powers = [Matrix{Float32}(undef, convert(Int, sampling_freq * min(Δt, code_interval)), length(dopplers)) for _ in sat_prns]
-    fft_plan = plan_fft(signal_baseband)
-    codes_freq_domain = map(code -> fft_plan * code, codes)
-    foreach(enumerate(dopplers)) do (doppler_idx, doppler)
+function power_over_doppler_and_codes!(
+    acq_plan::AcquisitionPlan,
+    signal,
+    sat_prns,
+    interm_freq,
+    doppler_offset
+)
+    prn_channels = findall(x -> x in sat_prns, acq_plan.avail_prn_channels)
+    foreach(enumerate(acq_plan.dopplers)) do (doppler_idx, doppler)
         power_over_code!(
-            signal_powers,
+            view(acq_plan.signal_powers, prn_channels),
             doppler_idx,
-            signal_baseband,
-            signal_baseband_freq_domain,
-            code_freq_baseband_freq_domain,
-            code_baseband,
+            acq_plan.signal_baseband,
+            acq_plan.signal_baseband_freq_domain,
+            acq_plan.code_freq_baseband_freq_domain,
+            acq_plan.code_baseband,
             signal,
-            fft_plan,
-            codes_freq_domain,
-            doppler,
-            sampling_freq,
+            acq_plan.fft_plan,
+            view(acq_plan.codes_freq_domain, prn_channels),
+            doppler + doppler_offset,
+            acq_plan.sampling_freq,
             interm_freq
         )
     end
-    signal_powers
+    view(acq_plan.signal_powers, prn_channels)
 end
 
 function power_over_code!(

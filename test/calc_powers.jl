@@ -82,7 +82,15 @@ end
     max_doppler = 7000Hz
     dopplers = -max_doppler:1 / 3 / (length(signal) / sampling_freq):max_doppler
 
-    powers_per_sats = Acquisition.power_over_doppler_and_codes(system, signal, [1], dopplers, sampling_freq, interm_freq)
+    acq_plan = AcquisitionPlan(
+        system,
+        length(signal),
+        sampling_freq;
+        dopplers,
+        prns = 1:1
+    )
+
+    powers_per_sats = Acquisition.power_over_doppler_and_codes!(acq_plan, signal, [1], interm_freq, 0.0Hz)
 
     maxval, maxidx = findmax(powers_per_sats[1])
     @test (maxidx[1] - 1) * get_code_frequency(system) / sampling_freq ≈ code_phase atol = 0.08

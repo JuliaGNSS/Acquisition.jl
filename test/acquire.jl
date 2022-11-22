@@ -41,11 +41,30 @@
         dopplers
     )
 
+    acq_plan = AcquisitionPlan(
+        system,
+        length(signal_typed),
+        sampling_freq;
+        dopplers,
+        prns = 1:34
+    )
+
+    inplace_acq_res = acquire!(
+        acq_plan,
+        signal_typed,
+        prn;
+        interm_freq,
+    )
+
     @test acq_res.code_phase ≈ code_phase atol = 0.08
     @test abs(acq_res.carrier_doppler - doppler) < step(dopplers) / 2
     @test acq_res.prn == prn
-
     @test acq_res.CN0 ≈ CN0 atol = 6
+
+    @test inplace_acq_res.code_phase ≈ code_phase atol = 0.08
+    @test abs(inplace_acq_res.carrier_doppler - doppler) < step(dopplers) / 2
+    @test inplace_acq_res.prn == prn
+    @test inplace_acq_res.CN0 ≈ CN0 atol = 6
 
     coarse_fine_acq_res = coarse_fine_acquire(
         system,
@@ -55,9 +74,27 @@
         interm_freq,
     )
 
+    coarse_fine_acq_plan = CoarseFineAcquisitionPlan(
+        system,
+        length(signal_typed),
+        sampling_freq;
+        prns = 1:34
+    )
+
+    inplace_inplace_acq_res = coarse_fine_acquire!(
+        coarse_fine_acq_plan,
+        signal_typed,
+        prn;
+        interm_freq,
+    )
+
     @test coarse_fine_acq_res.code_phase ≈ code_phase atol = 0.08
     @test abs(coarse_fine_acq_res.carrier_doppler - doppler) < step(dopplers) / 2
     @test coarse_fine_acq_res.prn == prn
-
     @test coarse_fine_acq_res.CN0 ≈ CN0 atol = 6
+
+    @test inplace_inplace_acq_res.code_phase ≈ code_phase atol = 0.08
+    @test abs(inplace_inplace_acq_res.carrier_doppler - doppler) < step(dopplers) / 2
+    @test inplace_inplace_acq_res.prn == prn
+    @test inplace_inplace_acq_res.CN0 ≈ CN0 atol = 6
 end
