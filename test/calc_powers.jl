@@ -50,7 +50,7 @@
 
     maxval, maxidx = findmax(signal_powers[1][:,1])
 
-    @test (maxidx - 1) * get_code_frequency(system) / sampling_freq ≈ code_phase atol = 0.08
+    @test (maxidx - 1) * get_code_frequency(system) / sampling_freq ≈ code_phase atol = 0.15
 end
 
 @testset "Power over code and Doppler for $(get_system_string(system))" for system in [GPSL1(), GalileoE1B()]
