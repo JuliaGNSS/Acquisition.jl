@@ -17,11 +17,12 @@ pkg> add Acquisition
 ```julia
 using Acquisition, Plots
 import Acquisition: GPSL1, Hz
-stream1 = open("signal.dat")
+stream = open("signal.dat")
 signal = Vector{Complex{Int16}}(undef, 10000)
-read!(stream1, signal)
+read!(stream, signal)
 gpsl1 = GPSL1()
-acq_res = [acquire(gpsl1, signal, 5e6Hz, prn) for prn = 1:32]
+acq_res = acquire(gpsl1, signal, 5e6Hz, 1:32)
+# or acq_res = coarse_fine_acquire(gpsl1, signal, 5e6Hz, 1:32)
 plot(acq_res[1])
 ```
 
