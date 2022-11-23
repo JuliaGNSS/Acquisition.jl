@@ -1,4 +1,5 @@
-@testset "Power over code for $(get_system_string(system))" for system in [GPSL1(), GalileoE1B()]
+@testset "Power over code for $(get_system_string(system))" for system in
+                                                                [GPSL1(), GalileoE1B()]
     Random.seed!(2345)
     num_samples = 20000
     doppler = 1234Hz
@@ -14,17 +15,26 @@
         prn,
         sampling_freq,
         get_code_frequency(system) + doppler * get_code_center_frequency_ratio(system),
-        code_phase
+        code_phase,
     )
 
-    carrier = cis.(2π * (0:num_samples - 1) * (interm_freq + doppler) / sampling_freq .+ π / 8)
+    carrier =
+        cis.(2π * (0:num_samples-1) * (interm_freq + doppler) / sampling_freq .+ π / 8)
 
     noise_power = 1
     signal_power = CN0 - 10 * log10(sampling_freq / 1.0Hz)
     noise = randn(ComplexF64, num_samples)
     signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
 
-    codes_freq_domain = [fft(get_code.(system, (0:num_samples - 1) .* get_code_frequency(system) ./ sampling_freq, prn))]
+    codes_freq_domain = [
+        fft(
+            get_code.(
+                system,
+                (0:num_samples-1) .* get_code_frequency(system) ./ sampling_freq,
+                prn,
+            ),
+        ),
+    ]
     signal_powers = [Matrix{Float32}(undef, 5000, 1)]
 
     signal_baseband = Vector{ComplexF32}(undef, length(signal))
@@ -45,15 +55,18 @@
         codes_freq_domain,
         doppler,
         sampling_freq,
-        interm_freq
+        interm_freq,
     )
 
-    maxval, maxidx = findmax(signal_powers[1][:,1])
+    maxval, maxidx = findmax(signal_powers[1][:, 1])
 
     @test (maxidx - 1) * get_code_frequency(system) / sampling_freq ≈ code_phase atol = 0.15
 end
 
-@testset "Power over code and Doppler for $(get_system_string(system))" for system in [GPSL1(), GalileoE1B()]
+@testset "Power over code and Doppler for $(get_system_string(system))" for system in [
+    GPSL1(),
+    GalileoE1B(),
+]
     Random.seed!(2345)
     num_samples = 20000
     doppler = 1234Hz
@@ -69,10 +82,11 @@ end
         prn,
         sampling_freq,
         get_code_frequency(system) + doppler * get_code_center_frequency_ratio(system),
-        code_phase
+        code_phase,
     )
 
-    carrier = cis.(2π * (0:num_samples - 1) * (interm_freq + doppler) / sampling_freq .+ π / 8)
+    carrier =
+        cis.(2π * (0:num_samples-1) * (interm_freq + doppler) / sampling_freq .+ π / 8)
 
     noise_power = 1
     signal_power = CN0 - 10 * log10(sampling_freq / 1.0Hz)
@@ -80,20 +94,16 @@ end
     signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
 
     max_doppler = 7000Hz
-    dopplers = -max_doppler:1 / 3 / (length(signal) / sampling_freq):max_doppler
+    dopplers = -max_doppler:1/3/(length(signal)/sampling_freq):max_doppler
 
-    acq_plan = AcquisitionPlan(
-        system,
-        length(signal),
-        sampling_freq;
-        dopplers,
-        prns = 1:1
-    )
+    acq_plan = AcquisitionPlan(system, length(signal), sampling_freq; dopplers, prns = 1:1)
 
-    powers_per_sats = Acquisition.power_over_doppler_and_codes!(acq_plan, signal, [1], interm_freq, 0.0Hz)
+    powers_per_sats =
+        Acquisition.power_over_doppler_and_codes!(acq_plan, signal, [1], interm_freq, 0.0Hz)
 
     maxval, maxidx = findmax(powers_per_sats[1])
-    @test (maxidx[1] - 1) * get_code_frequency(system) / sampling_freq ≈ code_phase atol = 0.08
+    @test (maxidx[1] - 1) * get_code_frequency(system) / sampling_freq ≈ code_phase atol =
+        0.08
 
     est_doppler = (maxidx[2] - 1) * step(dopplers) + first(dopplers)
     @test abs(est_doppler - doppler) < step(dopplers) / 2

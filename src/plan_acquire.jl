@@ -1,4 +1,4 @@
-struct AcquisitionPlan{S, DS, CS, P, PS}
+struct AcquisitionPlan{S,DS,CS,P,PS}
     system::S
     signal_length::Int
     sampling_freq::typeof(1.0Hz)
@@ -18,15 +18,25 @@ function AcquisitionPlan(
     signal_length,
     sampling_freq;
     max_doppler = 7000Hz,
-    dopplers = -max_doppler:1 / 3 / (signal_length / sampling_freq):max_doppler,
+    dopplers = -max_doppler:1/3/(signal_length/sampling_freq):max_doppler,
     prns = 1:34,
-    fft_flag = FFTW.PATIENT
+    fft_flag = FFTW.PATIENT,
 )
-    signal_baseband, signal_baseband_freq_domain, code_freq_baseband_freq_domain, code_baseband, codes_freq_domain, fft_plan = 
-        common_buffers(system, signal_length, sampling_freq, prns, fft_flag)
+    signal_baseband,
+    signal_baseband_freq_domain,
+    code_freq_baseband_freq_domain,
+    code_baseband,
+    codes_freq_domain,
+    fft_plan = common_buffers(system, signal_length, sampling_freq, prns, fft_flag)
     Δt = signal_length / sampling_freq
     code_interval = get_code_length(system) / get_code_frequency(system)
-    signal_powers = [Matrix{Float32}(undef, convert(Int, sampling_freq * min(Δt, code_interval)), length(dopplers)) for _ in prns]
+    signal_powers = [
+        Matrix{Float32}(
+            undef,
+            convert(Int, sampling_freq * min(Δt, code_interval)),
+            length(dopplers),
+        ) for _ in prns
+    ]
     AcquisitionPlan(
         system,
         signal_length,
@@ -39,11 +49,11 @@ function AcquisitionPlan(
         code_baseband,
         signal_powers,
         fft_plan,
-        prns
+        prns,
     )
 end
 
-struct CoarseFineAcquisitionPlan{C <: AcquisitionPlan, F <: AcquisitionPlan}
+struct CoarseFineAcquisitionPlan{C<:AcquisitionPlan,F<:AcquisitionPlan}
     coarse_plan::C
     fine_plan::F
 end
@@ -56,16 +66,32 @@ function CoarseFineAcquisitionPlan(
     coarse_step = 1 / 3 / (signal_length / sampling_freq),
     fine_step = 1 / 12 / (signal_length / sampling_freq),
     prns = 1:34,
-    fft_flag = FFTW.PATIENT
+    fft_flag = FFTW.PATIENT,
 )
     coarse_dopplers = -max_doppler:coarse_step:max_doppler
-    signal_baseband, signal_baseband_freq_domain, code_freq_baseband_freq_domain, code_baseband, codes_freq_domain, fft_plan = 
-        common_buffers(system, signal_length, sampling_freq, prns, fft_flag)
+    signal_baseband,
+    signal_baseband_freq_domain,
+    code_freq_baseband_freq_domain,
+    code_baseband,
+    codes_freq_domain,
+    fft_plan = common_buffers(system, signal_length, sampling_freq, prns, fft_flag)
     Δt = signal_length / sampling_freq
     code_interval = get_code_length(system) / get_code_frequency(system)
-    coarse_signal_powers = [Matrix{Float32}(undef, convert(Int, sampling_freq * min(Δt, code_interval)), length(coarse_dopplers)) for _ in prns]
-    fine_doppler_range = -2 * coarse_step:fine_step:2 * coarse_step
-    fine_signal_powers = [Matrix{Float32}(undef, convert(Int, sampling_freq * min(Δt, code_interval)), length(fine_doppler_range)) for _ in prns]
+    coarse_signal_powers = [
+        Matrix{Float32}(
+            undef,
+            convert(Int, sampling_freq * min(Δt, code_interval)),
+            length(coarse_dopplers),
+        ) for _ in prns
+    ]
+    fine_doppler_range = -2*coarse_step:fine_step:2*coarse_step
+    fine_signal_powers = [
+        Matrix{Float32}(
+            undef,
+            convert(Int, sampling_freq * min(Δt, code_interval)),
+            length(fine_doppler_range),
+        ) for _ in prns
+    ]
     coarse_plan = AcquisitionPlan(
         system,
         signal_length,
@@ -78,7 +104,7 @@ function CoarseFineAcquisitionPlan(
         code_baseband,
         coarse_signal_powers,
         fft_plan,
-        prns
+        prns,
     )
     fine_plan = AcquisitionPlan(
         system,
@@ -92,7 +118,7 @@ function CoarseFineAcquisitionPlan(
         code_baseband,
         fine_signal_powers,
         fft_plan,
-        prns
+        prns,
     )
     CoarseFineAcquisitionPlan(coarse_plan, fine_plan)
 end
@@ -103,7 +129,12 @@ function common_buffers(system, signal_length, sampling_freq, prns, fft_flag)
     signal_baseband_freq_domain = similar(signal_baseband)
     code_freq_baseband_freq_domain = similar(signal_baseband)
     code_baseband = similar(signal_baseband)
-    fft_plan = plan_fft(signal_baseband, flags = fft_flag)
+    fft_plan = plan_fft(signal_baseband; flags = fft_flag)
     codes_freq_domain = map(code -> fft_plan * code, codes)
-    signal_baseband, signal_baseband_freq_domain, code_freq_baseband_freq_domain, code_baseband, codes_freq_domain, fft_plan
+    signal_baseband,
+    signal_baseband_freq_domain,
+    code_freq_baseband_freq_domain,
+    code_baseband,
+    codes_freq_domain,
+    fft_plan
 end
