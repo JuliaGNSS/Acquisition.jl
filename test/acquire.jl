@@ -1,9 +1,4 @@
-@testset "Acquire signal $(get_system_string(system)) and signal type $type" for system in
-                                                                                 [
-        GPSL1(),
-        GalileoE1B(),
-    ],
-    type in [Float64, Float32, Int16, Int32]
+@testset "Acquire signal $(get_system_string(system)) and signal type $type" for system in [GPSL1(), GalileoE1B()], type in [Float64, Float32, Int16, Int32]
 
     Random.seed!(2345)
     num_samples = 20000
