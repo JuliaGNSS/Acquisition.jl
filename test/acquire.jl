@@ -5,7 +5,7 @@
     doppler = 1234Hz
     code_phase = 110.613261
     prn = 1
-    sampling_freq = 5e6Hz
+    sampling_freq = 5e6Hz - 1Hz # Allow num_samples * sampling_freq to be non integer of ms
     interm_freq = 243.0Hz
     CN0 = 45
 

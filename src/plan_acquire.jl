@@ -33,7 +33,7 @@ function AcquisitionPlan(
     signal_powers = [
         Matrix{Float32}(
             undef,
-            convert(Int, sampling_freq * min(Δt, code_interval)),
+            ceil(Int, sampling_freq * min(Δt, code_interval)),
             length(dopplers),
         ) for _ in prns
     ]
@@ -80,7 +80,7 @@ function CoarseFineAcquisitionPlan(
     coarse_signal_powers = [
         Matrix{Float32}(
             undef,
-            convert(Int, sampling_freq * min(Δt, code_interval)),
+            ceil(Int, sampling_freq * min(Δt, code_interval)),
             length(coarse_dopplers),
         ) for _ in prns
     ]
@@ -88,7 +88,7 @@ function CoarseFineAcquisitionPlan(
     fine_signal_powers = [
         Matrix{Float32}(
             undef,
-            convert(Int, sampling_freq * min(Δt, code_interval)),
+            ceil(Int, sampling_freq * min(Δt, code_interval)),
             length(fine_doppler_range),
         ) for _ in prns
     ]
