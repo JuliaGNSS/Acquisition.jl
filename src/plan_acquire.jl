@@ -9,8 +9,10 @@ struct AcquisitionPlan{S,DS,CS,P,PS}
     code_freq_baseband_freq_domain::Vector{ComplexF32}
     code_baseband::Vector{ComplexF32}
     signal_powers::Vector{Matrix{Float32}}
+    complex_signal::Vector{Matrix{ComplexF32}}
     fft_plan::P
     avail_prn_channels::PS
+    compensate_doppler_code::Bool
 end
 
 function AcquisitionPlan(
@@ -21,6 +23,7 @@ function AcquisitionPlan(
     dopplers = -max_doppler:1/3/(signal_length/sampling_freq):max_doppler,
     prns = 1:34,
     fft_flag = FFTW.MEASURE,
+    compensate_doppler_code = false
 )
     signal_baseband,
     signal_baseband_freq_domain,
@@ -37,6 +40,14 @@ function AcquisitionPlan(
             length(dopplers),
         ) for _ in prns
     ]
+    complex_signal = [
+        Matrix{ComplexF32}(
+            undef,
+            ceil(Int, sampling_freq * min(Δt, code_interval)),
+            length(dopplers),
+        ) for _ in prns
+    ]
+    @assert length(signal_powers) == length(complex_signal)
     AcquisitionPlan(
         system,
         signal_length,
@@ -48,8 +59,10 @@ function AcquisitionPlan(
         code_freq_baseband_freq_domain,
         code_baseband,
         signal_powers,
+        complex_signal,
         fft_plan,
         prns,
+        compensate_doppler_code
     )
 end
 
@@ -92,6 +105,22 @@ function CoarseFineAcquisitionPlan(
             length(fine_doppler_range),
         ) for _ in prns
     ]
+    coarse_signal_powers_complex = [
+        Matrix{ComplexF32}(
+            undef,
+            ceil(Int, sampling_freq * min(Δt, code_interval)),
+            length(coarse_dopplers),
+        ) for _ in prns
+    ]
+    fine_signal_powers_complex = [
+        Matrix{ComplexF32}(
+            undef,
+            ceil(Int, sampling_freq * min(Δt, code_interval)),
+            length(fine_doppler_range),
+        ) for _ in prns
+    ]
+
+
     coarse_plan = AcquisitionPlan(
         system,
         signal_length,
@@ -103,8 +132,10 @@ function CoarseFineAcquisitionPlan(
         code_freq_baseband_freq_domain,
         code_baseband,
         coarse_signal_powers,
+        coarse_signal_powers_complex,
         fft_plan,
         prns,
+        false
     )
     fine_plan = AcquisitionPlan(
         system,
@@ -117,8 +148,10 @@ function CoarseFineAcquisitionPlan(
         code_freq_baseband_freq_domain,
         code_baseband,
         fine_signal_powers,
+        fine_signal_powers_complex,
         fft_plan,
         prns,
+        false
     )
     CoarseFineAcquisitionPlan(coarse_plan, fine_plan)
 end

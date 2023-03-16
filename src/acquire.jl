@@ -14,6 +14,7 @@ function acquire(
     interm_freq = 0.0Hz,
     max_doppler = 7000Hz,
     dopplers = -max_doppler:1/3/(length(signal)/sampling_freq):max_doppler,
+    compensate_doppler_code = false
 )
     acq_plan = AcquisitionPlan(
         system,
@@ -22,9 +23,34 @@ function acquire(
         dopplers,
         prns,
         fft_flag = FFTW.ESTIMATE,
+        compensate_doppler_code = compensate_doppler_code
     )
     acquire!(acq_plan, signal, prns; interm_freq)
 end
+
+function acquire(
+    system::AbstractGNSS,
+    signal,
+    sampling_freq,
+    prns::AbstractVector{<:Integer},
+    time_shift_amt;
+    interm_freq = 0.0Hz,
+    max_doppler = 7000Hz,
+    dopplers = -max_doppler:1/3/(length(signal)/sampling_freq):max_doppler,
+    compensate_doppler_code = false
+)
+    acq_plan = AcquisitionPlan(
+        system,
+        length(signal),
+        sampling_freq;
+        dopplers,
+        prns,
+        fft_flag = FFTW.ESTIMATE,
+        compensate_doppler_code = compensate_doppler_code
+    )
+    acquire!(acq_plan, signal, prns,time_shift_amt; interm_freq)
+end
+
 
 """
 $(SIGNATURES)
@@ -42,9 +68,9 @@ function acquire!(
     all(map(prn -> prn in acq_plan.avail_prn_channels, prns)) ||
         throw(ArgumentError("You'll need to plan every PRN"))
     code_period = get_code_length(acq_plan.system) / get_code_frequency(acq_plan.system)
-    powers_per_sats =
+    powers_per_sats, complex_sigs_per_sats =
         power_over_doppler_and_codes!(acq_plan, signal, prns, interm_freq, doppler_offset)
-    map(powers_per_sats, prns) do powers, prn
+    map(powers_per_sats, complex_sigs_per_sats, prns) do powers, complex_sig, prn
         signal_power, noise_power, code_index, doppler_index = est_signal_noise_power(
             powers,
             acq_plan.sampling_freq,
@@ -68,10 +94,93 @@ function acquire!(
             CN0,
             noise_power,
             powers,
+            complex_sig,
             (acq_plan.dopplers .+ doppler_offset) / 1.0Hz,
         )
     end
 end
+
+function acquire!(
+    acq_plan::AcquisitionPlan,
+    signal,
+    prns::AbstractVector{<:Integer},
+    time_shift_amt;
+    interm_freq = 0.0Hz,
+    doppler_offset = 0.0Hz,
+    noise_power = nothing,
+)
+    all(map(prn -> prn in acq_plan.avail_prn_channels, prns)) ||
+        throw(ArgumentError("You'll need to plan every PRN"))
+    code_period = get_code_length(acq_plan.system) / get_code_frequency(acq_plan.system)
+    powers_per_sats, complex_sigs_per_sats =
+        power_over_doppler_and_codes!(acq_plan, signal, prns, interm_freq, doppler_offset,time_shift_amt)
+    map(powers_per_sats, complex_sigs_per_sats, prns) do powers, complex_sig, prn
+        signal_power, noise_power, code_index, doppler_index = est_signal_noise_power(
+            powers,
+            acq_plan.sampling_freq,
+            get_code_frequency(acq_plan.system),
+            noise_power,
+        )
+        CN0 = 10 * log10(signal_power / noise_power / code_period / 1.0Hz)
+        doppler =
+            (doppler_index - 1) * step(acq_plan.dopplers) +
+            first(acq_plan.dopplers) +
+            doppler_offset
+        code_phase =
+            (code_index - 1) /
+            (acq_plan.sampling_freq / get_code_frequency(acq_plan.system))
+        AcquisitionResults(
+            acq_plan.system,
+            prn,
+            acq_plan.sampling_freq,
+            doppler,
+            code_phase,
+            CN0,
+            noise_power,
+            powers,
+            complex_sig,
+            (acq_plan.dopplers .+ doppler_offset) / 1.0Hz,
+        )
+    end
+end
+
+function noncoherent_integrate(fp, prn, noncoherent_rounds; intermediate_freq=0, max_doppler=20000.0, compensate_doppler_code=true, time_shift_amt=0)
+    rate = fp.samplerate
+  
+    samples_1ms = Int(round(rate * 0.001))
+    @floop for (chunk,samplestep) in zip(Iterators.partition(fp[1:(noncoherent_rounds*samples_1ms)],samples_1ms), Iterators.partition(time_shift_amt:0.001:time_shift_amt+noncoherent_rounds*0.001-1,noncoherent_rounds))
+      acq = acquire(GPSL1(),chunk, rate*Hz, [prn],samplestep; interm_freq=intermediate_freq*Hz, max_doppler=max_doppler*Hz, compensate_doppler_code=compensate_doppler_code)
+      @reduce(power_bin_ncoh3 += acq[1].power_bins)
+      #println(size(acq[1].power_bins))
+    end
+    return power_bin_ncoh3  
+  end
+
+function noncoherent_integrate(fp,fs, prn, noncoherent_rounds; intermediate_freq=0, max_doppler=20000.0, compensate_doppler_code=true)
+rate = fs
+samples_1ms = Int(round(rate * 0.001))
+
+@floop for (chunk,samplestep) in zip(Iterators.partition(fp[1:(noncoherent_rounds*samples_1ms)],samples_1ms), Iterators.partition(0:noncoherent_rounds*samples_1ms-1,samples_1ms))
+    acq = acquire(GPSL1(),chunk, rate*Hz, [prn],samplestep; interm_freq=intermediate_freq*Hz, max_doppler=max_doppler*Hz, compensate_doppler_code=compensate_doppler_code)
+    @reduce(power_bin_ncoh3 += acq[1].power_bins)
+    #println(size(acq[1].power_bins))
+end
+return power_bin_ncoh3  
+end
+
+function noncoherent_integrate(fp, prn, noncoherent_rounds, doppler_steps; intermediate_freq=0, compensate_doppler_code=true, starting_samplestep=0)
+    rate = fp.samplerate
+  
+    samples_1ms = Int(round(rate * 0.001))
+  
+    @floop for (chunk,samplestep) in zip(Iterators.partition(fp[1:(noncoherent_rounds*samples_1ms)],samples_1ms), Iterators.partition(starting_samplestep:starting_samplestep+noncoherent_rounds*samples_1ms-1,samples_1ms))
+      acq = acquire(GPSL1(),chunk, rate*Hz, [prn],samplestep; interm_freq=intermediate_freq*Hz, dopplers=doppler_steps, compensate_doppler_code=compensate_doppler_code)
+      @reduce(power_bin_ncoh3 += acq[1].power_bins)
+      #println(size(acq[1].power_bins))
+    end
+    return power_bin_ncoh3  
+  end
+
 
 function acquire!(
     acq_plan::CoarseFineAcquisitionPlan,

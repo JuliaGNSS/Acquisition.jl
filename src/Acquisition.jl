@@ -1,7 +1,7 @@
 module Acquisition
 
 using DocStringExtensions,
-    GNSSSignals, RecipesBase, FFTW, Statistics, LinearAlgebra, LoopVectorization, Unitful
+    GNSSSignals, RecipesBase, FFTW, Statistics, LinearAlgebra, LoopVectorization, Unitful, FLoops
 
 import Unitful: s, Hz
 
@@ -11,7 +11,8 @@ export acquire,
     coarse_fine_acquire!,
     acquire!,
     AcquisitionPlan,
-    CoarseFineAcquisitionPlan
+    CoarseFineAcquisitionPlan,
+    noncoherent_integrate
 
 struct AcquisitionResults{S<:AbstractGNSS,T}
     system::S
@@ -22,6 +23,7 @@ struct AcquisitionResults{S<:AbstractGNSS,T}
     CN0::Float64
     noise_power::T
     power_bins::Matrix{T}
+    complex_signal::Matrix{Complex{T}}
     dopplers::StepRangeLen{
         Float64,
         Base.TwicePrecision{Float64},
