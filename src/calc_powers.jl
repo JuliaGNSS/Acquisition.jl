@@ -80,7 +80,7 @@ function power_over_code!(
             code_freq_domain .* conj.(signal_baseband_freq_domain)
         ldiv!(code_baseband, fft_plan, code_freq_baseband_freq_domain)
         signal_power[:, doppler_idx] .= abs2.(view(code_baseband, 1:size(signal_power, 1)))
-        complex_sig[:, doppler_idx] .= view(code_baseband, 1:size(signal_power, 1))
+        #complex_sig[:, doppler_idx] .= view(code_baseband, 1:size(signal_power, 1))
     end
 end
 
@@ -101,12 +101,11 @@ function power_over_code!(
     time_shift_amt,
     compensate_doppler_code
 )
-    downconvert!(signal_baseband, signal, interm_freq + doppler, sampling_freq,samplestep)
+    downconvert!(signal_baseband, signal, interm_freq + doppler, sampling_freq)
     mul!(signal_baseband_freq_domain, fft_plan, signal_baseband)
-    timestep = samplestep ./ Float32(ustrip(sampling_freq))
-    #println(time_shift_amt) 
-    doppler_correction = exp.(1im .* 2pi .* time_shift_amt .*Float32(ustrip(sampling_freq)) .* collect(0:(length(signal_baseband_freq_domain)-1)) .* (ustrip(doppler) / 1575.42e6))
-    #println(doppler_correction)
+    #timestep = samplestep ./ Float32(ustrip(sampling_freq))
+    doppler_correction = exp.(-1im .* 2pi .* time_shift_amt .* ustrip(doppler) ./ length(signal_baseband_freq_domain) .* collect(0:(length(signal_baseband_freq_domain)-1)))
+    #println(time_shift_amt)
     foreach(codes_freq_domain, signal_powers, complex_signal) do code_freq_domain, signal_power, complex_sig
         if compensate_doppler_code
             code_freq_baseband_freq_domain .=

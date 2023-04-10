@@ -142,39 +142,56 @@ function acquire!(
             (acq_plan.dopplers .+ doppler_offset) / 1.0Hz,
         )
     end
-end
+  end
 
 function noncoherent_integrate(fp, prn, noncoherent_rounds; intermediate_freq=0, max_doppler=20000.0, compensate_doppler_code=true, time_shift_amt=0)
     rate = fp.samplerate
-  
     samples_1ms = Int(round(rate * 0.001))
-    @floop for (chunk,samplestep) in zip(Iterators.partition(fp[1:(noncoherent_rounds*samples_1ms)],samples_1ms), Iterators.partition(time_shift_amt:0.001:time_shift_amt+noncoherent_rounds*0.001-1,noncoherent_rounds))
-      acq = acquire(GPSL1(),chunk, rate*Hz, [prn],samplestep; interm_freq=intermediate_freq*Hz, max_doppler=max_doppler*Hz, compensate_doppler_code=compensate_doppler_code)
+    @floop for (chunk,samplestep) in zip(Iterators.partition(fp[1:(noncoherent_rounds*samples_1ms)],samples_1ms), Iterators.partition(0:noncoherent_rounds-1, 1))
+      time_shift_amt2 = time_shift_amt
+      acq = acquire(GPSL1(),chunk, rate*Hz, [prn],time_shift_amt2; interm_freq=intermediate_freq*Hz, max_doppler=max_doppler*Hz, compensate_doppler_code=compensate_doppler_code)
       @reduce(power_bin_ncoh3 += acq[1].power_bins)
       #println(size(acq[1].power_bins))
     end
     return power_bin_ncoh3  
   end
 
-function noncoherent_integrate(fp,fs, prn, noncoherent_rounds; intermediate_freq=0, max_doppler=20000.0, compensate_doppler_code=true)
-rate = fs
-samples_1ms = Int(round(rate * 0.001))
+  function noncoherent_integrate(fp::Vector{ComplexF64}, prn, noncoherent_rounds, rate; intermediate_freq=0, max_doppler=20000.0, compensate_doppler_code=true, time_shift_amt=0)
+    samples_1ms = Int(round(rate * 0.001))
+    @floop for (chunk,samplestep) in zip(Iterators.partition(fp[1:(noncoherent_rounds*samples_1ms)],samples_1ms), Iterators.partition(0:noncoherent_rounds-1, 1))
+      time_shift_amt2 = time_shift_amt
+      acq = acquire(GPSL1(),chunk, rate*Hz, [prn],time_shift_amt2; interm_freq=intermediate_freq*Hz, max_doppler=max_doppler*Hz, compensate_doppler_code=compensate_doppler_code)
+      @reduce(power_bin_ncoh3 += acq[1].power_bins)
+      #println(size(acq[1].power_bins))
+    end
+    return power_bin_ncoh3  
+  end
 
-@floop for (chunk,samplestep) in zip(Iterators.partition(fp[1:(noncoherent_rounds*samples_1ms)],samples_1ms), Iterators.partition(0:noncoherent_rounds*samples_1ms-1,samples_1ms))
-    acq = acquire(GPSL1(),chunk, rate*Hz, [prn],samplestep; interm_freq=intermediate_freq*Hz, max_doppler=max_doppler*Hz, compensate_doppler_code=compensate_doppler_code)
-    @reduce(power_bin_ncoh3 += acq[1].power_bins)
-    #println(size(acq[1].power_bins))
-end
-return power_bin_ncoh3  
+
+function noncoherent_integrate_manual_timeshift_dopplers(fp, prn, noncoherent_rounds, doppler_steps; intermediate_freq=0, compensate_doppler_code=true, time_shift_amt=0)
+    rate = fp.samplerate
+    samples_1ms = Int(round(rate * 0.001))
+    println("trig")
+    @floop for (chunk,samplestep) in zip(Iterators.partition(fp[1:(noncoherent_rounds*samples_1ms)],samples_1ms), Iterators.partition(0:noncoherent_rounds*samples_1ms-1,samples_1ms))
+        acq = acquire(GPSL1(),chunk, rate*Hz, [prn],time_shift_amt; interm_freq=intermediate_freq*Hz, dopplers=doppler_steps, compensate_doppler_code=compensate_doppler_code)
+        @reduce(power_bin_ncoh3 += acq[1].power_bins)
+        #println(size(acq[1].power_bins))
+    end
+    return power_bin_ncoh3 
 end
 
-function noncoherent_integrate(fp, prn, noncoherent_rounds, doppler_steps; intermediate_freq=0, compensate_doppler_code=true, starting_samplestep=0)
+
+
+function noncoherent_integrate(fp, prn, noncoherent_rounds, doppler_steps; intermediate_freq=0, compensate_doppler_code=true)
     rate = fp.samplerate
   
     samples_1ms = Int(round(rate * 0.001))
   
-    @floop for (chunk,samplestep) in zip(Iterators.partition(fp[1:(noncoherent_rounds*samples_1ms)],samples_1ms), Iterators.partition(starting_samplestep:starting_samplestep+noncoherent_rounds*samples_1ms-1,samples_1ms))
-      acq = acquire(GPSL1(),chunk, rate*Hz, [prn],samplestep; interm_freq=intermediate_freq*Hz, dopplers=doppler_steps, compensate_doppler_code=compensate_doppler_code)
+    @floop for (chunk,samplestep) in zip(Iterators.partition(fp[1:(noncoherent_rounds*samples_1ms)],samples_1ms), Iterators.partition(0:noncoherent_rounds-1, 1))
+      #time_shift_amt2_without_doppler = -(3274/rate)*samplestep[1] * rate /1575.42e6
+      time_shift_amt2_without_doppler = -0.001*samplestep[1] * rate /1575.42e6
+      #println(time_shift_amt2_without_doppler *-419.4809160305349 )
+      acq = acquire(GPSL1(),chunk, rate*Hz, [prn],time_shift_amt2_without_doppler; interm_freq=intermediate_freq*Hz, dopplers=doppler_steps, compensate_doppler_code=compensate_doppler_code)
       @reduce(power_bin_ncoh3 += acq[1].power_bins)
       #println(size(acq[1].power_bins))
     end
