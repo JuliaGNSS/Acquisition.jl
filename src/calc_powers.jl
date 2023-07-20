@@ -84,6 +84,118 @@ function power_over_code!(
     end
 end
 
+function power_over_dopplers_code_mt!(
+    acq_plan::AcquisitionPlan,
+    signal,
+    sat_prns,
+    interm_freq,
+    signal_baseband_buffer,
+    signal_baseband_freq_domain_buffer
+)
+#Loop over codes
+    foreach(sat_prns) do prn
+        #println(prn)
+        power_over_dopplers_mt!(
+            acq_plan.signal_powers[prn],
+            signal_baseband_buffer,
+            signal_baseband_freq_domain_buffer,
+            signal,
+            acq_plan.fft_plan,
+            acq_plan.dopplers,
+            acq_plan.sampling_freq,
+            interm_freq,
+            acq_plan.codes_freq_domain[prn]
+        )
+    end
+    return view(acq_plan.signal_powers, sat_prns)
+end
+
+
+
+function power_over_dopplers_code_mt!(
+    acq_plan::AcquisitionPlan,
+    signal,
+    sat_prns,
+    interm_freq,
+    center_freqs,
+    signal_baseband_buffer,
+    signal_baseband_freq_domain_buffer
+)
+#Loop over codes
+    ThreadsX.foreach(sat_prns, center_freqs) do  prn, center_freq
+        #println(prn)
+        power_over_dopplers_mt!(
+            acq_plan.signal_powers[prn],
+            signal_baseband_buffer,
+            signal_baseband_freq_domain_buffer,
+            signal,
+            acq_plan.fft_plan,
+            acq_plan.dopplers,
+            acq_plan.sampling_freq,
+            interm_freq + center_freq,
+            acq_plan.codes_freq_domain[prn]
+        )
+    end
+    return view(acq_plan.signal_powers, sat_prns)
+end
+
+function power_over_dopplers_mt!(
+    signal_powers,
+    signal_baseband_buffer,
+    signal_baseband_freq_domain_buffer,
+    signal,
+    fft_plan,
+    dopplers,
+    sampling_freq,
+    interm_freq,
+    code_freq_domain
+)
+    #= 
+    read only shared variables:
+    signal
+    interm_freq
+    sampling_freq
+    fft_plan
+    code_freq_domain
+
+    read only thread local:
+    doppler
+
+    read/write buffers:
+    signal_baseband
+    =#
+#=     Threads.@threads for (   signal_power, 
+            signal_baseband, 
+            signal_baseband_freq_domain,
+            doppler
+             ) in zip(
+            eachcol(signal_powers),
+            eachcol(signal_baseband_buffer),
+            eachcol(signal_baseband_freq_domain_buffer),
+            ustrip(dopplers)
+        ) =#
+
+    ThreadsX.foreach(eachcol(signal_powers),
+            eachcol(signal_baseband_buffer),
+            eachcol(signal_baseband_freq_domain_buffer),
+            dopplers) do signal_power,signal_baseband,signal_baseband_freq_domain,doppler
+
+            signal_baseband = view(signal_baseband,1:length(signal))
+            signal_baseband_freq_domain = view(signal_baseband_freq_domain,1:length(signal))
+
+
+            downconvert!(signal_baseband, signal, interm_freq + doppler, sampling_freq)
+            mul!(signal_baseband_freq_domain, fft_plan, signal_baseband) #forward FFT 
+            #signal_baseband_freq_domain .= code_freq_domain .* conj.(signal_baseband_freq_domain) #multiply conjugate
+            signal_baseband_freq_domain .= conj.(code_freq_domain) .* signal_baseband_freq_domain #flip the conjugate
+            
+            #mulconj_reinterpret!(signal_baseband_freq_domain,code_freq_domain,signal_baseband_freq_domain)
+            ldiv!(signal_baseband, fft_plan,signal_baseband_freq_domain) #inverse FFT
+            signal_power .= abs2.(signal_baseband)
+    end
+end
+
+
 function power_over_code!(
     signal_powers,
     complex_signal,

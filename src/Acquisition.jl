@@ -20,7 +20,9 @@ export acquire,
     CoarseFineAcquisitionPlan,
     noncoherent_integrate,
     noncoherent_integrate_manual_timeshift,
-    noncoherent_integrate_manual_timeshift_dopplers
+    noncoherent_integrate_manual_timeshift_dopplers,
+    noncoherent_integrate!,
+    preallocate_thread_local_buffer
 
 struct AcquisitionResults{S<:AbstractGNSS,T}
     system::S

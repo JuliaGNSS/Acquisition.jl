@@ -100,6 +100,29 @@ function acquire!(
     end
 end
 
+
+function acquire_mt!(
+    acq_plan::AcquisitionPlan,
+    signal,
+    prns::AbstractVector{<:Integer};
+    interm_freq = 0.0Hz,
+    doppler_offset = 0.0Hz,
+    noise_power = nothing,
+)
+    all(map(prn -> prn in acq_plan.avail_prn_channels, prns)) ||
+        throw(ArgumentError("You'll need to plan every PRN"))
+    code_period = get_code_length(acq_plan.system) / get_code_frequency(acq_plan.system)
+
+    signal_baseband_buffer, signal_baseband_freq_domain_buffer = preallocate_thread_local_buffer(acq_plan.signal_length, length(acq_plan.dopplers))
+    #println(prns)
+
+    powers_per_sats = power_over_dopplers_code_mt!(acq_plan,signal,prns,interm_freq,signal_baseband_buffer,signal_baseband_freq_domain_buffer)
+    return powers_per_sats
+end
+
+
+
+
 function acquire!(
     acq_plan::AcquisitionPlan,
     signal,
