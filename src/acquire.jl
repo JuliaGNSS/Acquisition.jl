@@ -74,7 +74,7 @@ function acquire!(
         signal_power, noise_power, code_index, doppler_index = est_signal_noise_power(
             powers,
             acq_plan.sampling_freq,
-            get_code_frequency(acq_plan.system),
+            get_code_frequency(acq_plan.system), 
             noise_power,
         )
         CN0 = 10 * log10(signal_power / noise_power / code_period / 1.0Hz)
@@ -167,7 +167,7 @@ function acquire!(
     end
   end
 
-function noncoherent_integrate(fp, prn, noncoherent_rounds; intermediate_freq=0, max_doppler=20000.0, compensate_doppler_code=true, time_shift_amt=0)
+#= function noncoherent_integrate(fp, prn, noncoherent_rounds; intermediate_freq=0, max_doppler=20000.0, compensate_doppler_code=true, time_shift_amt=0)
     rate = fp.samplerate
     samples_1ms = Int(round(rate * 0.001))
     @floop for (chunk,samplestep) in zip(Iterators.partition(fp[1:(noncoherent_rounds*samples_1ms)],samples_1ms), Iterators.partition(0:noncoherent_rounds-1, 1))
