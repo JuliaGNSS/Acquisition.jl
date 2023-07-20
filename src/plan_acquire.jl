@@ -171,3 +171,13 @@ function common_buffers(system, signal_length, sampling_freq, prns, fft_flag)
     codes_freq_domain,
     fft_plan
 end
+
+function preallocate_thread_local_buffer(signal_length,doppler_taps)
+    #todo: align buffers to fftw friendly offsets
+    signal_length = 16368
+    signal_baseband_buffer = Array{ComplexF32}(undef, signal_length,doppler_taps)
+    signal_baseband_freq_domain_buffer = similar(signal_baseband_buffer)
+
+    return signal_baseband_buffer,signal_baseband_freq_domain_buffer
+
+end
