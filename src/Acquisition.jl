@@ -39,6 +39,25 @@ struct AcquisitionResults{S<:AbstractGNSS,T}
     }
 end
 
+function Base.show(io::IO, ::MIME"text/plain", acq_channels::Vector{Acquisition.AcquisitionResults{T1,T2}}) where {T1,T2}
+    header = ["PRN"; "CN0"; "Carrier doppler (Hz)"; "Code phase (samples)"]
+    data = Matrix{Any}(undef, length(acq_channels),length(header))
+
+    for (idx,acq) in enumerate(acq_channels)
+        data[idx,1] = acq.prn
+        data[idx,2] = acq.CN0
+        data[idx,3] = acq.carrier_doppler
+        data[idx,4] = acq.code_phase
+    end
+    hl_good = Highlighter((data,i,j)->(j==2) &&(data[i,j] > 42),crayon"green")
+    hl_bad = Highlighter((data,i,j)->(j==2) &&(data[i,j] < 42),crayon"red")
+    
+    pretty_table(io,data,header=header,highlighters=(hl_good,hl_bad))
+end
+
+
+
+
 include("plan_acquire.jl")
 include("downconvert.jl")
 include("plot.jl")
