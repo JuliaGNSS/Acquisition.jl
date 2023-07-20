@@ -220,7 +220,66 @@ function noncoherent_integrate(fp, prn, noncoherent_rounds, doppler_steps; inter
     end
     return power_bin_ncoh3  
   end
+ =#
 
+
+  function noncoherent_integrate!(fp, prn, noncoherent_rounds, center_frequency, plan::AcquisitionPlan; intermediate_freq=0, compensate_doppler_code=false)
+    rate = ustrip(plan.sampling_freq)
+  
+    samples_1ms = Int(round(rate * 0.001))
+    power_bin_ncoh3 = zeros(Float32,plan.signal_length,length(plan.dopplers))
+    for (chunk,round_idx) in zip(Iterators.partition(fp[1:(noncoherent_rounds*plan.signal_length)],plan.signal_length), 0:noncoherent_rounds-1)
+      acq = acquire_mt!(plan,chunk, [prn]; interm_freq=(intermediate_freq+center_frequency)*Hz)
+      #power_bin_ncoh3 += acq.power_bins
+        #for each dopplers compensate for code drift
+        #for idx1 in 1:length(plan.dopplers)
+        for (acc,power_doppler,dop) in zip(eachcol(power_bin_ncoh3),eachcol(acq[1]),plan.dopplers)
+            #CM-ABS algo 3 step 6 eqn 7
+            #doppler1 = ustrip(plan.dopplers[idx1])
+            doppler1 = ustrip(dop)
+            if compensate_doppler_code == :negative
+                Ns = sign(doppler1 - center_frequency) * round(round_idx*0.001* ustrip(plan.sampling_freq) * abs(doppler1 - center_frequency)/ustrip(get_center_frequency(plan.system)), RoundNearest)
+                #power_bin_ncoh3[:,idx1] = power_bin_ncoh3[:,idx1] .+ circshift(acq.power_bins[:,idx1],Ns)
+                acc .= acc .+ circshift(power_doppler,-Ns)
+            elseif compensate_doppler_code == :positive
+                Ns = sign(doppler1 - center_frequency) * round(round_idx*0.001* ustrip(plan.sampling_freq) * abs(doppler1 - center_frequency)/ustrip(get_center_frequency(plan.system)), RoundNearest)
+                #power_bin_ncoh3[:,idx1] = power_bin_ncoh3[:,idx1] .+ circshift(acq.power_bins[:,idx1],Ns)
+                acc .= acc .+ circshift(power_doppler,Ns)
+            else
+                acc .= acc .+ power_doppler
+            end
+        end
+
+    end
+    return power_bin_ncoh3  
+  end
+
+#=   function noncoherent_integrate!(fp, prn::Vector{Int}, noncoherent_rounds, center_frequency, plan::AcquisitionPlan; intermediate_freq=0, compensate_doppler_code=true)
+    rate = ustrip(plan.sampling_freq)
+  
+    samples_1ms = Int(round(rate * 0.001))
+    power_bin_ncoh3 = zeros(Float32,plan.signal_length,length(plan.dopplers))
+    for (chunk,round_idx) in zip(Iterators.partition(fp[1:(noncoherent_rounds*samples_1ms)],samples_1ms), 0:noncoherent_rounds-1)
+      acq = acquire_mt!(plan,chunk, [prn]; interm_freq=(intermediate_freq+center_frequency)*Hz)
+      #power_bin_ncoh3 += acq.power_bins
+        #for each dopplers compensate for code drift
+        #for idx1 in 1:length(plan.dopplers)
+        for (acc,power_doppler,dop) in zip(eachcol(power_bin_ncoh3),eachcol(acq[1]),plan.dopplers)
+            #CM-ABS algo 3 step 6 eqn 7
+            #doppler1 = ustrip(plan.dopplers[idx1])
+            doppler1 = ustrip(dop)
+            Ns = sign(doppler1 - center_frequency) * round(round_idx*0.001* ustrip(plan.sampling_freq) * abs(doppler1 - center_frequency)/ustrip(get_center_frequency(plan.system)), RoundFromZero)
+            if doppler1 ≈ 0
+                println(Ns)
+            end
+            #println(Ns)
+            #power_bin_ncoh3[:,idx1] = power_bin_ncoh3[:,idx1] .+ circshift(acq.power_bins[:,idx1],Ns)
+            acc .= acc .+ circshift(power_doppler,Ns)
+        end
+
+    end
+    return power_bin_ncoh3  
+  end =#
 
 function acquire!(
     acq_plan::CoarseFineAcquisitionPlan,
