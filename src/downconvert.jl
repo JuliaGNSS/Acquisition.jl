@@ -18,7 +18,7 @@ end
  =#
 
 function downconvert!(
-    downconverted_signal::Vector{Complex{T}},
+    downconverted_signal::AbstractVector{Complex{T}},
     signal::AbstractVector{Complex{TS}},
     frequency,
     sampling_freq,
