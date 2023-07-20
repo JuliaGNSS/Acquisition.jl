@@ -1,9 +1,15 @@
 module Acquisition
 
 using DocStringExtensions,
-    GNSSSignals, RecipesBase, FFTW, Statistics, LinearAlgebra, LoopVectorization, Unitful, FLoops
+    GNSSSignals, RecipesBase, FFTW, Statistics, LinearAlgebra, LoopVectorization, Unitful
 
 import Unitful: s, Hz
+
+using PrecompileTools
+
+using ThreadsX
+
+using PrettyTables
 
 export acquire,
     plot_acquisition_results,
