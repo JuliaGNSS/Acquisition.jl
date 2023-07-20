@@ -1,4 +1,4 @@
-function downconvert!(downconverted_signal, signal, frequency, sampling_freq)
+ #=function downconvert!(downconverted_signal, signal, frequency, sampling_freq)
     downconverted_signal .=
         signal .*
         cis.(
@@ -15,7 +15,7 @@ function downconvert!(downconverted_signal, signal, frequency, sampling_freq, sa
             Float32(sampling_freq)
         )
 end
-
+ =#
 
 function downconvert!(
     downconverted_signal::Vector{Complex{T}},
