@@ -24,7 +24,7 @@ export acquire,
     noncoherent_integrate!,
     preallocate_thread_local_buffer
 
-struct AcquisitionResults{S<:AbstractGNSS,T}
+struct AcquisitionResults{S<:AbstractGNSS,T,T2<:StepRangeLen}
     system::S
     prn::Int
     sampling_frequency::typeof(1.0Hz)
@@ -34,14 +34,27 @@ struct AcquisitionResults{S<:AbstractGNSS,T}
     noise_power::T
     power_bins::Matrix{T}
     complex_signal::Matrix{Complex{T}}
-    dopplers::StepRangeLen{
-        Float64,
-        Base.TwicePrecision{Float64},
-        Base.TwicePrecision{Float64},
-    }
+    dopplers::T2
 end
 
-function Base.show(io::IO, ::MIME"text/plain", acq_channels::Vector{Acquisition.AcquisitionResults{T1,T2}}) where {T1,T2}
+function AcquisitionResults(system, prn, sampling_frequency, carrier_doppler, code_phase, CN0, noise_power, power_bins::Matrix{T}, dopplers) where T
+
+    AcquisitionResults(
+        system,
+        prn,
+        uconvert(Hz, sampling_frequency),
+        uconvert(Hz, carrier_doppler),
+        code_phase,
+        CN0, 
+        noise_power,
+        power_bins,
+        similar(power_bins, Complex{T}),
+        dopplers
+    )
+end
+
+
+function Base.show(io::IO, ::MIME"text/plain", acq_channels::Vector{Acquisition.AcquisitionResults{T1,T2,T3}}) where {T1,T2,T3}
     header = ["PRN"; "CN0"; "Carrier doppler (Hz)"; "Code phase (samples)"]
     data = Matrix{Any}(undef, length(acq_channels),length(header))
 

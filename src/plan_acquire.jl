@@ -12,7 +12,8 @@ struct AcquisitionPlan{S,DS,CS,P,PS}
     complex_signal::Vector{Matrix{ComplexF32}}
     fft_plan::P
     avail_prn_channels::PS
-    compensate_doppler_code::Bool
+    compensate_doppler_code::Symbol
+    noncoherent_rounds::Int
 end
 
 function AcquisitionPlan(
@@ -23,7 +24,8 @@ function AcquisitionPlan(
     dopplers = -max_doppler:1/3/(signal_length/sampling_freq):max_doppler,
     prns = 1:34,
     fft_flag = FFTW.MEASURE,
-    compensate_doppler_code = false
+    compensate_doppler_code = :disabled,
+    noncoherent_rounds = 1
 )
     signal_baseband,
     signal_baseband_freq_domain,
@@ -62,8 +64,19 @@ function AcquisitionPlan(
         complex_signal,
         fft_plan,
         prns,
-        compensate_doppler_code
+        compensate_doppler_code,
+        noncoherent_rounds
     )
+end
+
+function Base.show(io::IO, ::MIME"text/plain", plan::AcquisitionPlan)
+    println(io,"AcquisitionPlan for GPS L1:\n")
+    println(io,"Sample rate: $(plan.sampling_freq)")
+    println(io,"Doppler taps: $(plan.dopplers)")
+    println(io,"Coherent integration length: $(plan.signal_length) samples ($(upreferred(plan.signal_length/plan.sampling_freq)))")
+    println(io,"Noncoherent integration round: $(plan.noncoherent_rounds) ($(upreferred(plan.signal_length*plan.noncoherent_rounds/plan.sampling_freq)))")
+    println(io, "Doppler compensation: $(plan.compensate_doppler_code)")
+    println(io,"FFTW plan: $(plan.fft_plan)")
 end
 
 struct CoarseFineAcquisitionPlan{C<:AcquisitionPlan,F<:AcquisitionPlan}
@@ -80,6 +93,7 @@ function CoarseFineAcquisitionPlan(
     fine_step = 1 / 12 / (signal_length / sampling_freq),
     prns = 1:34,
     fft_flag = FFTW.MEASURE,
+    noncoherent_rounds=1
 )
     coarse_dopplers = -max_doppler:coarse_step:max_doppler
     signal_baseband,
@@ -135,7 +149,8 @@ function CoarseFineAcquisitionPlan(
         coarse_signal_powers_complex,
         fft_plan,
         prns,
-        false
+        :disabled,
+        noncoherent_rounds
     )
     fine_plan = AcquisitionPlan(
         system,
@@ -151,7 +166,8 @@ function CoarseFineAcquisitionPlan(
         fine_signal_powers_complex,
         fft_plan,
         prns,
-        false
+        :disabled,
+        noncoherent_rounds
     )
     CoarseFineAcquisitionPlan(coarse_plan, fine_plan)
 end
@@ -173,7 +189,8 @@ function common_buffers(system, signal_length, sampling_freq, prns, fft_flag)
 end
 
 function preallocate_thread_local_buffer(signal_length,doppler_taps)
-    #todo: align buffers to fftw friendly offsets
+    #TODO: align buffers to fftw friendly offsets
+    #DO NOT merge this to upstream JuliaGNSS until this is stopped hard coded
     signal_length = 16368
     signal_baseband_buffer = Array{ComplexF32}(undef, signal_length,doppler_taps)
     signal_baseband_freq_domain_buffer = similar(signal_baseband_buffer)
