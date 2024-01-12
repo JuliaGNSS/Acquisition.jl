@@ -16,8 +16,10 @@ function acquire(
     dopplers = -max_doppler:1/3/(0.001s):max_doppler,
     noncoherent_rounds = 1,
     compensate_doppler_code = :positive,
-    coherent_integration_length_samples=4096
+    coherent_integration_length=get_code_length(system)/get_code_frequency(system)
 )
+
+    coherent_integration_length_samples = Int(ceil(upreferred(coherent_integration_length * sampling_freq)))
     acq_plan = AcquisitionPlan(
         system,
         coherent_integration_length_samples,
@@ -317,10 +319,13 @@ function acquire(
     prn::Integer;
     interm_freq = 0.0Hz,
     max_doppler = 7000Hz,
-    dopplers = -max_doppler:1/3/(length(signal)/sampling_freq):max_doppler,
-    noncoherent_rounds=1
-)
-    only(acquire(system, signal, sampling_freq, [prn]; interm_freq, dopplers, noncoherent_rounds))
+    noncoherent_rounds=1,
+    coherent_integration_length=get_code_length(system)/get_code_frequency(system),
+    dopplers = -max_doppler:1/3/(coherent_integration_length):max_doppler
+    )
+
+    only(acquire(system, signal, sampling_freq, [prn]; interm_freq, dopplers, coherent_integration_length,noncoherent_rounds))
+
 end
 
 function acquire!(
