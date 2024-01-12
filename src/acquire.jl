@@ -318,8 +318,9 @@ function acquire(
     interm_freq = 0.0Hz,
     max_doppler = 7000Hz,
     dopplers = -max_doppler:1/3/(length(signal)/sampling_freq):max_doppler,
+    noncoherent_rounds=1
 )
-    only(acquire(system, signal, sampling_freq, [prn]; interm_freq, dopplers))
+    only(acquire(system, signal, sampling_freq, [prn]; interm_freq, dopplers, noncoherent_rounds))
 end
 
 function acquire!(
