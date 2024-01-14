@@ -9,8 +9,11 @@ struct AcquisitionPlan{S,DS,CS,P,PS}
     code_freq_baseband_freq_domain::Vector{ComplexF32}
     code_baseband::Vector{ComplexF32}
     signal_powers::Vector{Matrix{Float32}}
+    complex_signal::Vector{Matrix{ComplexF32}}
     fft_plan::P
     avail_prn_channels::PS
+    compensate_doppler_code::Symbol
+    noncoherent_rounds::Int
 end
 
 function AcquisitionPlan(
@@ -21,6 +24,8 @@ function AcquisitionPlan(
     dopplers = -max_doppler:1/3/(signal_length/sampling_freq):max_doppler,
     prns = 1:34,
     fft_flag = FFTW.MEASURE,
+    compensate_doppler_code = :disabled,
+    noncoherent_rounds = 1
 )
     signal_baseband,
     signal_baseband_freq_domain,
@@ -37,6 +42,14 @@ function AcquisitionPlan(
             length(dopplers),
         ) for _ in prns
     ]
+    complex_signal = [
+        Matrix{ComplexF32}(
+            undef,
+            ceil(Int, sampling_freq * min(Δt, code_interval)),
+            length(dopplers),
+        ) for _ in prns
+    ]
+    @assert length(signal_powers) == length(complex_signal)
     AcquisitionPlan(
         system,
         signal_length,
@@ -48,9 +61,22 @@ function AcquisitionPlan(
         code_freq_baseband_freq_domain,
         code_baseband,
         signal_powers,
+        complex_signal,
         fft_plan,
         prns,
+        compensate_doppler_code,
+        noncoherent_rounds
     )
+end
+
+function Base.show(io::IO, ::MIME"text/plain", plan::AcquisitionPlan)
+    println(io,"AcquisitionPlan for GPS L1:\n")
+    println(io,"Sample rate: $(plan.sampling_freq)")
+    println(io,"Doppler taps: $(plan.dopplers)")
+    println(io,"Coherent integration length: $(plan.signal_length) samples ($(upreferred(plan.signal_length/plan.sampling_freq)))")
+    println(io,"Noncoherent integration round: $(plan.noncoherent_rounds) ($(upreferred(plan.signal_length*plan.noncoherent_rounds/plan.sampling_freq)))")
+    println(io, "Doppler compensation: $(plan.compensate_doppler_code)")
+    println(io,"FFTW plan: $(plan.fft_plan)")
 end
 
 struct CoarseFineAcquisitionPlan{C<:AcquisitionPlan,F<:AcquisitionPlan}
@@ -67,6 +93,7 @@ function CoarseFineAcquisitionPlan(
     fine_step = 1 / 12 / (signal_length / sampling_freq),
     prns = 1:34,
     fft_flag = FFTW.MEASURE,
+    noncoherent_rounds=1
 )
     coarse_dopplers = -max_doppler:coarse_step:max_doppler
     signal_baseband,
@@ -92,6 +119,22 @@ function CoarseFineAcquisitionPlan(
             length(fine_doppler_range),
         ) for _ in prns
     ]
+    coarse_signal_powers_complex = [
+        Matrix{ComplexF32}(
+            undef,
+            ceil(Int, sampling_freq * min(Δt, code_interval)),
+            length(coarse_dopplers),
+        ) for _ in prns
+    ]
+    fine_signal_powers_complex = [
+        Matrix{ComplexF32}(
+            undef,
+            ceil(Int, sampling_freq * min(Δt, code_interval)),
+            length(fine_doppler_range),
+        ) for _ in prns
+    ]
+
+
     coarse_plan = AcquisitionPlan(
         system,
         signal_length,
@@ -103,8 +146,11 @@ function CoarseFineAcquisitionPlan(
         code_freq_baseband_freq_domain,
         code_baseband,
         coarse_signal_powers,
+        coarse_signal_powers_complex,
         fft_plan,
         prns,
+        :disabled,
+        noncoherent_rounds
     )
     fine_plan = AcquisitionPlan(
         system,
@@ -117,8 +163,11 @@ function CoarseFineAcquisitionPlan(
         code_freq_baseband_freq_domain,
         code_baseband,
         fine_signal_powers,
+        fine_signal_powers_complex,
         fft_plan,
         prns,
+        :disabled,
+        noncoherent_rounds
     )
     CoarseFineAcquisitionPlan(coarse_plan, fine_plan)
 end
@@ -137,4 +186,15 @@ function common_buffers(system, signal_length, sampling_freq, prns, fft_flag)
     code_baseband,
     codes_freq_domain,
     fft_plan
+end
+
+function preallocate_thread_local_buffer(signal_length,doppler_taps)
+    #TODO: align buffers to fftw friendly offsets
+    #DO NOT merge this to upstream JuliaGNSS until this is stopped hard coded
+    signal_length = 16368
+    signal_baseband_buffer = Array{ComplexF32}(undef, signal_length,doppler_taps)
+    signal_baseband_freq_domain_buffer = similar(signal_baseband_buffer)
+
+    return signal_baseband_buffer,signal_baseband_freq_domain_buffer
+
 end
