@@ -31,7 +31,7 @@ struct AcquisitionResults{S<:AbstractGNSS,T}
 end
 
 function Base.show(io::IO, ::MIME"text/plain", acq_channels::Vector{Acquisition.AcquisitionResults{T1,T2}}) where {T1,T2}
-    header = ["PRN"; "CN0"; "Carrier doppler (Hz)"; "Code phase (samples)"]
+    header = ["PRN"; "CN0"; "Carrier doppler (Hz)"; "Code phase (chips)"]
     data = Matrix{Any}(undef, length(acq_channels),length(header))
 
     for (idx,acq) in enumerate(acq_channels)
