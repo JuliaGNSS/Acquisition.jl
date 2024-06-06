@@ -40,8 +40,8 @@ function Base.show(io::IO, ::MIME"text/plain", acq_channels::Vector{Acquisition.
         data[idx,3] = acq.carrier_doppler
         data[idx,4] = acq.code_phase
     end
-    hl_good = Highlighter((data,i,j)->(j==2) &&(data[i,j] > 42),crayon"green")
-    hl_bad = Highlighter((data,i,j)->(j==2) &&(data[i,j] < 42),crayon"red")
+    hl_good = Highlighter((data,i,j)->(j==2) && (data[i,j] > 42), crayon"green")
+    hl_bad = Highlighter((data,i,j)->(j==2) && (data[i,j] < 42), crayon"red")
     
     pretty_table(io,data,header=header,highlighters=(hl_good,hl_bad))
 end
