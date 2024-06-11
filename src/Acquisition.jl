@@ -32,14 +32,7 @@ end
 
 function Base.show(io::IO, ::MIME"text/plain", acq_channels::Vector{Acquisition.AcquisitionResults{T1,T2}}) where {T1,T2}
     header = ["PRN"; "CN0 (dBHz)"; "Carrier Doppler (Hz)"; "Code phase (chips)"]
-    data = Matrix{Any}(undef, length(acq_channels),length(header))
-
-    for (idx,acq) in enumerate(acq_channels)
-        data[idx,1] = acq.prn
-        data[idx,2] = acq.CN0
-        data[idx,3] = acq.carrier_doppler
-        data[idx,4] = acq.code_phase
-    end
+    data = reduce(vcat, map(acq -> [acq.prn, acq.CN0, acq.carrier_doppler, acq.code_phase]', acq_channels))
     hl_good = Highlighter((data,i,j)->(j==2) && (data[i,j] > 42), crayon"green")
     hl_bad = Highlighter((data,i,j)->(j==2) && (data[i,j] < 42), crayon"red")
     
