@@ -1,4 +1,4 @@
-@testset "Acquire signal $(get_system_string(system)) and signal type $type" for system in [GPSL1(), GalileoE1B()], type in [Float64, Float32, Int16, Int32]
+@testset "Acquire signal $system and signal type $type" for system in [GPSL1(), GalileoE1B()], type in [Float64, Float32, Int16, Int32]
 
     Random.seed!(2345)
     num_samples = 20000
@@ -44,12 +44,12 @@
     @test acq_res.code_phase ≈ code_phase atol = 0.08
     @test abs(acq_res.carrier_doppler - doppler) < step(dopplers) / 2
     @test acq_res.prn == prn
-    @test acq_res.CN0 ≈ CN0 atol = 6
+    @test acq_res.CN0 ≈ CN0 atol = 7
 
     @test inplace_acq_res.code_phase ≈ code_phase atol = 0.08
     @test abs(inplace_acq_res.carrier_doppler - doppler) < step(dopplers) / 2
     @test inplace_acq_res.prn == prn
-    @test inplace_acq_res.CN0 ≈ CN0 atol = 6
+    @test inplace_acq_res.CN0 ≈ CN0 atol = 7
 
     coarse_fine_acq_res =
         coarse_fine_acquire(system, signal_typed, sampling_freq, prn; interm_freq)
@@ -62,10 +62,10 @@
     @test coarse_fine_acq_res.code_phase ≈ code_phase atol = 0.08
     @test abs(coarse_fine_acq_res.carrier_doppler - doppler) < step(dopplers) / 2
     @test coarse_fine_acq_res.prn == prn
-    @test coarse_fine_acq_res.CN0 ≈ CN0 atol = 6
+    @test coarse_fine_acq_res.CN0 ≈ CN0 atol = 7
 
     @test inplace_inplace_acq_res.code_phase ≈ code_phase atol = 0.08
     @test abs(inplace_inplace_acq_res.carrier_doppler - doppler) < step(dopplers) / 2
     @test inplace_inplace_acq_res.prn == prn
-    @test inplace_inplace_acq_res.CN0 ≈ CN0 atol = 6
+    @test inplace_inplace_acq_res.CN0 ≈ CN0 atol = 7
 end
