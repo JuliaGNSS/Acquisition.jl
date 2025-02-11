@@ -1,7 +1,7 @@
 name = "Acquisition"
 uuid = "d4bbf60b-102b-5ffb-8f97-a7ea5817e69f"
 authors = ["Soeren Schoenbrod <soeren.schoenbrod@nav.rwth-aachen.de>"]
-version = "0.1.1"
+version = "0.1.2"
 
 [deps]
 DocStringExtensions = "ffbed154-4ef7-542d-bbb7-c09d3a79fcae"
