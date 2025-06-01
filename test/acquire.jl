@@ -1,11 +1,13 @@
-@testset "Acquire signal $system and signal type $type" for system in [GPSL1(), GalileoE1B()], type in [Float64, Float32, Int16, Int32]
+@testset "Acquire signal $system and signal type $type" for system in
+                                                            [GPSL1(), GalileoE1B()],
+    type in [Float64, Float32, Int16, Int32]
 
     Random.seed!(2345)
-    num_samples = 20000
+    num_samples = 60000
     doppler = 1234Hz
     code_phase = 110.613261
     prn = 1
-    sampling_freq = 5e6Hz - 1Hz # Allow num_samples * sampling_freq to be non integer of ms
+    sampling_freq = 15e6Hz - 1Hz # Allow num_samples * sampling_freq to be non integer of ms
     interm_freq = 243.0Hz
     CN0 = 45
 

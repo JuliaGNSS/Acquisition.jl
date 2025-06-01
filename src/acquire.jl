@@ -123,7 +123,12 @@ function acquire!(
     only(acquire!(acq_plan, signal, [prn]; interm_freq, doppler_offset, noise_power))
 end
 
-function acquire!(acq_plan::CoarseFineAcquisitionPlan, signal, prn::Integer; interm_freq = 0.0Hz)
+function acquire!(
+    acq_plan::CoarseFineAcquisitionPlan,
+    signal,
+    prn::Integer;
+    interm_freq = 0.0Hz,
+)
     only(acquire!(acq_plan, signal, [prn]; interm_freq))
 end
 
