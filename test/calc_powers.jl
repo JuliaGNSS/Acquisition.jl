@@ -1,10 +1,10 @@
 @testset "Power over code for $system" for system in [GPSL1(), GalileoE1B()]
     Random.seed!(2345)
-    num_samples = 20000
+    num_samples = 60000
     doppler = 1234Hz
     code_phase = 110.613261
     prn = 1
-    sampling_freq = 5e6Hz - 1Hz # Allow num_samples * sampling_freq to be non integer of ms
+    sampling_freq = 15e6Hz - 1Hz # Allow num_samples * sampling_freq to be non integer of ms
     interm_freq = 0.0Hz
     CN0 = 45
 
@@ -62,16 +62,13 @@
     @test (maxidx - 1) * get_code_frequency(system) / sampling_freq ≈ code_phase atol = 0.15
 end
 
-@testset "Power over code and Doppler for $system" for system in [
-    GPSL1(),
-    GalileoE1B(),
-]
+@testset "Power over code and Doppler for $system" for system in [GPSL1(), GalileoE1B()]
     Random.seed!(2345)
-    num_samples = 20000
+    num_samples = 60000
     doppler = 1234Hz
     code_phase = 110.613261
     prn = 1
-    sampling_freq = 5e6Hz - 1Hz # Allow num_samples * sampling_freq to be non integer of ms
+    sampling_freq = 15e6Hz - 1Hz # Allow num_samples * sampling_freq to be non integer of ms
     interm_freq = 243.0Hz
     CN0 = 45
 
