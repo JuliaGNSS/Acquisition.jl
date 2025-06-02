@@ -12,5 +12,5 @@ jobs:
       - uses: MilesCranmer/AirspeedVelocity.jl@action-v1
         with:
           julia-version: '1'
-          extra-pkgs: GNSSSignals,Unitful
+          extra-pkgs: GNSSSignals,Unitful,FFTW
           bench-on: ${{github.event.pull_request.head.sha}}
