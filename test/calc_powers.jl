@@ -90,7 +90,7 @@ end
     signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
 
     max_doppler = 7000Hz
-    dopplers = -max_doppler:1/3/(length(signal)/sampling_freq):max_doppler
+    dopplers = -max_doppler:250Hz:max_doppler
 
     acq_plan = AcquisitionPlan(system, length(signal), sampling_freq; dopplers, prns = 1:1)
 
