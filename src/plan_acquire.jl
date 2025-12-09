@@ -18,7 +18,8 @@ function AcquisitionPlan(
     signal_length,
     sampling_freq;
     max_doppler = 7000Hz,
-    dopplers = -max_doppler:1/3/(signal_length/sampling_freq):max_doppler,
+    min_doppler = -max_doppler,
+    dopplers = min_doppler:250Hz:max_doppler,
     prns = 1:34,
     fft_flag = FFTW.MEASURE,
 )
@@ -63,12 +64,13 @@ function CoarseFineAcquisitionPlan(
     signal_length,
     sampling_freq;
     max_doppler = 7000Hz,
-    coarse_step = 1 / 3 / (signal_length / sampling_freq),
-    fine_step = 1 / 12 / (signal_length / sampling_freq),
+    min_doppler = -max_doppler,
+    coarse_step = 250Hz,
+    fine_step = 25Hz,
     prns = 1:34,
     fft_flag = FFTW.MEASURE,
 )
-    coarse_dopplers = -max_doppler:coarse_step:max_doppler
+    coarse_dopplers = min_doppler:coarse_step:max_doppler
     signal_baseband,
     signal_baseband_freq_domain,
     code_freq_baseband_freq_domain,

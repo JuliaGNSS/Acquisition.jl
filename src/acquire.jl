@@ -2,9 +2,9 @@
 $(SIGNATURES)
 Perform the aquisition of multiple satellites with `prns` in system `system` with signal `signal`
 sampled at rate `sampling_freq`. Optional arguments are the intermediate frequency `interm_freq`
-(default 0Hz), the maximum expected Doppler `max_doppler` (default 7000Hz). If the maximum Doppler
-is too unspecific you can instead pass a Doppler range with with your individual step size using
-the argument `dopplers`.
+(default 0Hz), the minimum expected Doppler `min_doppler` (default -7000Hz), and maximum expected
+Doppler `max_doppler` (default 7000Hz). If the Doppler range is too unspecific you can instead
+pass a Doppler range with with your individual step size using the argument `dopplers`.
 """
 function acquire(
     system::AbstractGNSS,
@@ -13,7 +13,8 @@ function acquire(
     prns::AbstractVector{<:Integer};
     interm_freq = 0.0Hz,
     max_doppler = 7000Hz,
-    dopplers = -max_doppler:1/3/(length(signal)/sampling_freq):max_doppler,
+    min_doppler = -max_doppler,
+    dopplers = min_doppler:250Hz:max_doppler,
 )
     acq_plan = AcquisitionPlan(
         system,
@@ -96,9 +97,9 @@ end
 $(SIGNATURES)
 Perform the aquisition of a single satellite `prn` in system `system` with signal `signal`
 sampled at rate `sampling_freq`. Optional arguments are the intermediate frequency `interm_freq`
-(default 0Hz), the maximum expected Doppler `max_doppler` (default 7000Hz). If the maximum Doppler
-is too unspecific you can instead pass a Doppler range with with your individual step size using
-the argument `dopplers`.
+(default 0Hz), the minimum expected Doppler `min_doppler` (default -7000Hz), and maximum expected
+Doppler `max_doppler` (default 7000Hz). If the Doppler range is too unspecific you can instead
+pass a Doppler range with with your individual step size using the argument `dopplers`.
 """
 function acquire(
     system::AbstractGNSS,
@@ -107,7 +108,8 @@ function acquire(
     prn::Integer;
     interm_freq = 0.0Hz,
     max_doppler = 7000Hz,
-    dopplers = -max_doppler:1/3/(length(signal)/sampling_freq):max_doppler,
+    min_doppler = -max_doppler,
+    dopplers = min_doppler:250Hz:max_doppler,
 )
     only(acquire(system, signal, sampling_freq, [prn]; interm_freq, dopplers))
 end
@@ -145,14 +147,16 @@ function coarse_fine_acquire(
     prns::AbstractVector{<:Integer};
     interm_freq = 0.0Hz,
     max_doppler = 7000Hz,
-    coarse_step = 1 / 3 / (length(signal) / sampling_freq),
-    fine_step = 1 / 12 / (length(signal) / sampling_freq),
+    min_doppler = -max_doppler,
+    coarse_step = 250Hz,
+    fine_step = 25Hz,
 )
     acq_plan = CoarseFineAcquisitionPlan(
         system,
         length(signal),
         sampling_freq;
         max_doppler,
+        min_doppler,
         coarse_step,
         fine_step,
         prns,
@@ -174,8 +178,9 @@ function coarse_fine_acquire(
     prn::Integer;
     interm_freq = 0.0Hz,
     max_doppler = 7000Hz,
-    coarse_step = 1 / 3 / (length(signal) / sampling_freq),
-    fine_step = 1 / 12 / (length(signal) / sampling_freq),
+    min_doppler = -max_doppler,
+    coarse_step = 250Hz,
+    fine_step = 25Hz,
 )
     only(
         coarse_fine_acquire(
@@ -185,6 +190,7 @@ function coarse_fine_acquire(
             [prn];
             interm_freq,
             max_doppler,
+            min_doppler,
             coarse_step,
             fine_step,
         ),
