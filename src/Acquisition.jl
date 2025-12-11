@@ -4,7 +4,7 @@ using DocStringExtensions,
     GNSSSignals, RecipesBase, FFTW, Statistics, LinearAlgebra, LoopVectorization, Unitful
 
 import Unitful: s, Hz
-using PrettyTables
+using PrettyTables: pretty_table, TextHighlighter, @crayon_str
 
 export acquire,
     plot_acquisition_results,
@@ -31,12 +31,12 @@ struct AcquisitionResults{S<:AbstractGNSS,T}
 end
 
 function Base.show(io::IO, ::MIME"text/plain", acq_channels::Vector{Acquisition.AcquisitionResults{T1,T2}}) where {T1,T2}
-    header = ["PRN"; "CN0 (dBHz)"; "Carrier Doppler (Hz)"; "Code phase (chips)"]
+    column_labels = ["PRN", "CN0 (dBHz)", "Carrier Doppler (Hz)", "Code phase (chips)"]
     data = reduce(vcat, map(acq -> [acq.prn, acq.CN0, acq.carrier_doppler, acq.code_phase]', acq_channels))
-    hl_good = Highlighter((data,i,j)->(j==2) && (data[i,j] > 42), crayon"green")
-    hl_bad = Highlighter((data,i,j)->(j==2) && (data[i,j] < 42), crayon"red")
-    
-    pretty_table(io,data,header=header,highlighters=(hl_good,hl_bad))
+    hl_good = TextHighlighter((data,i,j)->(j==2) && (data[i,j] > 42), crayon"green")
+    hl_bad = TextHighlighter((data,i,j)->(j==2) && (data[i,j] < 42), crayon"red")
+
+    pretty_table(io, data, column_labels=column_labels, highlighters=[hl_good, hl_bad])
 end
 
 
