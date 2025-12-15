@@ -25,24 +25,18 @@
     noise = randn(ComplexF64, num_samples)
     signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
 
-    codes_freq_domain = [
-        fft(
-            get_code.(
-                system,
-                (0:num_samples-1) .* get_code_frequency(system) ./ sampling_freq,
-                prn,
-            ),
-        ),
-    ]
     signal_powers = [Matrix{Float32}(undef, 5000, 1)]
 
     signal_baseband = Vector{ComplexF32}(undef, length(signal))
     signal_baseband_freq_domain = similar(signal_baseband)
     code_freq_baseband_freq_domain = similar(signal_baseband)
+    code_freq_domain = similar(signal_baseband)
     code_baseband = similar(signal_baseband)
     fft_plan = plan_fft(signal_baseband)
 
     Acquisition.power_over_code!(
+        system,
+        [prn],
         signal_powers,
         1,
         signal_baseband,
@@ -51,7 +45,7 @@
         code_baseband,
         signal,
         fft_plan,
-        codes_freq_domain,
+        code_freq_domain,
         doppler,
         sampling_freq,
         interm_freq,

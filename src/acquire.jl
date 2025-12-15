@@ -57,9 +57,10 @@ function acquire!(
             (doppler_index - 1) * step(acq_plan.dopplers) +
             first(acq_plan.dopplers) +
             doppler_offset
+        code_frequency = get_code_frequency(acq_plan.system) + doppler * get_code_center_frequency_ratio(acq_plan.system)
         code_phase =
             (code_index - 1) /
-            (acq_plan.sampling_freq / get_code_frequency(acq_plan.system))
+            (acq_plan.sampling_freq / code_frequency)
         AcquisitionResults(
             acq_plan.system,
             prn,
