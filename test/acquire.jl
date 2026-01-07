@@ -223,3 +223,52 @@ end
     @test inplace_coarse_fine_acq_res.prn == prn
     @test inplace_coarse_fine_acq_res.CN0 ≈ CN0 atol = 7
 end
+
+@testset "Base.show for AcquisitionResults" begin
+    Random.seed!(1234)
+    system = GPSL1()
+    num_samples = 10000
+    sampling_freq = 5e6Hz
+    signal = randn(ComplexF64, num_samples)
+
+    plan = AcquisitionPlan(system, num_samples, sampling_freq; prns = 1:3)
+
+    # Test show for single AcquisitionResults
+    result = acquire!(plan, signal, 1)
+    io = IOBuffer()
+    show(io, MIME"text/plain"(), result)
+    output = String(take!(io))
+    @test contains(output, "AcquisitionResults")
+    @test contains(output, "PRN 1")
+    @test contains(output, "CN0")
+    @test contains(output, "dB-Hz")
+    @test contains(output, "Doppler")
+    @test contains(output, "Code phase")
+    @test contains(output, "chips")
+
+    # Test show for Vector{AcquisitionResults}
+    results = [acquire!(plan, signal, prn) for prn in 1:3]
+    io = IOBuffer()
+    show(io, MIME"text/plain"(), results)
+    output = String(take!(io))
+    @test contains(output, "PRN")
+    @test contains(output, "CN0")
+    @test contains(output, "Carrier Doppler")
+    @test contains(output, "Code phase")
+
+    # Test CN0 highlighting (green for CN0 > 42, red for CN0 < 42)
+    high_cn0_result = Acquisition.AcquisitionResults(
+        system, 1, sampling_freq, 0.0Hz, 0.0, 50.0, 0.0, zeros(1, 1), 0.0:1.0:0.0
+    )
+    low_cn0_result = Acquisition.AcquisitionResults(
+        system, 2, sampling_freq, 0.0Hz, 0.0, 30.0, 0.0, zeros(1, 1), 0.0:1.0:0.0
+    )
+    io = IOBuffer()
+    ioc = IOContext(io, :color => true)
+    show(ioc, MIME"text/plain"(), [high_cn0_result, low_cn0_result])
+    output = String(take!(io))
+    # Verify green is applied to the high CN0 value with reset after
+    @test contains(output, "\e[32m50.0\e[0m")  # Green for CN0 > 42
+    # Verify red is applied to the low CN0 value with reset after
+    @test contains(output, "\e[31m30.0\e[0m")  # Red for CN0 < 42
+end
