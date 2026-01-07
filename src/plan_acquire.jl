@@ -16,18 +16,19 @@ multiple signals with the same length and sampling frequency.
 # See also
 [`acquire!`](@ref), [`CoarseFineAcquisitionPlan`](@ref)
 """
-struct AcquisitionPlan{S,DS,CS,P,PS}
+struct AcquisitionPlan{T<:AbstractFloat,S,DS,CS,P,IP,PS}
     system::S
     signal_length::Int
     sampling_freq::typeof(1.0Hz)
     dopplers::DS
     codes_freq_domain::CS
-    signal_baseband::Vector{ComplexF32}
-    signal_baseband_freq_domain::Vector{ComplexF32}
-    code_freq_baseband_freq_domain::Vector{ComplexF32}
-    code_baseband::Vector{ComplexF32}
-    signal_powers::Vector{Matrix{Float32}}
+    signal_baseband::Vector{Complex{T}}
+    signal_baseband_freq_domain::Vector{Complex{T}}
+    code_freq_baseband_freq_domain::Vector{Complex{T}}
+    code_baseband::Vector{Complex{T}}
+    signal_powers::Vector{Matrix{T}}
     fft_plan::P
+    ifft_plan::IP
     avail_prn_channels::PS
 end
 
@@ -42,6 +43,8 @@ Create an acquisition plan for efficient repeated acquisition.
 - `sampling_freq`: Sampling frequency of the signal
 
 # Keyword Arguments
+- `eltype`: Element type for internal buffers (default: `Float32`). Use `Float64` for
+  `ComplexF64` signals to avoid allocations.
 - `max_doppler`: Maximum Doppler frequency to search (default: `7000Hz`)
 - `min_doppler`: Minimum Doppler frequency to search (default: `-max_doppler`)
 - `dopplers`: Custom Doppler range (default: `min_doppler:250Hz:max_doppler`)
@@ -53,6 +56,9 @@ Create an acquisition plan for efficient repeated acquisition.
 using Acquisition, GNSSSignals
 plan = AcquisitionPlan(GPSL1(), 10000, 5e6Hz; prns=1:32)
 results = acquire!(plan, signal, 1:32)
+
+# For ComplexF64 signals, use Float64 buffers for best performance:
+plan64 = AcquisitionPlan(GPSL1(), 10000, 5e6Hz; prns=1:32, eltype=Float64)
 ```
 
 # See also
@@ -62,22 +68,24 @@ function AcquisitionPlan(
     system,
     signal_length,
     sampling_freq;
+    eltype::Type{T} = Float32,
     max_doppler = 7000Hz,
     min_doppler = -max_doppler,
     dopplers = min_doppler:250Hz:max_doppler,
     prns = 1:34,
     fft_flag = FFTW.MEASURE,
-)
+) where {T<:AbstractFloat}
     signal_baseband,
     signal_baseband_freq_domain,
     code_freq_baseband_freq_domain,
     code_baseband,
     codes_freq_domain,
-    fft_plan = common_buffers(system, signal_length, sampling_freq, prns, fft_flag)
+    fft_plan,
+    ifft_plan = common_buffers(T, system, signal_length, sampling_freq, prns, fft_flag)
     Δt = signal_length / sampling_freq
     code_interval = get_code_length(system) / get_code_frequency(system)
     signal_powers = [
-        Matrix{Float32}(
+        Matrix{T}(
             undef,
             ceil(Int, sampling_freq * min(Δt, code_interval)),
             length(dopplers),
@@ -95,6 +103,7 @@ function AcquisitionPlan(
         code_baseband,
         signal_powers,
         fft_plan,
+        ifft_plan,
         prns,
     )
 end
@@ -131,6 +140,8 @@ Create a two-stage coarse-fine acquisition plan.
 - `sampling_freq`: Sampling frequency of the signal
 
 # Keyword Arguments
+- `eltype`: Element type for internal buffers (default: `Float32`). Use `Float64` for
+  `ComplexF64` signals to avoid allocations.
 - `max_doppler`: Maximum Doppler frequency to search (default: `7000Hz`)
 - `min_doppler`: Minimum Doppler frequency to search (default: `-max_doppler`)
 - `coarse_step`: Doppler step size for coarse search (default: `250Hz`)
@@ -143,6 +154,9 @@ Create a two-stage coarse-fine acquisition plan.
 using Acquisition, GNSSSignals
 plan = CoarseFineAcquisitionPlan(GPSL1(), 10000, 5e6Hz; prns=1:32)
 results = acquire!(plan, signal, 1:32)
+
+# For ComplexF64 signals, use Float64 buffers for best performance:
+plan64 = CoarseFineAcquisitionPlan(GPSL1(), 10000, 5e6Hz; prns=1:32, eltype=Float64)
 ```
 
 # See also
@@ -152,24 +166,26 @@ function CoarseFineAcquisitionPlan(
     system,
     signal_length,
     sampling_freq;
+    eltype::Type{T} = Float32,
     max_doppler = 7000Hz,
     min_doppler = -max_doppler,
     coarse_step = 250Hz,
     fine_step = 25Hz,
     prns = 1:34,
     fft_flag = FFTW.MEASURE,
-)
+) where {T<:AbstractFloat}
     coarse_dopplers = min_doppler:coarse_step:max_doppler
     signal_baseband,
     signal_baseband_freq_domain,
     code_freq_baseband_freq_domain,
     code_baseband,
     codes_freq_domain,
-    fft_plan = common_buffers(system, signal_length, sampling_freq, prns, fft_flag)
+    fft_plan,
+    ifft_plan = common_buffers(T, system, signal_length, sampling_freq, prns, fft_flag)
     Δt = signal_length / sampling_freq
     code_interval = get_code_length(system) / get_code_frequency(system)
     coarse_signal_powers = [
-        Matrix{Float32}(
+        Matrix{T}(
             undef,
             ceil(Int, sampling_freq * min(Δt, code_interval)),
             length(coarse_dopplers),
@@ -177,7 +193,7 @@ function CoarseFineAcquisitionPlan(
     ]
     fine_doppler_range = -2*coarse_step:fine_step:2*coarse_step
     fine_signal_powers = [
-        Matrix{Float32}(
+        Matrix{T}(
             undef,
             ceil(Int, sampling_freq * min(Δt, code_interval)),
             length(fine_doppler_range),
@@ -195,6 +211,7 @@ function CoarseFineAcquisitionPlan(
         code_baseband,
         coarse_signal_powers,
         fft_plan,
+        ifft_plan,
         prns,
     )
     fine_plan = AcquisitionPlan(
@@ -209,23 +226,26 @@ function CoarseFineAcquisitionPlan(
         code_baseband,
         fine_signal_powers,
         fft_plan,
+        ifft_plan,
         prns,
     )
     CoarseFineAcquisitionPlan(coarse_plan, fine_plan)
 end
 
-function common_buffers(system, signal_length, sampling_freq, prns, fft_flag)
+function common_buffers(::Type{T}, system, signal_length, sampling_freq, prns, fft_flag) where {T}
     codes = [gen_code(signal_length, system, sat_prn, sampling_freq) for sat_prn in prns]
-    signal_baseband = Vector{ComplexF32}(undef, signal_length)
+    signal_baseband = Vector{Complex{T}}(undef, signal_length)
     signal_baseband_freq_domain = similar(signal_baseband)
     code_freq_baseband_freq_domain = similar(signal_baseband)
     code_baseband = similar(signal_baseband)
     fft_plan = plan_fft(signal_baseband; flags = fft_flag)
-    codes_freq_domain = map(code -> fft_plan * code, codes)
+    ifft_plan = plan_ifft(signal_baseband; flags = fft_flag)
+    codes_freq_domain = map(code -> fft_plan * Complex{T}.(code), codes)
     signal_baseband,
     signal_baseband_freq_domain,
     code_freq_baseband_freq_domain,
     code_baseband,
     codes_freq_domain,
-    fft_plan
+    fft_plan,
+    ifft_plan
 end

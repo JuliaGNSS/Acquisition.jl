@@ -41,6 +41,7 @@
     code_freq_baseband_freq_domain = similar(signal_baseband)
     code_baseband = similar(signal_baseband)
     fft_plan = plan_fft(signal_baseband)
+    ifft_plan = plan_ifft(signal_baseband)
 
     Acquisition.power_over_code!(
         signal_powers,
@@ -51,6 +52,7 @@
         code_baseband,
         signal,
         fft_plan,
+        ifft_plan,
         codes_freq_domain,
         doppler,
         sampling_freq,
