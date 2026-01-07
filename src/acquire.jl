@@ -94,7 +94,7 @@ function acquire!(
     doppler_offset = 0.0Hz,
     noise_power = nothing,
 )
-    all(map(prn -> prn in acq_plan.avail_prn_channels, prns)) ||
+    all(prn -> prn in acq_plan.avail_prn_channels, prns) ||
         throw(ArgumentError("You'll need to plan every PRN"))
     code_period = get_code_length(acq_plan.system) / get_code_frequency(acq_plan.system)
     powers_per_sats =
