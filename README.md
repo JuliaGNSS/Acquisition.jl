@@ -1,34 +1,42 @@
+# Acquisition.jl
+
 [![Tests](https://github.com/JuliaGNSS/Acquisition.jl/actions/workflows/ci.yml/badge.svg)](https://github.com/JuliaGNSS/Acquisition.jl/actions)
 [![codecov](https://codecov.io/gh/JuliaGNSS/Acquisition.jl/branch/master/graph/badge.svg?token=GFRAHP6R3S)](https://codecov.io/gh/JuliaGNSS/Acquisition.jl)
+[![](https://img.shields.io/badge/docs-stable-blue.svg)](https://JuliaGNSS.github.io/Acquisition.jl/stable)
+[![](https://img.shields.io/badge/docs-dev-blue.svg)](https://JuliaGNSS.github.io/Acquisition.jl/dev)
 
-# Acquisition.jl
-Acquire GNSS signals
+GNSS signal acquisition using parallel code phase search.
 
-## Getting started
+Part of the [JuliaGNSS](https://github.com/JuliaGNSS) ecosystem.
 
-Install:
+## Installation
+
 ```julia
-julia> ]
-pkg> add Acquisition
+using Pkg
+Pkg.add("Acquisition")
 ```
 
-## Usage
+## Quick Start
 
 ```julia
-using Acquisition, Plots
-import Acquisition: GPSL1, Hz
-stream = open("signal.dat")
-signal = Vector{Complex{Int16}}(undef, 10000)
-read!(stream, signal)
-gpsl1 = GPSL1()
-acq_res = acquire(gpsl1, signal, 5e6Hz, 1:32)
-# or acq_res = coarse_fine_acquire(gpsl1, signal, 5e6Hz, 1:32)
-plot(acq_res[1])
+using Acquisition, GNSSSignals
+
+# Acquire GPS L1 C/A signals
+results = acquire(GPSL1(), signal, 5e6Hz, 1:32)
+
+# Coarse-fine acquisition for better Doppler resolution
+results = coarse_fine_acquire(GPSL1(), signal, 5e6Hz, 1:32)
+
+# Plot results
+using Plots
+plot(results[1])
 ```
 
 ![Acquisition plot](media/acquisition_plot.png)
 
-The acquisition results include: `CN0`, `carrier_doppler`, `code_phase`, etc.
+## Documentation
+
+See the [documentation](https://JuliaGNSS.github.io/Acquisition.jl/stable) for detailed usage and API reference.
 
 ## License
 
