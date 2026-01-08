@@ -87,15 +87,17 @@ results = acquire!(plan, signal, 1:32)
 [`acquire`](@ref), [`AcquisitionPlan`](@ref)
 """
 function acquire!(
-    acq_plan::AcquisitionPlan,
+    acq_plan::AcquisitionPlan{T},
     signal,
     prns::AbstractVector{<:Integer};
     interm_freq = 0.0Hz,
     doppler_offset = 0.0Hz,
     noise_power = nothing,
-)
+) where {T}
     all(prn -> prn in acq_plan.avail_prn_channels, prns) ||
         throw(ArgumentError("You'll need to plan every PRN"))
+    S = typeof(acq_plan.system)
+    isempty(prns) && return AcquisitionResults{S,Float32}[]
     code_period = get_code_length(acq_plan.system) / get_code_frequency(acq_plan.system)
     powers_per_sats =
         power_over_doppler_and_codes!(acq_plan, signal, prns, interm_freq, doppler_offset)
@@ -192,22 +194,22 @@ function acquire(
 end
 
 function acquire!(
-    acq_plan::AcquisitionPlan,
+    acq_plan::AcquisitionPlan{T,S,DS,CS,P,IP,PS},
     signal,
     prn::Integer;
     interm_freq = 0.0Hz,
     doppler_offset = 0.0Hz,
     noise_power = nothing,
-)
+)::AcquisitionResults{S,Float32} where {T,S,DS,CS,P,IP,PS}
     only(acquire!(acq_plan, signal, [prn]; interm_freq, doppler_offset, noise_power))
 end
 
 function acquire!(
-    acq_plan::CoarseFineAcquisitionPlan,
+    acq_plan::CoarseFineAcquisitionPlan{AcquisitionPlan{T,S,DS,CS,P,IP,PS},F},
     signal,
     prn::Integer;
     interm_freq = 0.0Hz,
-)
+)::AcquisitionResults{S,Float32} where {T,S,DS,CS,P,IP,PS,F}
     only(acquire!(acq_plan, signal, [prn]; interm_freq))
 end
 

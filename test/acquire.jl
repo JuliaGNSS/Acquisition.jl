@@ -36,12 +36,18 @@
     max_doppler = 7000Hz
     dopplers = -max_doppler:250Hz:max_doppler
 
-    acq_res = acquire(system, signal_typed, sampling_freq, prn; interm_freq, dopplers)
+    acq_res =
+        @inferred acquire(system, signal_typed, sampling_freq, prn; interm_freq, dopplers)
 
-    acq_plan =
-        AcquisitionPlan(system, length(signal_typed), sampling_freq; dopplers, prns = 1:34)
+    acq_plan = @inferred AcquisitionPlan(
+        system,
+        length(signal_typed),
+        sampling_freq;
+        dopplers,
+        prns = 1:34,
+    )
 
-    inplace_acq_res = acquire!(acq_plan, signal_typed, prn; interm_freq)
+    inplace_acq_res = @inferred acquire!(acq_plan, signal_typed, prn; interm_freq)
 
     @test acq_res.code_phase ≈ code_phase atol = 0.08
     @test abs(acq_res.carrier_doppler - doppler) < step(dopplers) / 2
@@ -54,12 +60,17 @@
     @test inplace_acq_res.CN0 ≈ CN0 atol = 7
 
     coarse_fine_acq_res =
-        coarse_fine_acquire(system, signal_typed, sampling_freq, prn; interm_freq)
+        @inferred coarse_fine_acquire(system, signal_typed, sampling_freq, prn; interm_freq)
 
-    coarse_fine_acq_plan =
-        CoarseFineAcquisitionPlan(system, length(signal_typed), sampling_freq; prns = 1:34)
+    coarse_fine_acq_plan = @inferred CoarseFineAcquisitionPlan(
+        system,
+        length(signal_typed),
+        sampling_freq;
+        prns = 1:34,
+    )
 
-    inplace_inplace_acq_res = acquire!(coarse_fine_acq_plan, signal_typed, prn; interm_freq)
+    inplace_inplace_acq_res =
+        @inferred acquire!(coarse_fine_acq_plan, signal_typed, prn; interm_freq)
 
     @test coarse_fine_acq_res.code_phase ≈ code_phase atol = 0.08
     @test abs(coarse_fine_acq_res.carrier_doppler - doppler) < step(dopplers) / 2
@@ -70,6 +81,38 @@
     @test abs(inplace_inplace_acq_res.carrier_doppler - doppler) < step(dopplers) / 2
     @test inplace_inplace_acq_res.prn == prn
     @test inplace_inplace_acq_res.CN0 ≈ CN0 atol = 7
+end
+
+@testset "AcquisitionPlan eltype parameter" begin
+    system = GPSL1()
+    num_samples = 10000
+    sampling_freq = 5e6Hz
+
+    # Test default eltype (Float32)
+    plan_default = AcquisitionPlan(system, num_samples, sampling_freq; prns = 1:1)
+    @test eltype(plan_default.signal_baseband) == ComplexF32
+    @test eltype(plan_default.signal_baseband_freq_domain) == ComplexF32
+
+    # Test explicit Float32
+    plan_f32 = AcquisitionPlan(system, num_samples, sampling_freq; prns = 1:1, eltype = Float32)
+    @test eltype(plan_f32.signal_baseband) == ComplexF32
+    @test eltype(plan_f32.signal_baseband_freq_domain) == ComplexF32
+
+    # Test Float64
+    plan_f64 = AcquisitionPlan(system, num_samples, sampling_freq; prns = 1:1, eltype = Float64)
+    @test eltype(plan_f64.signal_baseband) == ComplexF64
+    @test eltype(plan_f64.signal_baseband_freq_domain) == ComplexF64
+
+    # Test CoarseFineAcquisitionPlan with eltype
+    cf_plan_f64 = CoarseFineAcquisitionPlan(system, num_samples, sampling_freq; prns = 1:1, eltype = Float64)
+    @test eltype(cf_plan_f64.coarse_plan.signal_baseband) == ComplexF64
+    @test eltype(cf_plan_f64.fine_plan.signal_baseband) == ComplexF64
+
+    # Verify acquisition still works correctly with Float64 buffers
+    Random.seed!(1234)
+    signal = randn(ComplexF64, num_samples)
+    result_f64 = acquire!(plan_f64, signal, 1)
+    @test result_f64 isa AcquisitionResults
 end
 
 @testset "Acquire with asymmetric Doppler range" begin
@@ -107,7 +150,15 @@ end
     dopplers = min_doppler:250Hz:max_doppler
 
     # Test acquire with min_doppler
-    acq_res = acquire(system, signal_typed, sampling_freq, prn; interm_freq, min_doppler, max_doppler)
+    acq_res = @inferred acquire(
+        system,
+        signal_typed,
+        sampling_freq,
+        prn;
+        interm_freq,
+        min_doppler,
+        max_doppler,
+    )
 
     @test acq_res.code_phase ≈ code_phase atol = 0.08
     @test abs(acq_res.carrier_doppler - doppler) < step(dopplers) / 2
@@ -115,12 +166,19 @@ end
     @test acq_res.CN0 ≈ CN0 atol = 7
 
     # Test AcquisitionPlan with min_doppler
-    acq_plan = AcquisitionPlan(system, length(signal_typed), sampling_freq; min_doppler, max_doppler, prns = 1:34)
+    acq_plan = @inferred AcquisitionPlan(
+        system,
+        length(signal_typed),
+        sampling_freq;
+        min_doppler,
+        max_doppler,
+        prns = 1:34,
+    )
 
     @test first(acq_plan.dopplers) ≈ min_doppler
     @test last(acq_plan.dopplers) >= max_doppler - step(acq_plan.dopplers)
 
-    inplace_acq_res = acquire!(acq_plan, signal_typed, prn; interm_freq)
+    inplace_acq_res = @inferred acquire!(acq_plan, signal_typed, prn; interm_freq)
 
     @test inplace_acq_res.code_phase ≈ code_phase atol = 0.08
     @test abs(inplace_acq_res.carrier_doppler - doppler) < step(dopplers) / 2
@@ -128,7 +186,15 @@ end
     @test inplace_acq_res.CN0 ≈ CN0 atol = 7
 
     # Test coarse_fine_acquire with min_doppler
-    coarse_fine_acq_res = coarse_fine_acquire(system, signal_typed, sampling_freq, prn; interm_freq, min_doppler, max_doppler)
+    coarse_fine_acq_res = @inferred coarse_fine_acquire(
+        system,
+        signal_typed,
+        sampling_freq,
+        prn;
+        interm_freq,
+        min_doppler,
+        max_doppler,
+    )
 
     @test coarse_fine_acq_res.code_phase ≈ code_phase atol = 0.08
     @test abs(coarse_fine_acq_res.carrier_doppler - doppler) < step(dopplers) / 2
@@ -136,12 +202,21 @@ end
     @test coarse_fine_acq_res.CN0 ≈ CN0 atol = 7
 
     # Test CoarseFineAcquisitionPlan with min_doppler
-    coarse_fine_acq_plan = CoarseFineAcquisitionPlan(system, length(signal_typed), sampling_freq; min_doppler, max_doppler, prns = 1:34)
+    coarse_fine_acq_plan = @inferred CoarseFineAcquisitionPlan(
+        system,
+        length(signal_typed),
+        sampling_freq;
+        min_doppler,
+        max_doppler,
+        prns = 1:34,
+    )
 
     @test first(coarse_fine_acq_plan.coarse_plan.dopplers) ≈ min_doppler
-    @test last(coarse_fine_acq_plan.coarse_plan.dopplers) >= max_doppler - step(coarse_fine_acq_plan.coarse_plan.dopplers)
+    @test last(coarse_fine_acq_plan.coarse_plan.dopplers) >=
+          max_doppler - step(coarse_fine_acq_plan.coarse_plan.dopplers)
 
-    inplace_coarse_fine_acq_res = acquire!(coarse_fine_acq_plan, signal_typed, prn; interm_freq)
+    inplace_coarse_fine_acq_res =
+        @inferred acquire!(coarse_fine_acq_plan, signal_typed, prn; interm_freq)
 
     @test inplace_coarse_fine_acq_res.code_phase ≈ code_phase atol = 0.08
     @test abs(inplace_coarse_fine_acq_res.carrier_doppler - doppler) < step(dopplers) / 2
