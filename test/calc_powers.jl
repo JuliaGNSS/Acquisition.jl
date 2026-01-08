@@ -43,7 +43,7 @@
     fft_plan = plan_fft(signal_baseband)
     ifft_plan = plan_ifft(signal_baseband)
 
-    Acquisition.power_over_code!(
+    @inferred Acquisition.power_over_code!(
         signal_powers,
         1,
         signal_baseband,
@@ -96,8 +96,13 @@ end
 
     acq_plan = AcquisitionPlan(system, length(signal), sampling_freq; dopplers, prns = 1:1)
 
-    powers_per_sats =
-        Acquisition.power_over_doppler_and_codes!(acq_plan, signal, [1], interm_freq, 0.0Hz)
+    powers_per_sats = @inferred Acquisition.power_over_doppler_and_codes!(
+        acq_plan,
+        signal,
+        [1],
+        interm_freq,
+        0.0Hz,
+    )
 
     maxval, maxidx = findmax(powers_per_sats[1])
     @test (maxidx[1] - 1) * get_code_frequency(system) / sampling_freq ≈ code_phase atol =
