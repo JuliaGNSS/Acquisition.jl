@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/JuliaGNSS/Acquisition.jl/compare/v0.2.1...v0.2.2) (2026-01-10)
+
+
+### Performance Improvements
+
+* reduce allocations in acquire! from 136 to 20 ([752da10](https://github.com/JuliaGNSS/Acquisition.jl/commit/752da10316b51dffbcd9472ac247e7782c3abbdd))
+
 ## [0.2.1](https://github.com/JuliaGNSS/Acquisition.jl/compare/v0.2.0...v0.2.1) (2025-12-11)
 
 

@@ -1,6 +1,6 @@
 name = "Acquisition"
 uuid = "d4bbf60b-102b-5ffb-8f97-a7ea5817e69f"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["Soeren Schoenbrod <soeren.schoenbrod@nav.rwth-aachen.de>"]
 
 [deps]
