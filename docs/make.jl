@@ -4,6 +4,7 @@ using Acquisition
 makedocs(
     sitename = "Acquisition.jl",
     modules = [Acquisition],
+    warnonly = [:missing_docs],
     authors = "Soeren Schoenbrod",
     format = Documenter.HTML(
         prettyurls = get(ENV, "CI", nothing) == "true",

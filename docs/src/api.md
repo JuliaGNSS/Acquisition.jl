@@ -15,6 +15,7 @@ coarse_fine_acquire!
 AcquisitionResults
 AcquisitionPlan
 CoarseFineAcquisitionPlan
+KAAcquisitionPlan
 ```
 
 ## Index
