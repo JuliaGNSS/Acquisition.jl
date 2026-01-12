@@ -4,6 +4,8 @@ using DocStringExtensions,
     GNSSSignals, RecipesBase, FFTW, Statistics, LinearAlgebra, LoopVectorization, Unitful
 
 import Unitful: s, Hz
+using Unitful: ustrip
+using AbstractFFTs: fft
 using PrettyTables: pretty_table, AnsiTextCell
 
 export acquire,
@@ -12,7 +14,8 @@ export acquire,
     acquire!,
     AcquisitionPlan,
     CoarseFineAcquisitionPlan,
-    AcquisitionResults
+    AcquisitionResults,
+    KAAcquisitionPlan
 
 """
     AcquisitionResults{S,T}
@@ -97,4 +100,5 @@ include("plot.jl")
 include("calc_powers.jl")
 include("est_signal_noise_power.jl")
 include("acquire.jl")
+include("ka_acquire.jl")
 end
