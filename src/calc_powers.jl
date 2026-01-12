@@ -18,7 +18,7 @@ function power_over_doppler_and_codes!(
             acq_plan.code_baseband,
             signal,
             acq_plan.fft_plan,
-            acq_plan.ifft_plan,
+            acq_plan.bfft_plan,
             codes_freq_domain_view,
             doppler + doppler_offset,
             acq_plan.sampling_freq,
@@ -37,7 +37,7 @@ function power_over_code!(
     code_baseband,
     signal,
     fft_plan,
-    ifft_plan,
+    bfft_plan,
     codes_freq_domain,
     doppler,
     sampling_freq,
@@ -48,7 +48,7 @@ function power_over_code!(
     @inbounds for (code_freq_domain, signal_power) in zip(codes_freq_domain, signal_powers)
         code_freq_baseband_freq_domain .=
             code_freq_domain .* conj.(signal_baseband_freq_domain)
-        mul!(code_baseband, ifft_plan, code_freq_baseband_freq_domain)
+        mul!(code_baseband, bfft_plan, code_freq_baseband_freq_domain)
         signal_power[:, doppler_idx] .= abs2.(view(code_baseband, 1:size(signal_power, 1)))
     end
 end
