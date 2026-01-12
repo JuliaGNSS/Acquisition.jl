@@ -1,5 +1,12 @@
 # Changelog
 
+# [0.3.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v0.2.2...v0.3.0) (2026-01-12)
+
+
+### Features
+
+* add Base.show methods for AcquisitionResults ([cfa2441](https://github.com/JuliaGNSS/Acquisition.jl/commit/cfa2441bc6f17cb135496802cecd7b8c6126c3e4))
+
 ## [0.2.2](https://github.com/JuliaGNSS/Acquisition.jl/compare/v0.2.1...v0.2.2) (2026-01-10)
 
 
