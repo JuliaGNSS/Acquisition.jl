@@ -1,5 +1,12 @@
 # Changelog
 
+# [1.1.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v1.0.0...v1.1.0) (2026-01-14)
+
+
+### Features
+
+* add KernelAbstractions GPU-accelerated acquisition ([3063bf7](https://github.com/JuliaGNSS/Acquisition.jl/commit/3063bf7ab08c37346469069478bd4eb633a6c7ef))
+
 # [0.3.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v0.2.2...v0.3.0) (2026-01-12)
 
 
