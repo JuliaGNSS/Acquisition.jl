@@ -32,6 +32,9 @@ struct AcquisitionPlan{T<:AbstractFloat,S,DS,CS,P,IP,PS}
     fft_plan::P
     ifft_plan::IP
     avail_prn_channels::PS
+    results::Vector{AcquisitionResults{S,Float32,DS}}
+    prn_indices::Vector{Int}
+    output_results::Vector{AcquisitionResults{S,Float32,DS}}
 end
 
 """
@@ -97,6 +100,22 @@ function AcquisitionPlan(
             length(dopplers),
         ) for _ in prns
     ]
+    results = [
+        AcquisitionResults(
+            system,
+            prn,
+            sampling_freq,
+            0.0Hz,
+            0.0,
+            0.0,
+            Float32(0),
+            signal_powers[i],
+            dopplers,
+        )
+        for (i, prn) in enumerate(prns)
+    ]
+    prn_indices = Vector{Int}(undef, length(prns))
+    output_results = Vector{Base.eltype(results)}(undef, length(prns))
     AcquisitionPlan(
         system,
         signal_length,
@@ -111,6 +130,9 @@ function AcquisitionPlan(
         fft_plan,
         ifft_plan,
         prns,
+        results,
+        prn_indices,
+        output_results,
     )
 end
 
@@ -211,6 +233,22 @@ function CoarseFineAcquisitionPlan(
             length(fine_doppler_range),
         ) for _ in prns
     ]
+    coarse_results = [
+        AcquisitionResults(
+            system,
+            prn,
+            sampling_freq,
+            0.0Hz,
+            0.0,
+            0.0,
+            Float32(0),
+            coarse_signal_powers[i],
+            coarse_dopplers,
+        )
+        for (i, prn) in enumerate(prns)
+    ]
+    coarse_prn_indices = Vector{Int}(undef, length(prns))
+    coarse_output_results = Vector{Base.eltype(coarse_results)}(undef, length(prns))
     coarse_plan = AcquisitionPlan(
         system,
         signal_length,
@@ -225,7 +263,26 @@ function CoarseFineAcquisitionPlan(
         fft_plan,
         ifft_plan,
         prns,
+        coarse_results,
+        coarse_prn_indices,
+        coarse_output_results,
     )
+    fine_results = [
+        AcquisitionResults(
+            system,
+            prn,
+            sampling_freq,
+            0.0Hz,
+            0.0,
+            0.0,
+            Float32(0),
+            fine_signal_powers[i],
+            fine_doppler_range,
+        )
+        for (i, prn) in enumerate(prns)
+    ]
+    fine_prn_indices = Vector{Int}(undef, length(prns))
+    fine_output_results = Vector{Base.eltype(fine_results)}(undef, length(prns))
     fine_plan = AcquisitionPlan(
         system,
         signal_length,
@@ -240,6 +297,9 @@ function CoarseFineAcquisitionPlan(
         fft_plan,
         ifft_plan,
         prns,
+        fine_results,
+        fine_prn_indices,
+        fine_output_results,
     )
     CoarseFineAcquisitionPlan(coarse_plan, fine_plan)
 end

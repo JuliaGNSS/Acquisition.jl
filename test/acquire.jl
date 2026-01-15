@@ -258,10 +258,10 @@ end
 
     # Test CN0 highlighting (green for CN0 > 42, red for CN0 < 42)
     high_cn0_result = Acquisition.AcquisitionResults(
-        system, 1, sampling_freq, 0.0Hz, 0.0, 50.0, 0.0, zeros(1, 1), 0.0:1.0:0.0
+        system, 1, sampling_freq, 0.0Hz, 0.0, 50.0, 0.0, zeros(1, 1), 0.0Hz:1.0Hz:0.0Hz
     )
     low_cn0_result = Acquisition.AcquisitionResults(
-        system, 2, sampling_freq, 0.0Hz, 0.0, 30.0, 0.0, zeros(1, 1), 0.0:1.0:0.0
+        system, 2, sampling_freq, 0.0Hz, 0.0, 30.0, 0.0, zeros(1, 1), 0.0Hz:1.0Hz:0.0Hz
     )
     io = IOBuffer()
     ioc = IOContext(io, :color => true)
@@ -271,4 +271,68 @@ end
     @test contains(output, "\e[32m50.0\e[0m")  # Green for CN0 > 42
     # Verify red is applied to the low CN0 value with reset after
     @test contains(output, "\e[31m30.0\e[0m")  # Red for CN0 < 42
+end
+
+@testset "Non-allocating result handling in acquire!" begin
+    Random.seed!(2345)
+    system = GPSL1()
+    num_samples = 60000
+    sampling_freq = 15e6Hz - 1Hz
+    # Use ComplexF32 signal to match default Float32 buffers (avoids type conversion allocations)
+    signal = randn(ComplexF32, num_samples)
+
+    acq_plan = AcquisitionPlan(
+        system,
+        num_samples,
+        sampling_freq;
+        prns = 1:5,
+    )
+
+    # Verify plan.results field exists and is populated
+    @test hasfield(typeof(acq_plan), :results)
+    @test length(acq_plan.results) == 5
+    @test hasfield(typeof(acq_plan), :prn_indices)
+
+    # Pre-allocate PRN vector to avoid measuring its allocation
+    prns = [1, 2]
+
+    # Warmup to trigger compilation
+    acquire!(acq_plan, signal, prns)
+    acquire!(acq_plan, signal, prns)
+
+    # Measure allocations - should be zero when types match
+    allocs = @allocated acquire!(acq_plan, signal, prns)
+    @test allocs == 0
+
+    # Verify results are returned as a Vector (non-allocating via resize!)
+    results = acquire!(acq_plan, signal, [1, 3])
+    @test results isa Vector
+    @test length(results) == 2
+    @test results[1].prn == 1
+    @test results[2].prn == 3
+
+    # Verify results point to the same power_bins as signal_powers
+    @test results[1].power_bins === acq_plan.signal_powers[1]
+    @test results[2].power_bins === acq_plan.signal_powers[3]
+
+    # Test CoarseFineAcquisitionPlan is also allocation-free
+    cf_plan = CoarseFineAcquisitionPlan(
+        system,
+        num_samples,
+        sampling_freq;
+        prns = 1:5,
+    )
+
+    # Warmup
+    acquire!(cf_plan, signal, prns)
+    acquire!(cf_plan, signal, prns)
+
+    # Measure allocations
+    cf_allocs = @allocated acquire!(cf_plan, signal, prns)
+    @test cf_allocs == 0
+
+    # Verify CoarseFine results are also returned as a Vector
+    cf_results = acquire!(cf_plan, signal, [1, 3])
+    @test cf_results isa Vector
+    @test cf_results[1].power_bins === cf_plan.fine_plan.signal_powers[1]
 end

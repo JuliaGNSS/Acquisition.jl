@@ -97,18 +97,24 @@ function acquire!(
     all(prn -> prn in acq_plan.avail_prn_channels, prns) ||
         throw(ArgumentError("You'll need to plan every PRN"))
     S = typeof(acq_plan.system)
-    isempty(prns) && return AcquisitionResults{S,Float32}[]
+    DS = typeof(acq_plan.dopplers)
+    isempty(prns) && return AcquisitionResults{S,Float32,DS}[]
     code_period = get_code_length(acq_plan.system) / get_code_frequency(acq_plan.system)
+    # power_over_doppler_and_codes! populates acq_plan.prn_indices
     powers_per_sats =
         power_over_doppler_and_codes!(acq_plan, signal, prns, interm_freq, doppler_offset)
-    map(powers_per_sats, prns) do powers, prn
-        signal_power, noise_power, code_index, doppler_index = est_signal_noise_power(
+
+    # resize! does not allocate when shrinking or staying within original capacity
+    resize!(acq_plan.output_results, length(prns))
+    for (i, (powers, prn, prn_idx)) in
+        enumerate(zip(powers_per_sats, prns, acq_plan.prn_indices))
+        signal_power, noise_power_est, code_index, doppler_index = est_signal_noise_power(
             powers,
             acq_plan.sampling_freq,
             get_code_frequency(acq_plan.system),
             noise_power,
         )
-        CN0 = 10 * log10(signal_power / noise_power / code_period / 1.0Hz)
+        CN0 = 10 * log10(signal_power / noise_power_est / code_period / 1.0Hz)
         doppler =
             (doppler_index - 1) * step(acq_plan.dopplers) +
             first(acq_plan.dopplers) +
@@ -116,18 +122,21 @@ function acquire!(
         code_phase =
             (code_index - 1) /
             (acq_plan.sampling_freq / get_code_frequency(acq_plan.system))
-        AcquisitionResults(
+        result = AcquisitionResults(
             acq_plan.system,
             prn,
             acq_plan.sampling_freq,
             doppler,
             code_phase,
             CN0,
-            noise_power,
+            noise_power_est,
             powers,
-            (acq_plan.dopplers .+ doppler_offset) / 1.0Hz,
+            acq_plan.dopplers,
         )
+        acq_plan.results[prn_idx] = result
+        acq_plan.output_results[i] = result
     end
+    return acq_plan.output_results
 end
 
 function acquire!(
@@ -136,17 +145,80 @@ function acquire!(
     prns::AbstractVector{<:Integer};
     interm_freq = 0.0Hz,
 )
-    acq_res = acquire!(acq_plan.coarse_plan, signal, prns; interm_freq)
-    map(acq_res, prns) do res, prn
-        acquire!(
-            acq_plan.fine_plan,
-            signal,
-            prn;
-            interm_freq,
-            doppler_offset = res.carrier_doppler,
-            noise_power = res.noise_power,
-        )
+    coarse_results = acquire!(acq_plan.coarse_plan, signal, prns; interm_freq)
+    fine_plan = acq_plan.fine_plan
+
+    # Build prn_indices for fine plan
+    # resize! does not allocate when shrinking or staying within original capacity
+    resize!(fine_plan.prn_indices, length(prns))
+    for (i, prn) in enumerate(prns)
+        fine_plan.prn_indices[i] = findfirst(==(prn), fine_plan.avail_prn_channels)
     end
+
+    # Process each PRN through fine acquisition without allocating
+    code_period = get_code_length(fine_plan.system) / get_code_frequency(fine_plan.system)
+
+    # resize! does not allocate when shrinking or staying within original capacity
+    resize!(fine_plan.output_results, length(prns))
+    for (i, (res, prn)) in enumerate(zip(coarse_results, prns))
+        prn_idx = fine_plan.prn_indices[i]
+        doppler_offset = res.carrier_doppler
+        noise_power = res.noise_power
+
+        # Use views with explicit single-element range
+        signal_powers_view = view(fine_plan.signal_powers, prn_idx:prn_idx)
+        codes_freq_domain_view = view(fine_plan.codes_freq_domain, prn_idx:prn_idx)
+
+        @inbounds for (doppler_idx, doppler) in enumerate(fine_plan.dopplers)
+            power_over_code!(
+                signal_powers_view,
+                doppler_idx,
+                fine_plan.signal_baseband,
+                fine_plan.signal_baseband_freq_domain,
+                fine_plan.code_freq_baseband_freq_domain,
+                fine_plan.code_baseband,
+                signal,
+                fine_plan.fft_plan,
+                fine_plan.ifft_plan,
+                codes_freq_domain_view,
+                doppler + doppler_offset,
+                fine_plan.sampling_freq,
+                interm_freq,
+            )
+        end
+
+        # Compute result
+        powers = fine_plan.signal_powers[prn_idx]
+        signal_power, noise_power_est, code_index, doppler_index = est_signal_noise_power(
+            powers,
+            fine_plan.sampling_freq,
+            get_code_frequency(fine_plan.system),
+            noise_power,
+        )
+        CN0 = 10 * log10(signal_power / noise_power_est / code_period / 1.0Hz)
+        doppler =
+            (doppler_index - 1) * step(fine_plan.dopplers) +
+            first(fine_plan.dopplers) +
+            doppler_offset
+        code_phase =
+            (code_index - 1) /
+            (fine_plan.sampling_freq / get_code_frequency(fine_plan.system))
+        result = AcquisitionResults(
+            fine_plan.system,
+            prn,
+            fine_plan.sampling_freq,
+            doppler,
+            code_phase,
+            CN0,
+            noise_power_est,
+            powers,
+            fine_plan.dopplers,
+        )
+        fine_plan.results[prn_idx] = result
+        fine_plan.output_results[i] = result
+    end
+
+    return fine_plan.output_results
 end
 
 """
@@ -200,16 +272,16 @@ function acquire!(
     interm_freq = 0.0Hz,
     doppler_offset = 0.0Hz,
     noise_power = nothing,
-)::AcquisitionResults{S,Float32} where {T,S,DS,CS,P,IP,PS}
+)::AcquisitionResults{S,Float32,DS} where {T,S,DS,CS,P,IP,PS}
     only(acquire!(acq_plan, signal, [prn]; interm_freq, doppler_offset, noise_power))
 end
 
 function acquire!(
-    acq_plan::CoarseFineAcquisitionPlan{AcquisitionPlan{T,S,DS,CS,P,IP,PS},F},
+    acq_plan::CoarseFineAcquisitionPlan{C,AcquisitionPlan{T,S,DS,CS,P,IP,PS}},
     signal,
     prn::Integer;
     interm_freq = 0.0Hz,
-)::AcquisitionResults{S,Float32} where {T,S,DS,CS,P,IP,PS,F}
+)::AcquisitionResults{S,Float32,DS} where {C,T,S,DS,CS,P,IP,PS}
     only(acquire!(acq_plan, signal, [prn]; interm_freq))
 end
 

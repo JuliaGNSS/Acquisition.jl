@@ -5,9 +5,14 @@ function power_over_doppler_and_codes!(
     interm_freq,
     doppler_offset,
 )
-    prn_channels = findall(x -> x in sat_prns, acq_plan.avail_prn_channels)
-    signal_powers_view = view(acq_plan.signal_powers, prn_channels)
-    codes_freq_domain_view = view(acq_plan.codes_freq_domain, prn_channels)
+    # Reuse pre-allocated prn_indices buffer
+    # resize! does not allocate when shrinking or staying within original capacity
+    resize!(acq_plan.prn_indices, length(sat_prns))
+    for (i, prn) in enumerate(sat_prns)
+        acq_plan.prn_indices[i] = findfirst(==(prn), acq_plan.avail_prn_channels)
+    end
+    signal_powers_view = view(acq_plan.signal_powers, acq_plan.prn_indices)
+    codes_freq_domain_view = view(acq_plan.codes_freq_domain, acq_plan.prn_indices)
     @inbounds for (doppler_idx, doppler) in enumerate(acq_plan.dopplers)
         power_over_code!(
             signal_powers_view,

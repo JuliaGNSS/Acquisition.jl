@@ -44,7 +44,7 @@ plot(result, true)  # Use log scale (dB)
 # See also
 [`acquire`](@ref), [`coarse_fine_acquire`](@ref)
 """
-struct AcquisitionResults{S<:AbstractGNSS,T}
+struct AcquisitionResults{S<:AbstractGNSS,T,D<:AbstractRange}
     system::S
     prn::Int
     sampling_frequency::typeof(1.0Hz)
@@ -53,11 +53,7 @@ struct AcquisitionResults{S<:AbstractGNSS,T}
     CN0::Float64
     noise_power::T
     power_bins::Matrix{T}
-    dopplers::StepRangeLen{
-        Float64,
-        Base.TwicePrecision{Float64},
-        Base.TwicePrecision{Float64},
-    }
+    dopplers::D
 end
 
 function Base.show(io::IO, ::MIME"text/plain", acq::AcquisitionResults)
@@ -83,7 +79,7 @@ function _format_cn0(cn0, use_color::Bool)
     end
 end
 
-function Base.show(io::IO, ::MIME"text/plain", acq_channels::Vector{Acquisition.AcquisitionResults{T1,T2}}) where {T1,T2}
+function Base.show(io::IO, ::MIME"text/plain", acq_channels::Vector{<:Acquisition.AcquisitionResults})
     column_labels = ["PRN", "CN0 (dBHz)", "Carrier Doppler (Hz)", "Code phase (chips)"]
     use_color = get(io, :color, false)
     data = reduce(vcat, map(acq -> permutedims([acq.prn, _format_cn0(acq.CN0, use_color), acq.carrier_doppler, acq.code_phase]), acq_channels))
