@@ -1,5 +1,12 @@
 # Changelog
 
+# [1.2.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v1.1.0...v1.2.0) (2026-01-26)
+
+
+### Features
+
+* make acquire! allocation-free for result handling ([55c84b5](https://github.com/JuliaGNSS/Acquisition.jl/commit/55c84b54c7f122cc9881b23e71fca712a1bf2a10))
+
 # [1.1.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v1.0.0...v1.1.0) (2026-01-14)
 
 
