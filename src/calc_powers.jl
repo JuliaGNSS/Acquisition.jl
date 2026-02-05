@@ -3,7 +3,8 @@ function power_over_doppler_and_codes!(
     signal,
     sat_prns,
     interm_freq,
-    doppler_offset,
+    doppler_offset;
+    accumulate = false,
 )
     # Reuse pre-allocated prn_indices buffer
     # resize! does not allocate when shrinking or staying within original capacity
@@ -27,7 +28,8 @@ function power_over_doppler_and_codes!(
             codes_freq_domain_view,
             doppler + doppler_offset,
             acq_plan.sampling_freq,
-            interm_freq,
+            interm_freq;
+            accumulate,
         )
     end
     signal_powers_view
@@ -46,14 +48,29 @@ function power_over_code!(
     codes_freq_domain,
     doppler,
     sampling_freq,
-    interm_freq,
+    interm_freq;
+    accumulate = false,
 )
-    downconvert!(signal_baseband, signal, interm_freq + doppler, sampling_freq)
+    signal_samples = length(signal)
+    buffer_length = length(signal_baseband)
+    # Zero-pad remaining samples if signal is shorter than buffer
+    if signal_samples < buffer_length
+        signal_baseband[signal_samples+1:buffer_length] .= zero(eltype(signal_baseband))
+    end
+    # Downconvert actual signal samples
+    downconvert!(signal_baseband, signal, interm_freq + doppler, sampling_freq, signal_samples)
     mul!(signal_baseband_freq_domain, fft_plan, signal_baseband)
     @inbounds for (code_freq_domain, signal_power) in zip(codes_freq_domain, signal_powers)
         code_freq_baseband_freq_domain .=
             code_freq_domain .* conj.(signal_baseband_freq_domain)
         mul!(code_baseband, ifft_plan, code_freq_baseband_freq_domain)
-        signal_power[:, doppler_idx] .= abs2.(view(code_baseband, 1:size(signal_power, 1)))
+        num_code_samples = size(signal_power, 1)
+        signal_power_col = view(signal_power, :, doppler_idx)
+        code_baseband_view = view(code_baseband, 1:num_code_samples)
+        if accumulate
+            signal_power_col .+= abs2.(code_baseband_view)
+        else
+            signal_power_col .= abs2.(code_baseband_view)
+        end
     end
 end

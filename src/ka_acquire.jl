@@ -48,6 +48,7 @@ results = acquire!(plan, signal_gpu, 1:32)
 """
 struct KAAcquisitionPlan{T,S<:AbstractGNSS,A1<:AbstractVector,A2<:AbstractMatrix,A3<:AbstractMatrix,AI<:AbstractVector{Int},P,BP}
     system::S
+    num_samples_to_integrate_coherently::Int
     dopplers::StepRangeLen{Float64,Base.TwicePrecision{Float64},Base.TwicePrecision{Float64}}
     sampling_frequency::typeof(1.0Hz)
     codes_freq_domain::A2                   # (samples × prns)
@@ -58,6 +59,7 @@ struct KAAcquisitionPlan{T,S<:AbstractGNSS,A1<:AbstractVector,A2<:AbstractMatrix
     code_baseband_freq_domain::A2           # (samples × dopplers) - reused per PRN
     code_baseband::A2                       # (samples × dopplers) - reused per PRN
     power_buffer::A3                        # (code_samples × dopplers) - reused for abs2
+    power_accumulator::A3                   # (code_samples × dopplers) - accumulated powers across chunks
     findmax_vals_gpu::A1                    # Thread-local max values for reduction (GPU)
     findmax_vals_cpu::Vector{T}             # Thread-local max values (CPU for final reduction)
     findmax_idxs_gpu::AI                    # Thread-local max indices (GPU)
@@ -70,13 +72,13 @@ struct KAAcquisitionPlan{T,S<:AbstractGNSS,A1<:AbstractVector,A2<:AbstractMatrix
 end
 
 """
-    KAAcquisitionPlan(system, signal_length, sampling_freq, ArrayType; kwargs...)
+    KAAcquisitionPlan(system, num_samples_to_integrate_coherently, sampling_freq, ArrayType; kwargs...)
 
 Create a GPU-accelerated acquisition plan.
 
 # Arguments
 - `system`: GNSS system (e.g., `GPSL1()`)
-- `signal_length`: Number of samples in the signal
+- `num_samples_to_integrate_coherently`: Number of samples per coherent integration chunk
 - `sampling_freq`: Sampling frequency of the signal
 - `ArrayType`: GPU array constructor (e.g., `CuArray`, `ROCArray`, `Array` for CPU)
 
@@ -91,7 +93,7 @@ Create a GPU-accelerated acquisition plan.
 ```julia
 using Acquisition, GNSSSignals, AMDGPU
 
-plan = KAAcquisitionPlan(GPSL1(), 16368, 16.368e6Hz, ROCArray; prns=1:32)
+plan = KAAcquisitionPlan(GPSL1(), 16.368e6Hz, ROCArray; prns=1:32)
 ```
 
 # See also
@@ -99,7 +101,7 @@ plan = KAAcquisitionPlan(GPSL1(), 16368, 16.368e6Hz, ROCArray; prns=1:32)
 """
 function KAAcquisitionPlan(
     system::S,
-    signal_length::Integer,
+    num_samples_to_integrate_coherently::Integer,
     sampling_freq,
     ArrayType::Type{<:AbstractArray};
     eltype::Type{T}=Float32,
@@ -115,9 +117,9 @@ function KAAcquisitionPlan(
 
     # Generate replica codes on CPU
     codes_cpu = reduce(hcat, [
-        gen_code(signal_length, system, prn, sampling_freq)
+        gen_code(num_samples_to_integrate_coherently, system, prn, sampling_freq)
         for prn in prns
-    ])  # (signal_length × num_prns)
+    ])  # (num_samples_to_integrate_coherently × num_prns)
 
     # Store Doppler frequencies on GPU (small vector for kernel when offset needed)
     dopplers_gpu = ArrayType{T}(collect(T, dopplers_hz))
@@ -127,21 +129,22 @@ function KAAcquisitionPlan(
     sampling_freq_val = T(ustrip(sampling_freq))
     downconvert_phases_cpu = [
         cis(T(-2) * T(π) * T(dopplers_hz[d]) * T(i - 1) / sampling_freq_val)
-        for i in 1:signal_length, d in 1:num_dopplers
+        for i in 1:num_samples_to_integrate_coherently, d in 1:num_dopplers
     ]
     downconvert_phases = ArrayType{Complex{T}}(downconvert_phases_cpu)
 
     # Allocate buffers on GPU - use 2D arrays to reduce memory (reused per PRN)
-    signal_baseband = ArrayType{Complex{T}}(undef, signal_length, num_dopplers)
+    signal_baseband = ArrayType{Complex{T}}(undef, num_samples_to_integrate_coherently, num_dopplers)
     signal_baseband_freq_domain = similar(signal_baseband)
-    code_baseband_freq_domain = ArrayType{Complex{T}}(undef, signal_length, num_dopplers)  # 2D, reused
+    code_baseband_freq_domain = ArrayType{Complex{T}}(undef, num_samples_to_integrate_coherently, num_dopplers)  # 2D, reused
     code_baseband = similar(code_baseband_freq_domain)  # 2D, reused
 
-    # Preallocate power buffer (only need code_samples rows, not full signal_length)
-    Δt = signal_length / sampling_freq
+    # Preallocate power buffer (only need code_samples rows, not full num_samples_to_integrate_coherently)
+    Δt = num_samples_to_integrate_coherently / sampling_freq
     code_period = get_code_length(system) / get_code_frequency(system)
     num_code_samples = ceil(Int, sampling_freq * min(Δt, code_period))
     power_buffer = ArrayType{T}(undef, num_code_samples, num_dopplers)
+    power_accumulator = ArrayType{T}(undef, num_code_samples, num_dopplers)
 
     # Preallocate reduction buffers (1024 threads is typical)
     num_reduction_threads = 1024
@@ -170,6 +173,7 @@ function KAAcquisitionPlan(
 
     KAAcquisitionPlan{T,S,typeof(dopplers_gpu),typeof(codes_freq_domain),typeof(power_buffer),typeof(findmax_idxs_gpu),typeof(fft_plan),typeof(bfft_plan)}(
         system,
+        num_samples_to_integrate_coherently,
         dopplers_hz,
         sampling_freq,
         codes_freq_domain,
@@ -180,6 +184,7 @@ function KAAcquisitionPlan(
         code_baseband_freq_domain,
         code_baseband,
         power_buffer,
+        power_accumulator,
         findmax_vals_gpu,
         findmax_vals_cpu,
         findmax_idxs_gpu,
@@ -190,6 +195,19 @@ function KAAcquisitionPlan(
         bfft_plan,
         collect(prns),
     )
+end
+
+# Convenience constructor that defaults num_samples_to_integrate_coherently to one bit period
+function KAAcquisitionPlan(
+    system::S,
+    sampling_freq,
+    ArrayType::Type{<:AbstractArray};
+    kwargs...
+) where {S<:AbstractGNSS}
+    # Default to one bit period worth of samples for optimal non-coherent integration
+    data_frequency = get_data_frequency(system)
+    num_samples_to_integrate_coherently = ceil(Int, sampling_freq / data_frequency)
+    KAAcquisitionPlan(system, num_samples_to_integrate_coherently, sampling_freq, ArrayType; kwargs...)
 end
 
 # ============================================================================
@@ -342,30 +360,12 @@ function acquire!(
 
     isempty(prns) && return AcquisitionResults{S,Float32}[]
 
-    # 1. Batched downconversion
-    # Use precomputed phase factors when no runtime offset (faster), otherwise use kernel
-    if iszero(ustrip(interm_freq)) && iszero(ustrip(doppler_offset))
-        # Fast path: use precomputed phases (broadcast is faster than kernel)
-        plan.signal_baseband .= signal .* plan.downconvert_phases
-    else
-        # Slow path: use kernel for runtime frequency offsets
-        backend = get_backend(signal)
-        freq_offset = T(ustrip(doppler_offset + interm_freq))
-        inv_sampling_freq = T(1.0 / ustrip(plan.sampling_frequency))
-        ka_downconvert_kernel!(backend)(
-            plan.signal_baseband, signal, plan.dopplers_gpu, freq_offset, inv_sampling_freq,
-            ndrange=size(plan.signal_baseband)
-        )
-    end
-
-    # 2. Batched FFT along sample dimension (columns)
-    # Use mul! for in-place operation when possible
-    mul!(plan.signal_baseband_freq_domain, plan.fft_plan, plan.signal_baseband)
-
     # Precompute constants
-    num_samples = size(plan.signal_baseband, 1)
+    chunk_samples = plan.num_samples_to_integrate_coherently
+    num_signal_samples = length(signal)
+    num_chunks = cld(num_signal_samples, chunk_samples)
     code_period = get_code_length(plan.system) / get_code_frequency(plan.system)
-    Δt = num_samples / plan.sampling_frequency
+    Δt = chunk_samples / plan.sampling_frequency
     num_code_samples = ceil(Int, plan.sampling_frequency * min(Δt, code_period))
     samples_per_chip = floor(Int, plan.sampling_frequency / get_code_frequency(plan.system))
     backend = get_backend(plan.signal_baseband)
@@ -374,27 +374,79 @@ function acquire!(
     result_dopplers = iszero(ustrip(doppler_offset)) ? plan.dopplers :
                       (plan.dopplers .+ Float64(ustrip(doppler_offset)))
 
-    # Process each PRN sequentially (uses 2D buffers, much less memory than 3D)
-    map(prns) do prn
-        prn_idx = findfirst(==(prn), plan.avail_prn_channels)
+    # Get PRN indices upfront
+    prn_indices = [findfirst(==(prn), plan.avail_prn_channels) for prn in prns]
+    num_prns = length(prns)
 
-        # 3. Code multiplication for this PRN
-        plan.code_baseband_freq_domain .=
-            view(plan.codes_freq_domain, :, prn_idx) .* conj.(plan.signal_baseband_freq_domain)
+    # Allocate per-PRN power accumulators (reuse power_buffer for first PRN, allocate rest)
+    # We need to track accumulated powers per PRN across chunks
+    power_accumulators = [
+        similar(plan.power_accumulator) for _ in 1:num_prns
+    ]
 
-        # 4. Backward FFT (2D, reuses buffer)
-        mul!(plan.code_baseband, plan.bfft_plan, plan.code_baseband_freq_domain)
+    # Process signal in chunks - downconvert/FFT once per chunk for all PRNs
+    for chunk_idx in 1:num_chunks
+        start_idx = (chunk_idx - 1) * chunk_samples + 1
+        end_idx = min(chunk_idx * chunk_samples, num_signal_samples)
+        actual_chunk_size = end_idx - start_idx + 1
+        signal_chunk = view(signal, start_idx:end_idx)
 
-        # 5. Compute power on GPU using preallocated buffer
-        plan.power_buffer .= abs2.(view(plan.code_baseband, 1:num_code_samples, :))
+        # 1. Batched downconversion for this chunk (ONCE per chunk, not per PRN)
+        # Zero-pad for partial chunks
+        if actual_chunk_size < chunk_samples
+            plan.signal_baseband .= zero(eltype(plan.signal_baseband))
+        end
 
-        # 6. Fused findmax + sum: single kernel computes peak AND total power
-        # This reduces 3 GPU→CPU syncs to 1, giving ~15-20% speedup per PRN
+        if iszero(ustrip(interm_freq)) && iszero(ustrip(doppler_offset))
+            # Fast path: use precomputed phases
+            signal_view = view(plan.signal_baseband, 1:actual_chunk_size, :)
+            phases_view = view(plan.downconvert_phases, 1:actual_chunk_size, :)
+            signal_view .= signal_chunk .* phases_view
+        else
+            # Slow path: use kernel for runtime frequency offsets
+            freq_offset = T(ustrip(doppler_offset + interm_freq))
+            inv_sampling_freq = T(1.0 / ustrip(plan.sampling_frequency))
+            ka_downconvert_kernel!(backend)(
+                plan.signal_baseband,
+                signal_chunk,
+                plan.dopplers_gpu,
+                freq_offset,
+                inv_sampling_freq,
+                ndrange=(actual_chunk_size, size(plan.signal_baseband, 2))
+            )
+        end
+
+        # 2. Batched FFT along sample dimension (ONCE per chunk, not per PRN)
+        mul!(plan.signal_baseband_freq_domain, plan.fft_plan, plan.signal_baseband)
+
+        # 3-5. Process each PRN with the already-transformed signal
+        for (p_idx, prn_idx) in enumerate(prn_indices)
+            # 3. Code multiplication for this PRN
+            plan.code_baseband_freq_domain .=
+                view(plan.codes_freq_domain, :, prn_idx) .* conj.(plan.signal_baseband_freq_domain)
+
+            # 4. Backward FFT
+            mul!(plan.code_baseband, plan.bfft_plan, plan.code_baseband_freq_domain)
+
+            # 5. Compute power and accumulate
+            if chunk_idx == 1
+                power_accumulators[p_idx] .= abs2.(view(plan.code_baseband, 1:num_code_samples, :))
+            else
+                power_accumulators[p_idx] .+= abs2.(view(plan.code_baseband, 1:num_code_samples, :))
+            end
+        end
+    end
+
+    # 6. Process results for each PRN
+    map(enumerate(prns)) do (p_idx, prn)
+        power_acc = power_accumulators[p_idx]
+
+        # Fused findmax + sum on accumulated powers
         signal_noise_power, linear_idx, total_power = gpu_findmax_and_sum!(
             plan.findmax_vals_gpu, plan.findmax_vals_cpu,
             plan.findmax_idxs_gpu, plan.findmax_idxs_cpu,
             plan.sum_buffer_gpu, plan.sum_buffer_cpu,
-            plan.power_buffer, backend
+            power_acc, backend
         )
 
         # Convert linear index to (code_index, doppler_index)
@@ -402,25 +454,20 @@ function acquire!(
         code_index = mod(linear_idx - 1, num_code_samples) + 1
 
         # Compute noise power from total minus peak region
-        # Peak region is ±samples_per_chip around peak code phase, all dopplers
-        num_dopplers = size(plan.power_buffer, 2)
+        num_dopplers = size(power_acc, 2)
         lower_end = max(1, code_index - samples_per_chip)
         upper_start = min(num_code_samples, code_index + samples_per_chip) + 1
-        peak_rows = (upper_start - 1) - (lower_end - 1)  # Rows in peak region
+        peak_rows = (upper_start - 1) - (lower_end - 1)
         peak_region_samples = peak_rows * num_dopplers
-        total_samples = length(plan.power_buffer)
+        total_samples = length(power_acc)
         noise_samples = total_samples - peak_region_samples
 
-        # Approximate peak region power as signal_noise_power × num_dopplers
-        # (the peak appears in one Doppler bin but we exclude all Dopplers at those code phases)
-        # More accurate: peak contribution ≈ signal_noise_power + (peak_rows-1) * avg_noise_per_row * num_dopplers
-        # Simplified: just use total - (peak_rows × num_dopplers × avg_noise)
-        # Since avg_noise ≈ total / total_samples, this becomes:
-        # noise_sum ≈ total_power × (noise_samples / total_samples)
         noise_power = noise_samples > 0 ? (total_power / total_samples) : zero(T)
         signal_power = signal_noise_power - noise_power
 
-        # CN0 calculation
+        # CN0 includes coherent integration gain (normalized by code_period).
+        # Non-coherent integration improves detection probability but doesn't increase
+        # the measured SNR ratio, so no explicit gain is added here.
         snr = max(signal_power / noise_power, T(1e-10))
         CN0 = 10 * log10(snr / code_period / 1.0Hz)
         doppler = (doppler_index - 1) * step(plan.dopplers) + first(plan.dopplers) +
@@ -429,7 +476,7 @@ function acquire!(
 
         # Only keep full power matrix if requested
         result_powers = if store_powers
-            Matrix{Float32}(Array(plan.power_buffer))
+            Matrix{Float32}(Array(power_acc))
         else
             Matrix{Float32}(undef, 0, 0)
         end
