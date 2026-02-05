@@ -123,3 +123,48 @@ for signal_type in CPU_SIGNAL_TYPES
             @benchmarkable acquire!($plan, $signal, $(1:1))
     end
 end
+
+# ============================================================================
+# Non-coherent integration benchmarks (signals longer than bit period)
+# Only run if the 2-argument constructor (system, sampling_freq) is available
+# ============================================================================
+
+# Check if convenience constructor exists (added with non-coherent integration support)
+const _supports_noncoherent = hasmethod(AcquisitionPlan,
+    Tuple{typeof(GPSL1()), typeof(1.0Hz)},
+    (:prns, :fft_flag))
+
+if _supports_noncoherent
+    CPU_SUITE["NonCoherent"] = BenchmarkGroup()
+
+    # Test with signals spanning 1, 1.5, 2, and 3 bit periods
+    const BIT_PERIOD_MULTIPLIERS = [1.0, 1.5, 2.0, 3.0]
+
+    for multiplier in BIT_PERIOD_MULTIPLIERS
+        system = GPSL1()
+        # Calculate bit period in samples at our sampling frequency
+        bit_period_samples = ceil(Int, CPU_SAMPLING_FREQ / get_data_frequency(system))
+        num_samples = ceil(Int, multiplier * bit_period_samples)
+
+        # Create plan with default bit period chunk size (single PRN for faster benchmarks)
+        plan = AcquisitionPlan(system, CPU_SAMPLING_FREQ; prns=1:1, fft_flag=FFTW.ESTIMATE)
+        signal = _make_signal(num_samples, Float32)
+
+        CPU_SUITE["NonCoherent"]["$(multiplier)x_bit_period"] =
+            @benchmarkable acquire!($plan, $signal, $(1:1))
+    end
+
+    CPU_SUITE["NonCoherent CoarseFine"] = BenchmarkGroup()
+
+    for multiplier in BIT_PERIOD_MULTIPLIERS
+        system = GPSL1()
+        bit_period_samples = ceil(Int, CPU_SAMPLING_FREQ / get_data_frequency(system))
+        num_samples = ceil(Int, multiplier * bit_period_samples)
+
+        plan = CoarseFineAcquisitionPlan(system, CPU_SAMPLING_FREQ; prns=1:1, fft_flag=FFTW.ESTIMATE)
+        signal = _make_signal(num_samples, Float32)
+
+        CPU_SUITE["NonCoherent CoarseFine"]["$(multiplier)x_bit_period"] =
+            @benchmarkable acquire!($plan, $signal, $(1:1))
+    end
+end

@@ -336,3 +336,101 @@ end
     @test cf_results isa Vector
     @test cf_results[1].power_bins === cf_plan.fine_plan.signal_powers[1]
 end
+
+@testset "Non-coherent integration for signals longer than bit period" begin
+    Random.seed!(4567)
+    system = GPSL1()
+    sampling_freq = 5e6Hz
+    doppler = 500Hz
+    code_phase = 50.5
+    prn = 1
+    CN0 = 45
+
+    # Calculate bit period samples (20ms for GPS L1 at 50Hz data rate)
+    bit_period_samples = ceil(Int, sampling_freq / get_data_frequency(system))
+
+    # Create signal spanning 2.5 bit periods (50ms)
+    num_samples = ceil(Int, 2.5 * bit_period_samples)
+
+    code = gen_code(
+        num_samples,
+        system,
+        prn,
+        sampling_freq,
+        get_code_frequency(system) + doppler * get_code_center_frequency_ratio(system),
+        code_phase,
+    )
+
+    carrier = cis.(2π * (0:num_samples-1) * doppler / sampling_freq)
+
+    noise_power = 10 * log10(sampling_freq / 1.0Hz)
+    signal_power = CN0
+    noise = randn(ComplexF64, num_samples)
+    signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
+    signal_typed = ComplexF32.(signal)
+
+    # Test with plan using default bit period chunk size
+    acq_plan = AcquisitionPlan(system, sampling_freq; prns = [prn], fft_flag = FFTW.ESTIMATE)
+    @test acq_plan.num_samples_to_integrate_coherently == bit_period_samples
+
+    result = acquire!(acq_plan, signal_typed, prn)
+
+    # Verify acquisition still finds the signal correctly
+    @test result.code_phase ≈ code_phase atol = 0.5
+    @test abs(result.carrier_doppler - doppler) < 250Hz  # Within one Doppler bin
+    @test result.prn == prn
+    # CN0 estimate includes coherent integration gain only:
+    # - Coherent gain from 1 bit period (20 code periods): 10·log10(20) ≈ 13 dB
+    # Non-coherent integration improves detection probability but doesn't increase
+    # the measured SNR ratio, so no explicit gain is added to avoid false detections.
+    # Expected CN0 ≈ input (45) + coherent (13) ≈ 58 dBHz
+    codes_per_chunk = 20  # 1 bit period = 20 code periods
+    coherent_gain = 10 * log10(codes_per_chunk)
+    expected_CN0 = CN0 + coherent_gain
+    @test result.CN0 ≈ expected_CN0 atol = 5
+
+    # Test CoarseFineAcquisitionPlan with long signal
+    cf_plan = CoarseFineAcquisitionPlan(system, sampling_freq; prns = [prn], fft_flag = FFTW.ESTIMATE)
+    cf_result = acquire!(cf_plan, signal_typed, prn)
+
+    @test cf_result.code_phase ≈ code_phase atol = 0.5
+    @test abs(cf_result.carrier_doppler - doppler) < 50Hz  # Fine search should be more accurate
+    @test cf_result.prn == prn
+    @test cf_result.CN0 ≈ expected_CN0 atol = 5
+end
+
+@testset "Non-coherent integration is allocation-free" begin
+    Random.seed!(5678)
+    system = GPSL1()
+    sampling_freq = 5e6Hz
+
+    # Calculate bit period samples
+    bit_period_samples = ceil(Int, sampling_freq / get_data_frequency(system))
+
+    # Create plan with bit period chunk size
+    acq_plan = AcquisitionPlan(system, sampling_freq; prns = 1:5, fft_flag = FFTW.ESTIMATE)
+
+    # Create signal spanning multiple bit periods (2 chunks)
+    num_samples = ceil(Int, 1.5 * bit_period_samples)
+    signal = randn(ComplexF32, num_samples)
+
+    prns = [1, 2]
+
+    # Warmup
+    acquire!(acq_plan, signal, prns)
+    acquire!(acq_plan, signal, prns)
+
+    # Measure allocations - should be zero even with chunking
+    allocs = @allocated acquire!(acq_plan, signal, prns)
+    @test allocs == 0
+
+    # Also test CoarseFineAcquisitionPlan
+    cf_plan = CoarseFineAcquisitionPlan(system, sampling_freq; prns = 1:5, fft_flag = FFTW.ESTIMATE)
+
+    # Warmup
+    acquire!(cf_plan, signal, prns)
+    acquire!(cf_plan, signal, prns)
+
+    cf_allocs = @allocated acquire!(cf_plan, signal, prns)
+    @test cf_allocs == 0
+end

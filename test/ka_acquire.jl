@@ -194,3 +194,61 @@ end
     result_no_powers = acquire!(plan, signal, prn; store_powers=false)
     @test size(result_no_powers.power_bins) == (0, 0)
 end
+
+@testset "KAAcquisitionPlan non-coherent integration" begin
+    Random.seed!(4567)
+    system = GPSL1()
+    sampling_freq = 5e6Hz
+    doppler = 500Hz
+    code_phase = 50.5
+    prn = 1
+    CN0 = 45
+
+    # Calculate bit period samples (20ms for GPS L1 at 50Hz data rate)
+    bit_period_samples = ceil(Int, sampling_freq / get_data_frequency(system))
+
+    # Create signal spanning 2.5 bit periods (50ms)
+    num_samples = ceil(Int, 2.5 * bit_period_samples)
+
+    code = gen_code(
+        num_samples,
+        system,
+        prn,
+        sampling_freq,
+        get_code_frequency(system) + doppler * get_code_center_frequency_ratio(system),
+        code_phase,
+    )
+
+    carrier = cis.(2π * (0:num_samples-1) * doppler / sampling_freq)
+
+    noise_power = 10 * log10(sampling_freq / 1.0Hz)
+    signal_power = CN0
+    noise = randn(ComplexF64, num_samples)
+    signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
+    signal_typed = ComplexF32.(signal)
+
+    # Test with plan using default bit period chunk size (uses convenience constructor)
+    ka_plan = KAAcquisitionPlan(system, sampling_freq, Array; prns=[prn])
+    @test ka_plan.num_samples_to_integrate_coherently == bit_period_samples
+
+    result = acquire!(ka_plan, signal_typed, prn)
+
+    # Verify acquisition still finds the signal correctly
+    @test result.code_phase ≈ code_phase atol = 0.5
+    @test abs(result.carrier_doppler - doppler) < 250Hz
+    @test result.prn == prn
+
+    # CN0 includes coherent integration gain only (no explicit non-coherent gain)
+    codes_per_chunk = 20  # 1 bit period = 20 code periods
+    coherent_gain = 10 * log10(codes_per_chunk)
+    expected_CN0 = CN0 + coherent_gain
+    @test result.CN0 ≈ expected_CN0 atol = 5
+
+    # Compare with CPU AcquisitionPlan - results should be similar
+    cpu_plan = AcquisitionPlan(system, sampling_freq; prns=[prn], fft_flag=FFTW.ESTIMATE)
+    cpu_result = acquire!(cpu_plan, signal_typed, prn)
+
+    @test abs(result.carrier_doppler - cpu_result.carrier_doppler) < 250Hz
+    @test abs(result.code_phase - cpu_result.code_phase) < 0.5
+    @test abs(result.CN0 - cpu_result.CN0) < 3
+end

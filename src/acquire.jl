@@ -7,31 +7,37 @@ Searches for GNSS signals by correlating the input signal with locally generated
 replica codes across a grid of Doppler frequencies and code phases.
 
 # Arguments
-- `system`: GNSS system (e.g., `GPSL1()` from GNSSSignals.jl)
-- `signal`: Complex baseband signal samples
-- `sampling_freq`: Sampling frequency of the signal
-- `prns`: PRN numbers to search (e.g., `1:32`)
+
+  - `system`: GNSS system (e.g., `GPSL1()` from GNSSSignals.jl)
+  - `signal`: Complex baseband signal samples
+  - `sampling_freq`: Sampling frequency of the signal
+  - `prns`: PRN numbers to search (e.g., `1:32`)
 
 # Keyword Arguments
-- `interm_freq`: Intermediate frequency (default: `0.0Hz`)
-- `max_doppler`: Maximum Doppler frequency (default: `7000Hz`)
-- `min_doppler`: Minimum Doppler frequency (default: `-max_doppler`)
-- `dopplers`: Custom Doppler search range (default: `min_doppler:250Hz:max_doppler`)
+
+  - `interm_freq`: Intermediate frequency (default: `0.0Hz`)
+  - `max_doppler`: Maximum Doppler frequency (default: `7000Hz`)
+  - `min_doppler`: Minimum Doppler frequency (default: `-max_doppler`)
+  - `dopplers`: Custom Doppler search range (default: `min_doppler:250Hz:max_doppler`)
 
 # Returns
+
 Vector of [`AcquisitionResults`](@ref), one per PRN, containing:
-- `carrier_doppler`: Estimated Doppler frequency
-- `code_phase`: Estimated code phase in chips
-- `CN0`: Carrier-to-noise density ratio in dB-Hz
-- `power_bins`: Correlation power matrix for plotting
+
+  - `carrier_doppler`: Estimated Doppler frequency
+  - `code_phase`: Estimated code phase in chips
+  - `CN0`: Carrier-to-noise density ratio in dB-Hz
+  - `power_bins`: Correlation power matrix for plotting
 
 # Example
+
 ```julia
 using Acquisition, GNSSSignals
 results = acquire(GPSL1(), signal, 5e6Hz, 1:32)
 ```
 
 # See also
+
 [`acquire!`](@ref), [`coarse_fine_acquire`](@ref), [`AcquisitionPlan`](@ref)
 """
 function acquire(
@@ -44,9 +50,10 @@ function acquire(
     min_doppler = -max_doppler,
     dopplers = min_doppler:250Hz:max_doppler,
 )
+    bit_period_samples = ceil(Int, sampling_freq / get_data_frequency(system))
     acq_plan = AcquisitionPlan(
         system,
-        length(signal),
+        min(length(signal), bit_period_samples),
         sampling_freq;
         dopplers,
         prns,
@@ -64,26 +71,31 @@ Using a pre-computed plan avoids repeated memory allocation and FFT planning,
 which significantly improves performance when acquiring multiple signals.
 
 # Arguments
-- `acq_plan`: Pre-computed [`AcquisitionPlan`](@ref)
-- `signal`: Complex baseband signal samples
-- `prns`: PRN numbers to search (must be subset of `acq_plan.avail_prn_channels`)
+
+  - `acq_plan`: Pre-computed [`AcquisitionPlan`](@ref)
+  - `signal`: Complex baseband signal samples
+  - `prns`: PRN numbers to search (must be subset of `acq_plan.avail_prn_channels`)
 
 # Keyword Arguments
-- `interm_freq`: Intermediate frequency (default: `0.0Hz`)
-- `doppler_offset`: Offset added to Doppler search range (default: `0.0Hz`)
-- `noise_power`: Pre-computed noise power, or `nothing` to estimate (default: `nothing`)
+
+  - `interm_freq`: Intermediate frequency (default: `0.0Hz`)
+  - `doppler_offset`: Offset added to Doppler search range (default: `0.0Hz`)
+  - `noise_power`: Pre-computed noise power, or `nothing` to estimate (default: `nothing`)
 
 # Returns
+
 Vector of [`AcquisitionResults`](@ref), one per PRN.
 
 # Example
+
 ```julia
 using Acquisition, GNSSSignals
-plan = AcquisitionPlan(GPSL1(), 10000, 5e6Hz; prns=1:32)
+plan = AcquisitionPlan(GPSL1(), 10000, 5e6Hz; prns = 1:32)
 results = acquire!(plan, signal, 1:32)
 ```
 
 # See also
+
 [`acquire`](@ref), [`AcquisitionPlan`](@ref)
 """
 function acquire!(
@@ -100,9 +112,28 @@ function acquire!(
     DS = typeof(acq_plan.dopplers)
     isempty(prns) && return AcquisitionResults{S,Float32,DS}[]
     code_period = get_code_length(acq_plan.system) / get_code_frequency(acq_plan.system)
-    # power_over_doppler_and_codes! populates acq_plan.prn_indices
-    powers_per_sats =
-        power_over_doppler_and_codes!(acq_plan, signal, prns, interm_freq, doppler_offset)
+
+    chunk_samples = acq_plan.num_samples_to_integrate_coherently
+    num_signal_samples = length(signal)
+
+    # Process signal in chunks, accumulating powers non-coherently
+    # First chunk overwrites (accumulate=false), subsequent chunks add (accumulate=true)
+    num_chunks = cld(num_signal_samples, chunk_samples)
+    for chunk_idx = 1:num_chunks
+        start_idx = (chunk_idx - 1) * chunk_samples + 1
+        end_idx = min(chunk_idx * chunk_samples, num_signal_samples)
+        signal_chunk = view(signal, start_idx:end_idx)
+
+        power_over_doppler_and_codes!(
+            acq_plan,
+            signal_chunk,
+            prns,
+            interm_freq,
+            doppler_offset;
+            accumulate = chunk_idx > 1,
+        )
+    end
+    powers_per_sats = view(acq_plan.signal_powers, acq_plan.prn_indices)
 
     # resize! does not allocate when shrinking or staying within original capacity
     resize!(acq_plan.output_results, length(prns))
@@ -114,6 +145,9 @@ function acquire!(
             get_code_frequency(acq_plan.system),
             noise_power,
         )
+        # CN0 includes coherent integration gain (normalized by code_period).
+        # Non-coherent integration improves detection probability but doesn't increase
+        # the measured SNR ratio, so no explicit gain is added here.
         CN0 = 10 * log10(signal_power / noise_power_est / code_period / 1.0Hz)
         doppler =
             (doppler_index - 1) * step(acq_plan.dopplers) +
@@ -155,8 +189,11 @@ function acquire!(
         fine_plan.prn_indices[i] = findfirst(==(prn), fine_plan.avail_prn_channels)
     end
 
-    # Process each PRN through fine acquisition without allocating
     code_period = get_code_length(fine_plan.system) / get_code_frequency(fine_plan.system)
+
+    chunk_samples = fine_plan.num_samples_to_integrate_coherently
+    num_signal_samples = length(signal)
+    num_chunks = cld(num_signal_samples, chunk_samples)
 
     # resize! does not allocate when shrinking or staying within original capacity
     resize!(fine_plan.output_results, length(prns))
@@ -170,21 +207,29 @@ function acquire!(
         codes_freq_domain_view = view(fine_plan.codes_freq_domain, prn_idx:prn_idx)
 
         @inbounds for (doppler_idx, doppler) in enumerate(fine_plan.dopplers)
-            power_over_code!(
-                signal_powers_view,
-                doppler_idx,
-                fine_plan.signal_baseband,
-                fine_plan.signal_baseband_freq_domain,
-                fine_plan.code_freq_baseband_freq_domain,
-                fine_plan.code_baseband,
-                signal,
-                fine_plan.fft_plan,
-                fine_plan.ifft_plan,
-                codes_freq_domain_view,
-                doppler + doppler_offset,
-                fine_plan.sampling_freq,
-                interm_freq,
-            )
+            # Process signal in chunks, accumulating powers non-coherently
+            for chunk_idx = 1:num_chunks
+                start_idx = (chunk_idx - 1) * chunk_samples + 1
+                end_idx = min(chunk_idx * chunk_samples, num_signal_samples)
+                signal_chunk = view(signal, start_idx:end_idx)
+
+                power_over_code!(
+                    signal_powers_view,
+                    doppler_idx,
+                    fine_plan.signal_baseband,
+                    fine_plan.signal_baseband_freq_domain,
+                    fine_plan.code_freq_baseband_freq_domain,
+                    fine_plan.code_baseband,
+                    signal_chunk,
+                    fine_plan.fft_plan,
+                    fine_plan.ifft_plan,
+                    codes_freq_domain_view,
+                    doppler + doppler_offset,
+                    fine_plan.sampling_freq,
+                    interm_freq;
+                    accumulate = chunk_idx > 1,
+                )
+            end
         end
 
         # Compute result
@@ -195,6 +240,9 @@ function acquire!(
             get_code_frequency(fine_plan.system),
             noise_power,
         )
+        # CN0 includes coherent integration gain (normalized by code_period).
+        # Non-coherent integration improves detection probability but doesn't increase
+        # the measured SNR ratio, so no explicit gain is added here.
         CN0 = 10 * log10(signal_power / noise_power_est / code_period / 1.0Hz)
         doppler =
             (doppler_index - 1) * step(fine_plan.dopplers) +
@@ -229,27 +277,32 @@ Perform acquisition for a single satellite PRN.
 Convenience method that calls the multi-PRN version and returns a single result.
 
 # Arguments
-- `system`: GNSS system (e.g., `GPSL1()`)
-- `signal`: Complex baseband signal samples
-- `sampling_freq`: Sampling frequency of the signal
-- `prn`: Single PRN number to search
+
+  - `system`: GNSS system (e.g., `GPSL1()`)
+  - `signal`: Complex baseband signal samples
+  - `sampling_freq`: Sampling frequency of the signal
+  - `prn`: Single PRN number to search
 
 # Keyword Arguments
-- `interm_freq`: Intermediate frequency (default: `0.0Hz`)
-- `max_doppler`: Maximum Doppler frequency (default: `7000Hz`)
-- `min_doppler`: Minimum Doppler frequency (default: `-max_doppler`)
-- `dopplers`: Custom Doppler search range (default: `min_doppler:250Hz:max_doppler`)
+
+  - `interm_freq`: Intermediate frequency (default: `0.0Hz`)
+  - `max_doppler`: Maximum Doppler frequency (default: `7000Hz`)
+  - `min_doppler`: Minimum Doppler frequency (default: `-max_doppler`)
+  - `dopplers`: Custom Doppler search range (default: `min_doppler:250Hz:max_doppler`)
 
 # Returns
+
 Single [`AcquisitionResults`](@ref) for the requested PRN.
 
 # Example
+
 ```julia
 using Acquisition, GNSSSignals
 result = acquire(GPSL1(), signal, 5e6Hz, 1)
 ```
 
 # See also
+
 [`acquire`](@ref), [`coarse_fine_acquire`](@ref)
 """
 function acquire(
@@ -295,28 +348,33 @@ with a fine search around the detected Doppler. This approach provides high Dopp
 resolution while reducing computational cost compared to a single high-resolution search.
 
 # Arguments
-- `system`: GNSS system (e.g., `GPSL1()`)
-- `signal`: Complex baseband signal samples
-- `sampling_freq`: Sampling frequency of the signal
-- `prns`: PRN numbers to search (e.g., `1:32`)
+
+  - `system`: GNSS system (e.g., `GPSL1()`)
+  - `signal`: Complex baseband signal samples
+  - `sampling_freq`: Sampling frequency of the signal
+  - `prns`: PRN numbers to search (e.g., `1:32`)
 
 # Keyword Arguments
-- `interm_freq`: Intermediate frequency (default: `0.0Hz`)
-- `max_doppler`: Maximum Doppler frequency (default: `7000Hz`)
-- `min_doppler`: Minimum Doppler frequency (default: `-max_doppler`)
-- `coarse_step`: Doppler step for coarse search (default: `250Hz`)
-- `fine_step`: Doppler step for fine search (default: `25Hz`)
+
+  - `interm_freq`: Intermediate frequency (default: `0.0Hz`)
+  - `max_doppler`: Maximum Doppler frequency (default: `7000Hz`)
+  - `min_doppler`: Minimum Doppler frequency (default: `-max_doppler`)
+  - `coarse_step`: Doppler step for coarse search (default: `250Hz`)
+  - `fine_step`: Doppler step for fine search (default: `25Hz`)
 
 # Returns
+
 Vector of [`AcquisitionResults`](@ref), one per PRN, with refined Doppler estimates.
 
 # Example
+
 ```julia
 using Acquisition, GNSSSignals
 results = coarse_fine_acquire(GPSL1(), signal, 5e6Hz, 1:32)
 ```
 
 # See also
+
 [`acquire`](@ref), [`coarse_fine_acquire!`](@ref), [`CoarseFineAcquisitionPlan`](@ref)
 """
 function coarse_fine_acquire(
@@ -330,9 +388,10 @@ function coarse_fine_acquire(
     coarse_step = 250Hz,
     fine_step = 25Hz,
 )
+    bit_period_samples = ceil(Int, sampling_freq / get_data_frequency(system))
     acq_plan = CoarseFineAcquisitionPlan(
         system,
-        length(signal),
+        min(length(signal), bit_period_samples),
         sampling_freq;
         max_doppler,
         min_doppler,
@@ -352,28 +411,33 @@ Perform two-stage coarse-fine acquisition for a single satellite PRN.
 Convenience method that calls the multi-PRN version and returns a single result.
 
 # Arguments
-- `system`: GNSS system (e.g., `GPSL1()`)
-- `signal`: Complex baseband signal samples
-- `sampling_freq`: Sampling frequency of the signal
-- `prn`: Single PRN number to search
+
+  - `system`: GNSS system (e.g., `GPSL1()`)
+  - `signal`: Complex baseband signal samples
+  - `sampling_freq`: Sampling frequency of the signal
+  - `prn`: Single PRN number to search
 
 # Keyword Arguments
-- `interm_freq`: Intermediate frequency (default: `0.0Hz`)
-- `max_doppler`: Maximum Doppler frequency (default: `7000Hz`)
-- `min_doppler`: Minimum Doppler frequency (default: `-max_doppler`)
-- `coarse_step`: Doppler step for coarse search (default: `250Hz`)
-- `fine_step`: Doppler step for fine search (default: `25Hz`)
+
+  - `interm_freq`: Intermediate frequency (default: `0.0Hz`)
+  - `max_doppler`: Maximum Doppler frequency (default: `7000Hz`)
+  - `min_doppler`: Minimum Doppler frequency (default: `-max_doppler`)
+  - `coarse_step`: Doppler step for coarse search (default: `250Hz`)
+  - `fine_step`: Doppler step for fine search (default: `25Hz`)
 
 # Returns
+
 Single [`AcquisitionResults`](@ref) for the requested PRN.
 
 # Example
+
 ```julia
 using Acquisition, GNSSSignals
 result = coarse_fine_acquire(GPSL1(), signal, 5e6Hz, 1)
 ```
 
 # See also
+
 [`coarse_fine_acquire`](@ref), [`acquire`](@ref)
 """
 function coarse_fine_acquire(
@@ -410,24 +474,29 @@ Perform two-stage coarse-fine acquisition using a pre-computed plan.
 Alias for `acquire!(acq_plan::CoarseFineAcquisitionPlan, ...)`.
 
 # Arguments
-- `acq_plan`: Pre-computed [`CoarseFineAcquisitionPlan`](@ref)
-- `signal`: Complex baseband signal samples
-- `prns`: PRN numbers to search
+
+  - `acq_plan`: Pre-computed [`CoarseFineAcquisitionPlan`](@ref)
+  - `signal`: Complex baseband signal samples
+  - `prns`: PRN numbers to search
 
 # Keyword Arguments
-- `interm_freq`: Intermediate frequency (default: `0.0Hz`)
+
+  - `interm_freq`: Intermediate frequency (default: `0.0Hz`)
 
 # Returns
+
 Vector of [`AcquisitionResults`](@ref), one per PRN.
 
 # Example
+
 ```julia
 using Acquisition, GNSSSignals
-plan = CoarseFineAcquisitionPlan(GPSL1(), 10000, 5e6Hz; prns=1:32)
+plan = CoarseFineAcquisitionPlan(GPSL1(), 10000, 5e6Hz; prns = 1:32)
 results = coarse_fine_acquire!(plan, signal, 1:32)
 ```
 
 # See also
+
 [`coarse_fine_acquire`](@ref), [`CoarseFineAcquisitionPlan`](@ref)
 """
 const coarse_fine_acquire! = acquire!

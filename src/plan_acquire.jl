@@ -9,7 +9,7 @@ multiple signals with the same length and sampling frequency.
 # Fields
 
   - `system`: GNSS system (e.g., `GPSL1()`)
-  - `signal_length`: Number of samples in the signal
+  - `num_samples_to_integrate_coherently`: Number of samples per coherent integration chunk
   - `sampling_freq`: Sampling frequency
   - `dopplers`: Range of Doppler frequencies to search
   - `avail_prn_channels`: PRN channels available in this plan
@@ -20,7 +20,7 @@ multiple signals with the same length and sampling frequency.
 """
 struct AcquisitionPlan{T<:AbstractFloat,S,DS,CS,P,IP,PS}
     system::S
-    signal_length::Int
+    num_samples_to_integrate_coherently::Int
     sampling_freq::typeof(1.0Hz)
     dopplers::DS
     codes_freq_domain::CS
@@ -38,15 +38,18 @@ struct AcquisitionPlan{T<:AbstractFloat,S,DS,CS,P,IP,PS}
 end
 
 """
-    AcquisitionPlan(system, signal_length, sampling_freq; kwargs...)
+    AcquisitionPlan(system, sampling_freq; kwargs...)
+    AcquisitionPlan(system, num_samples_to_integrate_coherently, sampling_freq; kwargs...)
 
 Create an acquisition plan for efficient repeated acquisition.
 
 # Arguments
 
   - `system`: GNSS system (e.g., `GPSL1()`)
-  - `signal_length`: Number of samples in the signal
   - `sampling_freq`: Sampling frequency of the signal
+  - `num_samples_to_integrate_coherently`: Number of samples per coherent integration chunk (optional).
+    Defaults to one bit period worth of samples, which enables non-coherent integration
+    across bit transitions for longer signals.
 
 # Keyword Arguments
 
@@ -62,11 +65,13 @@ Create an acquisition plan for efficient repeated acquisition.
 
 ```julia
 using Acquisition, GNSSSignals
-plan = AcquisitionPlan(GPSL1(), 10000, 5e6Hz; prns = 1:32)
+
+# Create plan with default chunk size (one bit period)
+plan = AcquisitionPlan(GPSL1(), 5e6Hz; prns = 1:32)
 results = acquire!(plan, signal, 1:32)
 
 # For ComplexF64 signals, use Float64 buffers for best performance:
-plan64 = AcquisitionPlan(GPSL1(), 10000, 5e6Hz; prns = 1:32, eltype = Float64)
+plan64 = AcquisitionPlan(GPSL1(), 5e6Hz; prns = 1:32, eltype = Float64)
 ```
 
 # See also
@@ -75,7 +80,7 @@ plan64 = AcquisitionPlan(GPSL1(), 10000, 5e6Hz; prns = 1:32, eltype = Float64)
 """
 function AcquisitionPlan(
     system,
-    signal_length,
+    num_samples_to_integrate_coherently,
     sampling_freq;
     eltype::Type{T} = Float32,
     max_doppler = 7000Hz,
@@ -90,13 +95,13 @@ function AcquisitionPlan(
     code_baseband,
     codes_freq_domain,
     fft_plan,
-    ifft_plan = common_buffers(T, system, signal_length, sampling_freq, prns, fft_flag)
-    Δt = signal_length / sampling_freq
+    ifft_plan = common_buffers(T, system, num_samples_to_integrate_coherently, sampling_freq, prns, fft_flag)
+    chunk_duration = num_samples_to_integrate_coherently / sampling_freq
     code_interval = get_code_length(system) / get_code_frequency(system)
     signal_powers = [
         Matrix{Float32}(
             undef,
-            ceil(Int, sampling_freq * min(Δt, code_interval)),
+            ceil(Int, sampling_freq * min(chunk_duration, code_interval)),
             length(dopplers),
         ) for _ in prns
     ]
@@ -118,7 +123,7 @@ function AcquisitionPlan(
     output_results = Vector{Base.eltype(results)}(undef, length(prns))
     AcquisitionPlan(
         system,
-        signal_length,
+        num_samples_to_integrate_coherently,
         sampling_freq,
         dopplers,
         codes_freq_domain,
@@ -134,6 +139,18 @@ function AcquisitionPlan(
         prn_indices,
         output_results,
     )
+end
+
+# Convenience constructor that defaults num_samples_to_integrate_coherently to one bit period
+function AcquisitionPlan(
+    system,
+    sampling_freq;
+    kwargs...
+)
+    # Default to one bit period worth of samples for optimal non-coherent integration
+    data_frequency = get_data_frequency(system)
+    num_samples_to_integrate_coherently = ceil(Int, sampling_freq / data_frequency)
+    AcquisitionPlan(system, num_samples_to_integrate_coherently, sampling_freq; kwargs...)
 end
 
 """
@@ -160,15 +177,17 @@ struct CoarseFineAcquisitionPlan{C<:AcquisitionPlan,F<:AcquisitionPlan}
 end
 
 """
-    CoarseFineAcquisitionPlan(system, signal_length, sampling_freq; kwargs...)
+    CoarseFineAcquisitionPlan(system, sampling_freq; kwargs...)
+    CoarseFineAcquisitionPlan(system, num_samples_to_integrate_coherently, sampling_freq; kwargs...)
 
 Create a two-stage coarse-fine acquisition plan.
 
 # Arguments
 
   - `system`: GNSS system (e.g., `GPSL1()`)
-  - `signal_length`: Number of samples in the signal
   - `sampling_freq`: Sampling frequency of the signal
+  - `num_samples_to_integrate_coherently`: Number of samples per coherent integration chunk (optional).
+    Defaults to one bit period worth of samples.
 
 # Keyword Arguments
 
@@ -185,11 +204,13 @@ Create a two-stage coarse-fine acquisition plan.
 
 ```julia
 using Acquisition, GNSSSignals
-plan = CoarseFineAcquisitionPlan(GPSL1(), 10000, 5e6Hz; prns = 1:32)
+
+# Create plan with default chunk size (one bit period)
+plan = CoarseFineAcquisitionPlan(GPSL1(), 5e6Hz; prns = 1:32)
 results = acquire!(plan, signal, 1:32)
 
 # For ComplexF64 signals, use Float64 buffers for best performance:
-plan64 = CoarseFineAcquisitionPlan(GPSL1(), 10000, 5e6Hz; prns = 1:32, eltype = Float64)
+plan64 = CoarseFineAcquisitionPlan(GPSL1(), 5e6Hz; prns = 1:32, eltype = Float64)
 ```
 
 # See also
@@ -198,7 +219,7 @@ plan64 = CoarseFineAcquisitionPlan(GPSL1(), 10000, 5e6Hz; prns = 1:32, eltype = 
 """
 function CoarseFineAcquisitionPlan(
     system,
-    signal_length,
+    num_samples_to_integrate_coherently,
     sampling_freq;
     eltype::Type{T} = Float32,
     max_doppler = 7000Hz,
@@ -215,8 +236,8 @@ function CoarseFineAcquisitionPlan(
     code_baseband,
     codes_freq_domain,
     fft_plan,
-    ifft_plan = common_buffers(T, system, signal_length, sampling_freq, prns, fft_flag)
-    Δt = signal_length / sampling_freq
+    ifft_plan = common_buffers(T, system, num_samples_to_integrate_coherently, sampling_freq, prns, fft_flag)
+    Δt = num_samples_to_integrate_coherently / sampling_freq
     code_interval = get_code_length(system) / get_code_frequency(system)
     coarse_signal_powers = [
         Matrix{Float32}(
@@ -251,7 +272,7 @@ function CoarseFineAcquisitionPlan(
     coarse_output_results = Vector{Base.eltype(coarse_results)}(undef, length(prns))
     coarse_plan = AcquisitionPlan(
         system,
-        signal_length,
+        num_samples_to_integrate_coherently,
         sampling_freq,
         coarse_dopplers,
         codes_freq_domain,
@@ -285,7 +306,7 @@ function CoarseFineAcquisitionPlan(
     fine_output_results = Vector{Base.eltype(fine_results)}(undef, length(prns))
     fine_plan = AcquisitionPlan(
         system,
-        signal_length,
+        num_samples_to_integrate_coherently,
         sampling_freq,
         fine_doppler_range,
         codes_freq_domain,
@@ -304,18 +325,30 @@ function CoarseFineAcquisitionPlan(
     CoarseFineAcquisitionPlan(coarse_plan, fine_plan)
 end
 
+# Convenience constructor that defaults num_samples_to_integrate_coherently to one bit period
+function CoarseFineAcquisitionPlan(
+    system,
+    sampling_freq;
+    kwargs...
+)
+    # Default to one bit period worth of samples for optimal non-coherent integration
+    data_frequency = get_data_frequency(system)
+    num_samples_to_integrate_coherently = ceil(Int, sampling_freq / data_frequency)
+    CoarseFineAcquisitionPlan(system, num_samples_to_integrate_coherently, sampling_freq; kwargs...)
+end
+
 function common_buffers(
     ::Type{T},
     system,
-    signal_length,
+    num_samples_to_integrate_coherently,
     sampling_freq,
     prns,
     fft_flag,
 ) where {T}
-    codes = [gen_code(signal_length, system, sat_prn, sampling_freq) for sat_prn in prns]
-    signal_baseband = Vector{Complex{T}}(undef, signal_length)
+    codes = [gen_code(num_samples_to_integrate_coherently, system, sat_prn, sampling_freq) for sat_prn in prns]
+    signal_baseband = Vector{Complex{T}}(undef, num_samples_to_integrate_coherently)
     signal_baseband_freq_domain = similar(signal_baseband)
-    code_freq_baseband_freq_domain = Vector{ComplexF32}(undef, signal_length)
+    code_freq_baseband_freq_domain = Vector{ComplexF32}(undef, num_samples_to_integrate_coherently)
     code_baseband = similar(code_freq_baseband_freq_domain)
     fft_plan = plan_fft(signal_baseband; flags = fft_flag)
     ifft_plan = plan_ifft(code_freq_baseband_freq_domain; flags = fft_flag)

@@ -12,10 +12,11 @@ function downconvert!(
     signal::AbstractVector{Complex{TS}},
     frequency,
     sampling_freq,
+    num_samples::Int,
 ) where {T,TS}
     signal_real = reinterpret(reshape, TS, signal)
     downconverted_signal_real = reinterpret(reshape, T, downconverted_signal)
-    @turbo for i = 1:length(signal)
+    @turbo for i = 1:num_samples
         c_im, c_re = sincos(T(2π) * (i - 1) * T(frequency / sampling_freq))
         downconverted_signal_real[1, i] =
             signal_real[1, i] * c_re + signal_real[2, i] * c_im
@@ -23,4 +24,13 @@ function downconvert!(
             signal_real[2, i] * c_re - signal_real[1, i] * c_im
     end
     downconverted_signal
+end
+
+function downconvert!(
+    downconverted_signal::Vector{Complex{T}},
+    signal::Vector{Complex{TS}},
+    frequency,
+    sampling_freq,
+) where {T,TS}
+    downconvert!(downconverted_signal, signal, frequency, sampling_freq, length(signal))
 end
