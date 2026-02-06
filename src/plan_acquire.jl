@@ -18,7 +18,7 @@ multiple signals with the same length and sampling frequency.
 
 [`acquire!`](@ref), [`CoarseFineAcquisitionPlan`](@ref)
 """
-struct AcquisitionPlan{T<:AbstractFloat,S,DS,CS,P,IP,PS}
+struct AcquisitionPlan{T<:AbstractFloat,S,DS,CS,P,BP,PS}
     system::S
     signal_length::Int
     sampling_freq::typeof(1.0Hz)
@@ -30,7 +30,7 @@ struct AcquisitionPlan{T<:AbstractFloat,S,DS,CS,P,IP,PS}
     code_baseband::Vector{ComplexF32}
     signal_powers::Vector{Matrix{Float32}}
     fft_plan::P
-    ifft_plan::IP
+    bfft_plan::BP
     avail_prn_channels::PS
     results::Vector{AcquisitionResults{S,Float32,DS}}
     prn_indices::Vector{Int}
@@ -90,7 +90,7 @@ function AcquisitionPlan(
     code_baseband,
     codes_freq_domain,
     fft_plan,
-    ifft_plan = common_buffers(T, system, signal_length, sampling_freq, prns, fft_flag)
+    bfft_plan = common_buffers(T, system, signal_length, sampling_freq, prns, fft_flag)
     Δt = signal_length / sampling_freq
     code_interval = get_code_length(system) / get_code_frequency(system)
     signal_powers = [
@@ -128,7 +128,7 @@ function AcquisitionPlan(
         code_baseband,
         signal_powers,
         fft_plan,
-        ifft_plan,
+        bfft_plan,
         prns,
         results,
         prn_indices,
@@ -215,7 +215,7 @@ function CoarseFineAcquisitionPlan(
     code_baseband,
     codes_freq_domain,
     fft_plan,
-    ifft_plan = common_buffers(T, system, signal_length, sampling_freq, prns, fft_flag)
+    bfft_plan = common_buffers(T, system, signal_length, sampling_freq, prns, fft_flag)
     Δt = signal_length / sampling_freq
     code_interval = get_code_length(system) / get_code_frequency(system)
     coarse_signal_powers = [
@@ -261,7 +261,7 @@ function CoarseFineAcquisitionPlan(
         code_baseband,
         coarse_signal_powers,
         fft_plan,
-        ifft_plan,
+        bfft_plan,
         prns,
         coarse_results,
         coarse_prn_indices,
@@ -295,7 +295,7 @@ function CoarseFineAcquisitionPlan(
         code_baseband,
         fine_signal_powers,
         fft_plan,
-        ifft_plan,
+        bfft_plan,
         prns,
         fine_results,
         fine_prn_indices,
@@ -318,7 +318,9 @@ function common_buffers(
     code_freq_baseband_freq_domain = Vector{ComplexF32}(undef, signal_length)
     code_baseband = similar(code_freq_baseband_freq_domain)
     fft_plan = plan_fft(signal_baseband; flags = fft_flag)
-    ifft_plan = plan_ifft(code_freq_baseband_freq_domain; flags = fft_flag)
+    # Use bfft (backward FFT, unnormalized) - faster than ifft since we only need
+    # relative magnitudes for peak detection, not absolute values
+    bfft_plan = plan_bfft(code_freq_baseband_freq_domain; flags = fft_flag)
     codes_freq_domain = map(code -> fft_plan * code, codes)
     signal_baseband,
     signal_baseband_freq_domain,
@@ -326,5 +328,5 @@ function common_buffers(
     code_baseband,
     codes_freq_domain,
     fft_plan,
-    ifft_plan
+    bfft_plan
 end
