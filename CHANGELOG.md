@@ -1,5 +1,12 @@
 # Changelog
 
+# [1.3.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v1.2.0...v1.3.0) (2026-02-10)
+
+
+### Features
+
+* add non-coherent integration for signals longer than bit period ([a0dcbc8](https://github.com/JuliaGNSS/Acquisition.jl/commit/a0dcbc808e40f98d013eecf14e431f697b691378))
+
 # [1.2.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v1.1.0...v1.2.0) (2026-01-26)
 
 
