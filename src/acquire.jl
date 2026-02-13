@@ -57,7 +57,7 @@ function acquire(
         sampling_freq;
         dopplers,
         prns,
-        fft_flag = FFTW.ESTIMATE,
+        fft_flag = FFTW.MEASURE,
     )
     acquire!(acq_plan, signal, prns; interm_freq)
 end
@@ -398,7 +398,7 @@ function coarse_fine_acquire(
         coarse_step,
         fine_step,
         prns,
-        fft_flag = FFTW.ESTIMATE,
+        fft_flag = FFTW.MEASURE,
     )
     acquire!(acq_plan, signal, prns; interm_freq)
 end
