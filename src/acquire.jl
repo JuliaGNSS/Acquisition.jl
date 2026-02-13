@@ -18,7 +18,11 @@ replica codes across a grid of Doppler frequencies and code phases.
   - `interm_freq`: Intermediate frequency (default: `0.0Hz`)
   - `max_doppler`: Maximum Doppler frequency (default: `7000Hz`)
   - `min_doppler`: Minimum Doppler frequency (default: `-max_doppler`)
-  - `dopplers`: Custom Doppler search range (default: `min_doppler:250Hz:max_doppler`)
+  - `samples_to_integrate_coherently`: Number of samples per coherent integration chunk
+    (default: `ceil(Int, sampling_freq / get_data_frequency(system))`, i.e. one bit period)
+  - `doppler_step_factor`: Factor for computing Doppler step from integration time (default: `1//3`).
+    The step is `doppler_step_factor / T` where `T = samples_to_integrate_coherently / sampling_freq`.
+  - `dopplers`: Custom Doppler search range (default: computed from `doppler_step_factor`)
 
 # Returns
 
@@ -48,12 +52,13 @@ function acquire(
     interm_freq = 0.0Hz,
     max_doppler = 7000Hz,
     min_doppler = -max_doppler,
-    dopplers = min_doppler:250Hz:max_doppler,
+    samples_to_integrate_coherently = ceil(Int, sampling_freq / get_data_frequency(system)),
+    doppler_step_factor = 1//3,
+    dopplers = min_doppler:(doppler_step_factor * sampling_freq / samples_to_integrate_coherently):max_doppler,
 )
-    bit_period_samples = ceil(Int, sampling_freq / get_data_frequency(system))
     acq_plan = AcquisitionPlan(
         system,
-        min(length(signal), bit_period_samples),
+        min(length(signal), samples_to_integrate_coherently),
         sampling_freq;
         dopplers,
         prns,
@@ -288,7 +293,10 @@ Convenience method that calls the multi-PRN version and returns a single result.
   - `interm_freq`: Intermediate frequency (default: `0.0Hz`)
   - `max_doppler`: Maximum Doppler frequency (default: `7000Hz`)
   - `min_doppler`: Minimum Doppler frequency (default: `-max_doppler`)
-  - `dopplers`: Custom Doppler search range (default: `min_doppler:250Hz:max_doppler`)
+  - `samples_to_integrate_coherently`: Number of samples per coherent integration chunk
+    (default: `ceil(Int, sampling_freq / get_data_frequency(system))`, i.e. one bit period)
+  - `doppler_step_factor`: Factor for computing Doppler step from integration time (default: `1//3`)
+  - `dopplers`: Custom Doppler search range (default: computed from `doppler_step_factor`)
 
 # Returns
 
@@ -313,9 +321,11 @@ function acquire(
     interm_freq = 0.0Hz,
     max_doppler = 7000Hz,
     min_doppler = -max_doppler,
-    dopplers = min_doppler:250Hz:max_doppler,
+    samples_to_integrate_coherently = ceil(Int, sampling_freq / get_data_frequency(system)),
+    doppler_step_factor = 1//3,
+    dopplers = min_doppler:(doppler_step_factor * sampling_freq / samples_to_integrate_coherently):max_doppler,
 )
-    only(acquire(system, signal, sampling_freq, [prn]; interm_freq, dopplers))
+    only(acquire(system, signal, sampling_freq, [prn]; interm_freq, dopplers, samples_to_integrate_coherently))
 end
 
 function acquire!(
@@ -359,8 +369,12 @@ resolution while reducing computational cost compared to a single high-resolutio
   - `interm_freq`: Intermediate frequency (default: `0.0Hz`)
   - `max_doppler`: Maximum Doppler frequency (default: `7000Hz`)
   - `min_doppler`: Minimum Doppler frequency (default: `-max_doppler`)
-  - `coarse_step`: Doppler step for coarse search (default: `250Hz`)
-  - `fine_step`: Doppler step for fine search (default: `25Hz`)
+  - `samples_to_integrate_coherently`: Number of samples per coherent integration chunk
+    (default: `ceil(Int, sampling_freq / get_data_frequency(system))`, i.e. one bit period)
+  - `doppler_step_factor`: Factor for computing coarse step from integration time (default: `1//3`).
+    The coarse step is `doppler_step_factor / T` where `T = samples_to_integrate_coherently / sampling_freq`.
+  - `coarse_step`: Doppler step for coarse search (default: computed from `doppler_step_factor`)
+  - `fine_step`: Doppler step for fine search (default: `coarse_step / 10`)
 
 # Returns
 
@@ -385,13 +399,14 @@ function coarse_fine_acquire(
     interm_freq = 0.0Hz,
     max_doppler = 7000Hz,
     min_doppler = -max_doppler,
-    coarse_step = 250Hz,
-    fine_step = 25Hz,
+    samples_to_integrate_coherently = ceil(Int, sampling_freq / get_data_frequency(system)),
+    doppler_step_factor = 1//3,
+    coarse_step = doppler_step_factor * sampling_freq / samples_to_integrate_coherently,
+    fine_step = coarse_step / 10,
 )
-    bit_period_samples = ceil(Int, sampling_freq / get_data_frequency(system))
     acq_plan = CoarseFineAcquisitionPlan(
         system,
-        min(length(signal), bit_period_samples),
+        min(length(signal), samples_to_integrate_coherently),
         sampling_freq;
         max_doppler,
         min_doppler,
@@ -422,8 +437,11 @@ Convenience method that calls the multi-PRN version and returns a single result.
   - `interm_freq`: Intermediate frequency (default: `0.0Hz`)
   - `max_doppler`: Maximum Doppler frequency (default: `7000Hz`)
   - `min_doppler`: Minimum Doppler frequency (default: `-max_doppler`)
-  - `coarse_step`: Doppler step for coarse search (default: `250Hz`)
-  - `fine_step`: Doppler step for fine search (default: `25Hz`)
+  - `samples_to_integrate_coherently`: Number of samples per coherent integration chunk
+    (default: `ceil(Int, sampling_freq / get_data_frequency(system))`, i.e. one bit period)
+  - `doppler_step_factor`: Factor for computing coarse step from integration time (default: `1//3`)
+  - `coarse_step`: Doppler step for coarse search (default: computed from `doppler_step_factor`)
+  - `fine_step`: Doppler step for fine search (default: `coarse_step / 10`)
 
 # Returns
 
@@ -448,8 +466,10 @@ function coarse_fine_acquire(
     interm_freq = 0.0Hz,
     max_doppler = 7000Hz,
     min_doppler = -max_doppler,
-    coarse_step = 250Hz,
-    fine_step = 25Hz,
+    samples_to_integrate_coherently = ceil(Int, sampling_freq / get_data_frequency(system)),
+    doppler_step_factor = 1//3,
+    coarse_step = doppler_step_factor * sampling_freq / samples_to_integrate_coherently,
+    fine_step = coarse_step / 10,
 )
     only(
         coarse_fine_acquire(
@@ -460,6 +480,7 @@ function coarse_fine_acquire(
             interm_freq,
             max_doppler,
             min_doppler,
+            samples_to_integrate_coherently,
             coarse_step,
             fine_step,
         ),
