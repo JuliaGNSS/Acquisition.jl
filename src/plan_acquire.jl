@@ -57,7 +57,10 @@ Create an acquisition plan for efficient repeated acquisition.
     `ComplexF64` signals to avoid allocations.
   - `max_doppler`: Maximum Doppler frequency to search (default: `7000Hz`)
   - `min_doppler`: Minimum Doppler frequency to search (default: `-max_doppler`)
-  - `dopplers`: Custom Doppler range (default: `min_doppler:250Hz:max_doppler`)
+  - `dopplers`: Custom Doppler range (default: computed from `doppler_step`)
+  - `doppler_step`: Doppler frequency step size (default: `doppler_step_factor / T` where
+    `T = num_samples_to_integrate_coherently / sampling_freq`)
+  - `doppler_step_factor`: Factor for computing Doppler step from integration time (default: `1//3`)
   - `prns`: PRN channels to prepare (default: `1:34`)
   - `fft_flag`: FFTW planning flag (default: `FFTW.MEASURE`)
 
@@ -85,7 +88,9 @@ function AcquisitionPlan(
     eltype::Type{T} = Float32,
     max_doppler = 7000Hz,
     min_doppler = -max_doppler,
-    dopplers = min_doppler:250Hz:max_doppler,
+    doppler_step_factor = 1//3,
+    doppler_step = doppler_step_factor * sampling_freq / num_samples_to_integrate_coherently,
+    dopplers = min_doppler:doppler_step:max_doppler,
     prns = 1:34,
     fft_flag = FFTW.MEASURE,
 ) where {T<:AbstractFloat}
@@ -195,8 +200,9 @@ Create a two-stage coarse-fine acquisition plan.
     `ComplexF64` signals to avoid allocations.
   - `max_doppler`: Maximum Doppler frequency to search (default: `7000Hz`)
   - `min_doppler`: Minimum Doppler frequency to search (default: `-max_doppler`)
-  - `coarse_step`: Doppler step size for coarse search (default: `250Hz`)
-  - `fine_step`: Doppler step size for fine search (default: `25Hz`)
+  - `coarse_step`: Doppler step size for coarse search (default: computed from `doppler_step_factor`)
+  - `fine_step`: Doppler step size for fine search (default: `coarse_step / 10`)
+  - `doppler_step_factor`: Factor for computing coarse step from integration time (default: `1//3`)
   - `prns`: PRN channels to prepare (default: `1:34`)
   - `fft_flag`: FFTW planning flag (default: `FFTW.MEASURE`)
 
@@ -224,8 +230,9 @@ function CoarseFineAcquisitionPlan(
     eltype::Type{T} = Float32,
     max_doppler = 7000Hz,
     min_doppler = -max_doppler,
-    coarse_step = 250Hz,
-    fine_step = 25Hz,
+    doppler_step_factor = 1//3,
+    coarse_step = doppler_step_factor * sampling_freq / num_samples_to_integrate_coherently,
+    fine_step = coarse_step / 10,
     prns = 1:34,
     fft_flag = FFTW.MEASURE,
 ) where {T<:AbstractFloat}
