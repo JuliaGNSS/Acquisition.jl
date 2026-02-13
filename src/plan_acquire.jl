@@ -337,6 +337,16 @@ function CoarseFineAcquisitionPlan(
     CoarseFineAcquisitionPlan(system, num_samples_to_integrate_coherently, sampling_freq; kwargs...)
 end
 
+const FFTW_WISDOM_DIR = @get_scratch!("fftw_wisdom")
+
+function with_fftw_wisdom(f)
+    wisdom_path = joinpath(FFTW_WISDOM_DIR, "wisdom")
+    isfile(wisdom_path) && FFTW.import_wisdom(wisdom_path)
+    result = f()
+    FFTW.export_wisdom(wisdom_path)
+    result
+end
+
 function common_buffers(
     ::Type{T},
     system,
@@ -350,8 +360,15 @@ function common_buffers(
     signal_baseband_freq_domain = similar(signal_baseband)
     code_freq_baseband_freq_domain = Vector{ComplexF32}(undef, num_samples_to_integrate_coherently)
     code_baseband = similar(code_freq_baseband_freq_domain)
-    fft_plan = plan_fft(signal_baseband; flags = fft_flag)
-    ifft_plan = plan_ifft(code_freq_baseband_freq_domain; flags = fft_flag)
+    fft_plan, ifft_plan = if fft_flag != FFTW.ESTIMATE
+        with_fftw_wisdom() do
+            plan_fft(signal_baseband; flags = fft_flag),
+            plan_ifft(code_freq_baseband_freq_domain; flags = fft_flag)
+        end
+    else
+        plan_fft(signal_baseband; flags = fft_flag),
+        plan_ifft(code_freq_baseband_freq_domain; flags = fft_flag)
+    end
     codes_freq_domain = map(code -> fft_plan * code, codes)
     signal_baseband,
     signal_baseband_freq_domain,

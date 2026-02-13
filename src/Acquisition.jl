@@ -6,6 +6,7 @@ using DocStringExtensions,
 import Unitful: s, Hz
 using Unitful: ustrip
 using AbstractFFTs: fft
+using Scratch: @get_scratch!
 using PrettyTables: pretty_table, AnsiTextCell
 
 export acquire,
