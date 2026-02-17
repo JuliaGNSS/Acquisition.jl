@@ -1,5 +1,12 @@
 # Changelog
 
+# [1.4.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v1.3.1...v1.4.0) (2026-02-17)
+
+
+### Features
+
+* compute Doppler step dynamically from coherent integration time ([60a5b19](https://github.com/JuliaGNSS/Acquisition.jl/commit/60a5b191aa98cf8d07ee89554ba398d84dbe4635))
+
 ## [1.3.1](https://github.com/JuliaGNSS/Acquisition.jl/compare/v1.3.0...v1.3.1) (2026-02-17)
 
 
