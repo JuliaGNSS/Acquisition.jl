@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/JuliaGNSS/Acquisition.jl/compare/v1.3.0...v1.3.1) (2026-02-17)
+
+
+### Performance Improvements
+
+* cache FFTW wisdom with Scratch.jl for faster FFT planning ([25a7b06](https://github.com/JuliaGNSS/Acquisition.jl/commit/25a7b0608237632badbce99748353f2ba9d44d60))
+
 # [1.3.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v1.2.0...v1.3.0) (2026-02-10)
 
 
