@@ -14,7 +14,16 @@ function power_over_doppler_and_codes!(
     end
     signal_powers_view = view(acq_plan.signal_powers, acq_plan.prn_indices)
     codes_freq_domain_view = view(acq_plan.codes_freq_domain, acq_plan.prn_indices)
+    ratio = get_code_center_frequency_ratio(acq_plan.system)
     @inbounds for (doppler_idx, doppler) in enumerate(acq_plan.dopplers)
+        cd_idx = if iszero(ustrip(doppler_offset))
+            acq_plan.code_doppler_indices[doppler_idx]
+        else
+            clamp(
+                round(Int, ustrip(doppler + doppler_offset) * ratio / acq_plan.code_doppler_step) + acq_plan.code_doppler_offset_idx,
+                1, acq_plan.num_code_dopplers
+            )
+        end
         power_over_code!(
             signal_powers_view,
             doppler_idx,
@@ -26,6 +35,7 @@ function power_over_doppler_and_codes!(
             acq_plan.fft_plan,
             acq_plan.ifft_plan,
             codes_freq_domain_view,
+            cd_idx,
             doppler + doppler_offset,
             acq_plan.sampling_freq,
             interm_freq;
@@ -46,6 +56,7 @@ function power_over_code!(
     fft_plan,
     ifft_plan,
     codes_freq_domain,
+    code_doppler_idx::Int,
     doppler,
     sampling_freq,
     interm_freq;
@@ -60,7 +71,8 @@ function power_over_code!(
     # Downconvert actual signal samples
     downconvert!(signal_baseband, signal, interm_freq + doppler, sampling_freq, signal_samples)
     mul!(signal_baseband_freq_domain, fft_plan, signal_baseband)
-    @inbounds for (code_freq_domain, signal_power) in zip(codes_freq_domain, signal_powers)
+    @inbounds for (code_freq_domain_variants, signal_power) in zip(codes_freq_domain, signal_powers)
+        code_freq_domain = code_freq_domain_variants[code_doppler_idx]
         code_freq_baseband_freq_domain .=
             code_freq_domain .* conj.(signal_baseband_freq_domain)
         mul!(code_baseband, ifft_plan, code_freq_baseband_freq_domain)
@@ -73,4 +85,43 @@ function power_over_code!(
             signal_power_col .= abs2.(code_baseband_view)
         end
     end
+end
+
+# Backward-compatible method: when codes_freq_domain is a flat Vector{Vector}
+# (no code Doppler dimension), wrap each entry and delegate to the new method.
+function power_over_code!(
+    signal_powers,
+    doppler_idx,
+    signal_baseband,
+    signal_baseband_freq_domain,
+    code_freq_baseband_freq_domain,
+    code_baseband,
+    signal,
+    fft_plan,
+    ifft_plan,
+    codes_freq_domain,
+    doppler,
+    sampling_freq,
+    interm_freq;
+    accumulate = false,
+)
+    # Wrap each code vector in a single-element vector to match the new nested format
+    wrapped_codes = [[c] for c in codes_freq_domain]
+    power_over_code!(
+        signal_powers,
+        doppler_idx,
+        signal_baseband,
+        signal_baseband_freq_domain,
+        code_freq_baseband_freq_domain,
+        code_baseband,
+        signal,
+        fft_plan,
+        ifft_plan,
+        wrapped_codes,
+        1,
+        doppler,
+        sampling_freq,
+        interm_freq;
+        accumulate,
+    )
 end

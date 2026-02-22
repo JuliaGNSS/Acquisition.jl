@@ -434,3 +434,66 @@ end
     cf_allocs = @allocated acquire!(cf_plan, signal, prns)
     @test cf_allocs == 0
 end
+
+@testset "Code Doppler compensation with long coherent integration" begin
+    Random.seed!(7890)
+    system = GPSL1()
+    sampling_freq = 5e6Hz
+    doppler = 5000Hz
+    code_phase = 50.5
+    prn = 1
+    CN0 = 55  # High CN0 for clean detection
+
+    # Long coherent integration: 10ms (10x the default 1ms code period)
+    T_coh_ms = 10
+    num_samples = ceil(Int, T_coh_ms * 1e-3 * (sampling_freq / 1.0Hz))
+
+    # Generate signal with realistic code Doppler
+    code_doppler = doppler * get_code_center_frequency_ratio(system)
+    code = gen_code(
+        num_samples,
+        system,
+        prn,
+        sampling_freq,
+        get_code_frequency(system) + code_doppler,
+        code_phase,
+    )
+
+    carrier = cis.(2π * (0:num_samples-1) * doppler / sampling_freq)
+
+    noise_power = 10 * log10(sampling_freq / 1.0Hz)
+    signal_power = CN0
+    noise = randn(ComplexF64, num_samples)
+    signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
+    signal_typed = ComplexF32.(signal)
+
+    # Acquire with code Doppler compensation (default tolerance)
+    acq_plan = AcquisitionPlan(
+        system,
+        num_samples,
+        sampling_freq;
+        prns = [prn],
+        fft_flag = FFTW.ESTIMATE,
+    )
+
+    # Verify multiple code Doppler groups were created
+    @test acq_plan.num_code_dopplers > 1
+
+    result = acquire!(acq_plan, signal_typed, prn)
+
+    @test result.code_phase ≈ code_phase atol = 0.5
+    @test abs(result.carrier_doppler - doppler) < step(acq_plan.dopplers)
+
+    # Also test via coarse_fine_acquire
+    cf_plan = CoarseFineAcquisitionPlan(
+        system,
+        num_samples,
+        sampling_freq;
+        prns = [prn],
+        fft_flag = FFTW.ESTIMATE,
+    )
+    cf_result = acquire!(cf_plan, signal_typed, prn)
+
+    @test cf_result.code_phase ≈ code_phase atol = 0.5
+    @test abs(cf_result.carrier_doppler - doppler) < step(cf_plan.coarse_plan.dopplers)
+end

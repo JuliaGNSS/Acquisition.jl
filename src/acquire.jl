@@ -23,6 +23,10 @@ replica codes across a grid of Doppler frequencies and code phases.
   - `doppler_step_factor`: Factor for computing Doppler step from integration time (default: `1//3`).
     The step is `doppler_step_factor / T` where `T = samples_to_integrate_coherently / sampling_freq`.
   - `dopplers`: Custom Doppler search range (default: computed from `doppler_step_factor`)
+  - `code_doppler_tolerance`: Maximum allowed code Doppler mismatch × integration time (default: `0.01`).
+    Controls how many code replicas are pre-computed at different code Doppler offsets.
+    Smaller values improve accuracy at high Dopplers with long integration times, at the
+    cost of more memory.
 
 # Returns
 
@@ -55,6 +59,7 @@ function acquire(
     samples_to_integrate_coherently = ceil(Int, sampling_freq / get_data_frequency(system)),
     doppler_step_factor = 1//3,
     dopplers = min_doppler:(doppler_step_factor * sampling_freq / samples_to_integrate_coherently):max_doppler,
+    code_doppler_tolerance = 0.01,
 )
     acq_plan = AcquisitionPlan(
         system,
@@ -63,6 +68,7 @@ function acquire(
         dopplers,
         prns,
         fft_flag = FFTW.MEASURE,
+        code_doppler_tolerance,
     )
     acquire!(acq_plan, signal, prns; interm_freq)
 end
@@ -211,7 +217,12 @@ function acquire!(
         signal_powers_view = view(fine_plan.signal_powers, prn_idx:prn_idx)
         codes_freq_domain_view = view(fine_plan.codes_freq_domain, prn_idx:prn_idx)
 
+        ratio = get_code_center_frequency_ratio(fine_plan.system)
         @inbounds for (doppler_idx, doppler) in enumerate(fine_plan.dopplers)
+            cd_idx = clamp(
+                round(Int, ustrip(doppler + doppler_offset) * ratio / fine_plan.code_doppler_step) + fine_plan.code_doppler_offset_idx,
+                1, fine_plan.num_code_dopplers
+            )
             # Process signal in chunks, accumulating powers non-coherently
             for chunk_idx = 1:num_chunks
                 start_idx = (chunk_idx - 1) * chunk_samples + 1
@@ -229,6 +240,7 @@ function acquire!(
                     fine_plan.fft_plan,
                     fine_plan.ifft_plan,
                     codes_freq_domain_view,
+                    cd_idx,
                     doppler + doppler_offset,
                     fine_plan.sampling_freq,
                     interm_freq;
@@ -324,8 +336,9 @@ function acquire(
     samples_to_integrate_coherently = ceil(Int, sampling_freq / get_data_frequency(system)),
     doppler_step_factor = 1//3,
     dopplers = min_doppler:(doppler_step_factor * sampling_freq / samples_to_integrate_coherently):max_doppler,
+    code_doppler_tolerance = 0.01,
 )
-    only(acquire(system, signal, sampling_freq, [prn]; interm_freq, dopplers, samples_to_integrate_coherently))
+    only(acquire(system, signal, sampling_freq, [prn]; interm_freq, dopplers, samples_to_integrate_coherently, code_doppler_tolerance))
 end
 
 function acquire!(
@@ -375,6 +388,10 @@ resolution while reducing computational cost compared to a single high-resolutio
     The coarse step is `doppler_step_factor / T` where `T = samples_to_integrate_coherently / sampling_freq`.
   - `coarse_step`: Doppler step for coarse search (default: computed from `doppler_step_factor`)
   - `fine_step`: Doppler step for fine search (default: `coarse_step / 10`)
+  - `code_doppler_tolerance`: Maximum allowed code Doppler mismatch × integration time (default: `0.01`).
+    Controls how many code replicas are pre-computed at different code Doppler offsets.
+    Smaller values improve accuracy at high Dopplers with long integration times, at the
+    cost of more memory.
 
 # Returns
 
@@ -403,6 +420,7 @@ function coarse_fine_acquire(
     doppler_step_factor = 1//3,
     coarse_step = doppler_step_factor * sampling_freq / samples_to_integrate_coherently,
     fine_step = coarse_step / 10,
+    code_doppler_tolerance = 0.01,
 )
     acq_plan = CoarseFineAcquisitionPlan(
         system,
@@ -414,6 +432,7 @@ function coarse_fine_acquire(
         fine_step,
         prns,
         fft_flag = FFTW.MEASURE,
+        code_doppler_tolerance,
     )
     acquire!(acq_plan, signal, prns; interm_freq)
 end
@@ -470,6 +489,7 @@ function coarse_fine_acquire(
     doppler_step_factor = 1//3,
     coarse_step = doppler_step_factor * sampling_freq / samples_to_integrate_coherently,
     fine_step = coarse_step / 10,
+    code_doppler_tolerance = 0.01,
 )
     only(
         coarse_fine_acquire(
@@ -483,6 +503,7 @@ function coarse_fine_acquire(
             samples_to_integrate_coherently,
             coarse_step,
             fine_step,
+            code_doppler_tolerance,
         ),
     )
 end

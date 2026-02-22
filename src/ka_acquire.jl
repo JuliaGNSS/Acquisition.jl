@@ -46,12 +46,16 @@ results = acquire!(plan, signal_gpu, 1:32)
 # See also
 [`acquire!`](@ref), [`AcquisitionPlan`](@ref)
 """
-struct KAAcquisitionPlan{T,S<:AbstractGNSS,A1<:AbstractVector,A2<:AbstractMatrix,A3<:AbstractMatrix,AI<:AbstractVector{Int},P,BP}
+struct KAAcquisitionPlan{T,S<:AbstractGNSS,A1<:AbstractVector,A2<:AbstractMatrix,A3<:AbstractMatrix,A4<:AbstractArray,AI<:AbstractVector{Int},P,BP}
     system::S
     num_samples_to_integrate_coherently::Int
     dopplers::StepRangeLen{Float64,Base.TwicePrecision{Float64},Base.TwicePrecision{Float64}}
     sampling_frequency::typeof(1.0Hz)
-    codes_freq_domain::A2                   # (samples × prns)
+    codes_freq_domain::A4                   # (samples × prns × code_dopplers)
+    code_doppler_indices::Vector{Int}       # maps doppler_idx → code_doppler_idx
+    code_doppler_step::Float64              # code Doppler step in Hz
+    code_doppler_offset_idx::Int            # index of zero code Doppler
+    num_code_dopplers::Int                  # total number of code Doppler bins
     dopplers_gpu::A1                        # Doppler frequencies on GPU (num_dopplers,)
     downconvert_phases::A2                  # Precomputed phase factors (samples × dopplers)
     signal_baseband::A2                     # (samples × dopplers)
@@ -91,6 +95,10 @@ Create a GPU-accelerated acquisition plan.
   `T = num_samples_to_integrate_coherently / sampling_freq`)
 - `doppler_step_factor`: Factor for computing Doppler step from integration time (default: `1//3`)
 - `prns`: PRN channels to prepare (default: `1:34`)
+- `code_doppler_tolerance`: Maximum allowed code Doppler mismatch × integration time (default: `0.01`).
+  Controls how many code replicas are pre-computed at different code Doppler offsets.
+  Smaller values improve accuracy at high Dopplers with long integration times, at the
+  cost of more memory.
 
 # Example
 ```julia
@@ -113,6 +121,7 @@ function KAAcquisitionPlan(
     doppler_step_factor=1//3,
     doppler_step=doppler_step_factor * sampling_freq / num_samples_to_integrate_coherently,
     dopplers=min_doppler:doppler_step:max_doppler,
+    code_doppler_tolerance=0.01,
     prns=1:34,
 ) where {T<:AbstractFloat,S<:AbstractGNSS}
     # Normalize dopplers to Float64 StepRangeLen for consistency
@@ -120,11 +129,23 @@ function KAAcquisitionPlan(
     num_dopplers = length(dopplers_hz)
     num_prns = length(prns)
 
-    # Generate replica codes on CPU
-    codes_cpu = reduce(hcat, [
-        gen_code(num_samples_to_integrate_coherently, system, prn, sampling_freq)
-        for prn in prns
-    ])  # (num_samples_to_integrate_coherently × num_prns)
+    # Code Doppler grid (reuse helpers from plan_acquire.jl)
+    T_coh = num_samples_to_integrate_coherently / sampling_freq
+    code_doppler_step_val = code_doppler_tolerance / ustrip(T_coh)
+    code_dopplers_grid, n_neg = compute_code_doppler_grid(system, min_doppler, max_doppler, code_doppler_step_val)
+    code_doppler_offset_idx = n_neg + 1
+    num_code_dopplers_val = length(code_dopplers_grid)
+    code_doppler_indices = compute_code_doppler_indices(dopplers_hz, system, code_doppler_step_val, code_doppler_offset_idx, num_code_dopplers_val)
+
+    # Generate 3D codes on CPU: (samples × num_prns × num_code_dopplers)
+    codes_cpu = Array{T}(undef, num_samples_to_integrate_coherently, num_prns, num_code_dopplers_val)
+    for (cd_idx, cd) in enumerate(code_dopplers_grid)
+        for (p_idx, prn) in enumerate(prns)
+            codes_cpu[:, p_idx, cd_idx] .= gen_code(
+                num_samples_to_integrate_coherently, system, prn, sampling_freq,
+                get_code_frequency(system) + cd * 1.0Hz)
+        end
+    end
 
     # Store Doppler frequencies on GPU (small vector for kernel when offset needed)
     dopplers_gpu = ArrayType{T}(collect(T, dopplers_hz))
@@ -168,20 +189,25 @@ function KAAcquisitionPlan(
     bfft_plan = plan_bfft(code_baseband_freq_domain, 1)
 
     # Transform codes to frequency domain
-    # First transfer to GPU, then apply FFT plan on a reshaped view
+    # Transfer 3D array to GPU and FFT each (sample) column
     codes_gpu = ArrayType{Complex{T}}(codes_cpu)
-    # Apply 1D FFT to each column - reshape to match signal_baseband dimensions temporarily
     codes_freq_domain = similar(codes_gpu)
-    for p in 1:num_prns
-        codes_freq_domain[:, p] .= fft(view(codes_gpu, :, p))
+    for cd_idx in 1:num_code_dopplers_val
+        for p_idx in 1:num_prns
+            codes_freq_domain[:, p_idx, cd_idx] .= fft(view(codes_gpu, :, p_idx, cd_idx))
+        end
     end
 
-    KAAcquisitionPlan{T,S,typeof(dopplers_gpu),typeof(codes_freq_domain),typeof(power_buffer),typeof(findmax_idxs_gpu),typeof(fft_plan),typeof(bfft_plan)}(
+    KAAcquisitionPlan{T,S,typeof(dopplers_gpu),typeof(signal_baseband),typeof(power_buffer),typeof(codes_freq_domain),typeof(findmax_idxs_gpu),typeof(fft_plan),typeof(bfft_plan)}(
         system,
         num_samples_to_integrate_coherently,
         dopplers_hz,
         sampling_freq,
         codes_freq_domain,
+        code_doppler_indices,
+        code_doppler_step_val,
+        code_doppler_offset_idx,
+        num_code_dopplers_val,
         dopplers_gpu,
         downconvert_phases,
         signal_baseband,
@@ -382,6 +408,22 @@ function acquire!(
     # Get PRN indices upfront
     prn_indices = [findfirst(==(prn), plan.avail_prn_channels) for prn in prns]
     num_prns = length(prns)
+    num_dopplers = length(plan.dopplers)
+    dopplers_hz = plan.dopplers
+
+    # Compute active code Doppler indices (handle doppler_offset)
+    active_cd_indices = if !iszero(ustrip(doppler_offset))
+        ratio = get_code_center_frequency_ratio(plan.system)
+        [
+            clamp(
+                round(Int, (dopplers_hz[d] + Float64(ustrip(doppler_offset))) * ratio / plan.code_doppler_step) + plan.code_doppler_offset_idx,
+                1, plan.num_code_dopplers
+            )
+            for d in 1:num_dopplers
+        ]
+    else
+        plan.code_doppler_indices
+    end
 
     # Allocate per-PRN power accumulators (reuse power_buffer for first PRN, allocate rest)
     # We need to track accumulated powers per PRN across chunks
@@ -426,9 +468,18 @@ function acquire!(
 
         # 3-5. Process each PRN with the already-transformed signal
         for (p_idx, prn_idx) in enumerate(prn_indices)
-            # 3. Code multiplication for this PRN
-            plan.code_baseband_freq_domain .=
-                view(plan.codes_freq_domain, :, prn_idx) .* conj.(plan.signal_baseband_freq_domain)
+            # 3. Code multiplication for this PRN, grouped by code Doppler index
+            group_start = 1
+            for d_idx in 1:num_dopplers
+                cd_idx = active_cd_indices[d_idx]
+                if d_idx == num_dopplers || active_cd_indices[d_idx + 1] != cd_idx
+                    code_col = view(plan.codes_freq_domain, :, prn_idx, cd_idx)
+                    doppler_range = group_start:d_idx
+                    view(plan.code_baseband_freq_domain, :, doppler_range) .=
+                        code_col .* conj.(view(plan.signal_baseband_freq_domain, :, doppler_range))
+                    group_start = d_idx + 1
+                end
+            end
 
             # 4. Backward FFT
             mul!(plan.code_baseband, plan.bfft_plan, plan.code_baseband_freq_domain)
