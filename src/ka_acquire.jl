@@ -95,6 +95,10 @@ Create a GPU-accelerated acquisition plan.
   `T = num_samples_to_integrate_coherently / sampling_freq`)
 - `doppler_step_factor`: Factor for computing Doppler step from integration time (default: `1//3`)
 - `prns`: PRN channels to prepare (default: `1:34`)
+- `code_doppler_tolerance`: Maximum allowed code Doppler mismatch × integration time (default: `0.01`).
+  Controls how many code replicas are pre-computed at different code Doppler offsets.
+  Smaller values improve accuracy at high Dopplers with long integration times, at the
+  cost of more memory.
 
 # Example
 ```julia

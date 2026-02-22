@@ -67,6 +67,10 @@ Create an acquisition plan for efficient repeated acquisition.
   - `doppler_step_factor`: Factor for computing Doppler step from integration time (default: `1//3`)
   - `prns`: PRN channels to prepare (default: `1:34`)
   - `fft_flag`: FFTW planning flag (default: `FFTW.MEASURE`)
+  - `code_doppler_tolerance`: Maximum allowed code Doppler mismatch × integration time (default: `0.01`).
+    Controls how many code replicas are pre-computed at different code Doppler offsets.
+    Smaller values improve accuracy at high Dopplers with long integration times, at the
+    cost of more memory.
 
 # Example
 
@@ -222,6 +226,10 @@ Create a two-stage coarse-fine acquisition plan.
   - `doppler_step_factor`: Factor for computing coarse step from integration time (default: `1//3`)
   - `prns`: PRN channels to prepare (default: `1:34`)
   - `fft_flag`: FFTW planning flag (default: `FFTW.MEASURE`)
+  - `code_doppler_tolerance`: Maximum allowed code Doppler mismatch × integration time (default: `0.01`).
+    Controls how many code replicas are pre-computed at different code Doppler offsets.
+    Smaller values improve accuracy at high Dopplers with long integration times, at the
+    cost of more memory.
 
 # Example
 

@@ -23,6 +23,10 @@ replica codes across a grid of Doppler frequencies and code phases.
   - `doppler_step_factor`: Factor for computing Doppler step from integration time (default: `1//3`).
     The step is `doppler_step_factor / T` where `T = samples_to_integrate_coherently / sampling_freq`.
   - `dopplers`: Custom Doppler search range (default: computed from `doppler_step_factor`)
+  - `code_doppler_tolerance`: Maximum allowed code Doppler mismatch × integration time (default: `0.01`).
+    Controls how many code replicas are pre-computed at different code Doppler offsets.
+    Smaller values improve accuracy at high Dopplers with long integration times, at the
+    cost of more memory.
 
 # Returns
 
@@ -384,6 +388,10 @@ resolution while reducing computational cost compared to a single high-resolutio
     The coarse step is `doppler_step_factor / T` where `T = samples_to_integrate_coherently / sampling_freq`.
   - `coarse_step`: Doppler step for coarse search (default: computed from `doppler_step_factor`)
   - `fine_step`: Doppler step for fine search (default: `coarse_step / 10`)
+  - `code_doppler_tolerance`: Maximum allowed code Doppler mismatch × integration time (default: `0.01`).
+    Controls how many code replicas are pre-computed at different code Doppler offsets.
+    Smaller values improve accuracy at high Dopplers with long integration times, at the
+    cost of more memory.
 
 # Returns
 
