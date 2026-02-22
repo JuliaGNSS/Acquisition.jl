@@ -211,7 +211,12 @@ function acquire!(
         signal_powers_view = view(fine_plan.signal_powers, prn_idx:prn_idx)
         codes_freq_domain_view = view(fine_plan.codes_freq_domain, prn_idx:prn_idx)
 
+        ratio = get_code_center_frequency_ratio(fine_plan.system)
         @inbounds for (doppler_idx, doppler) in enumerate(fine_plan.dopplers)
+            cd_idx = clamp(
+                round(Int, ustrip(doppler + doppler_offset) * ratio / fine_plan.code_doppler_step) + fine_plan.code_doppler_offset_idx,
+                1, fine_plan.num_code_dopplers
+            )
             # Process signal in chunks, accumulating powers non-coherently
             for chunk_idx = 1:num_chunks
                 start_idx = (chunk_idx - 1) * chunk_samples + 1
@@ -229,6 +234,7 @@ function acquire!(
                     fine_plan.fft_plan,
                     fine_plan.ifft_plan,
                     codes_freq_domain_view,
+                    cd_idx,
                     doppler + doppler_offset,
                     fine_plan.sampling_freq,
                     interm_freq;
