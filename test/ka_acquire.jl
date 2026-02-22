@@ -252,3 +252,49 @@ end
     @test abs(result.code_phase - cpu_result.code_phase) < 0.5
     @test abs(result.CN0 - cpu_result.CN0) < 3
 end
+
+@testset "KAAcquisitionPlan code Doppler compensation" begin
+    Random.seed!(7890)
+    system = GPSL1()
+    sampling_freq = 5e6Hz
+    doppler = 5000Hz
+    code_phase = 50.5
+    prn = 1
+    CN0 = 55
+
+    T_coh_ms = 10
+    num_samples = ceil(Int, T_coh_ms * 1e-3 * (sampling_freq / 1.0Hz))
+
+    code_doppler = doppler * get_code_center_frequency_ratio(system)
+    code = gen_code(
+        num_samples,
+        system,
+        prn,
+        sampling_freq,
+        get_code_frequency(system) + code_doppler,
+        code_phase,
+    )
+
+    carrier = cis.(2π * (0:num_samples-1) * doppler / sampling_freq)
+
+    noise_power = 10 * log10(sampling_freq / 1.0Hz)
+    signal_power = CN0
+    noise = randn(ComplexF64, num_samples)
+    signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
+    signal_typed = ComplexF32.(signal)
+
+    ka_plan = KAAcquisitionPlan(
+        system,
+        num_samples,
+        sampling_freq,
+        Array;
+        prns = [prn],
+    )
+
+    @test ka_plan.num_code_dopplers > 1
+
+    result = acquire!(ka_plan, signal_typed, prn)
+
+    @test result.code_phase ≈ code_phase atol = 0.5
+    @test abs(result.carrier_doppler - doppler) < step(ka_plan.dopplers) * 1.0Hz
+end
