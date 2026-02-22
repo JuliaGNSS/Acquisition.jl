@@ -55,6 +55,7 @@ function acquire(
     samples_to_integrate_coherently = ceil(Int, sampling_freq / get_data_frequency(system)),
     doppler_step_factor = 1//3,
     dopplers = min_doppler:(doppler_step_factor * sampling_freq / samples_to_integrate_coherently):max_doppler,
+    code_doppler_tolerance = 0.01,
 )
     acq_plan = AcquisitionPlan(
         system,
@@ -63,6 +64,7 @@ function acquire(
         dopplers,
         prns,
         fft_flag = FFTW.MEASURE,
+        code_doppler_tolerance,
     )
     acquire!(acq_plan, signal, prns; interm_freq)
 end
@@ -330,8 +332,9 @@ function acquire(
     samples_to_integrate_coherently = ceil(Int, sampling_freq / get_data_frequency(system)),
     doppler_step_factor = 1//3,
     dopplers = min_doppler:(doppler_step_factor * sampling_freq / samples_to_integrate_coherently):max_doppler,
+    code_doppler_tolerance = 0.01,
 )
-    only(acquire(system, signal, sampling_freq, [prn]; interm_freq, dopplers, samples_to_integrate_coherently))
+    only(acquire(system, signal, sampling_freq, [prn]; interm_freq, dopplers, samples_to_integrate_coherently, code_doppler_tolerance))
 end
 
 function acquire!(
@@ -409,6 +412,7 @@ function coarse_fine_acquire(
     doppler_step_factor = 1//3,
     coarse_step = doppler_step_factor * sampling_freq / samples_to_integrate_coherently,
     fine_step = coarse_step / 10,
+    code_doppler_tolerance = 0.01,
 )
     acq_plan = CoarseFineAcquisitionPlan(
         system,
@@ -420,6 +424,7 @@ function coarse_fine_acquire(
         fine_step,
         prns,
         fft_flag = FFTW.MEASURE,
+        code_doppler_tolerance,
     )
     acquire!(acq_plan, signal, prns; interm_freq)
 end
@@ -476,6 +481,7 @@ function coarse_fine_acquire(
     doppler_step_factor = 1//3,
     coarse_step = doppler_step_factor * sampling_freq / samples_to_integrate_coherently,
     fine_step = coarse_step / 10,
+    code_doppler_tolerance = 0.01,
 )
     only(
         coarse_fine_acquire(
@@ -489,6 +495,7 @@ function coarse_fine_acquire(
             samples_to_integrate_coherently,
             coarse_step,
             fine_step,
+            code_doppler_tolerance,
         ),
     )
 end
