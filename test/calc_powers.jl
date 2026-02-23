@@ -18,7 +18,7 @@
     )
 
     carrier =
-        cis.(2π * (0:num_samples-1) * (interm_freq + doppler) / sampling_freq .+ π / 8)
+        cis.(2π * (0:(num_samples-1)) * (interm_freq + doppler) / sampling_freq .+ π / 8)
 
     noise_power = 1
     signal_power = CN0 - 10 * log10(sampling_freq / 1.0Hz)
@@ -29,7 +29,7 @@
         fft(
             get_code.(
                 system,
-                (0:num_samples-1) .* get_code_frequency(system) ./ sampling_freq,
+                (0:(num_samples-1)) .* get_code_frequency(system) ./ sampling_freq,
                 prn,
             ),
         ),
@@ -84,7 +84,7 @@ end
     )
 
     carrier =
-        cis.(2π * (0:num_samples-1) * (interm_freq + doppler) / sampling_freq .+ π / 8)
+        cis.(2π * (0:(num_samples-1)) * (interm_freq + doppler) / sampling_freq .+ π / 8)
 
     noise_power = 1
     signal_power = CN0 - 10 * log10(sampling_freq / 1.0Hz)
@@ -92,9 +92,10 @@ end
     signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
 
     max_doppler = 7000Hz
-    dopplers = -max_doppler:250Hz:max_doppler
+    dopplers = (-max_doppler):250Hz:max_doppler
 
     acq_plan = AcquisitionPlan(system, length(signal), sampling_freq; dopplers, prns = 1:1)
+    effective_sampling_freq = sampling_freq * acq_plan.bfft_size / length(signal)
 
     powers_per_sats = @inferred Acquisition.power_over_doppler_and_codes!(
         acq_plan,
@@ -105,8 +106,8 @@ end
     )
 
     maxval, maxidx = findmax(powers_per_sats[1])
-    @test (maxidx[1] - 1) * get_code_frequency(system) / sampling_freq ≈ code_phase atol =
-        0.08
+    @test (maxidx[1] - 1) * get_code_frequency(system) / effective_sampling_freq ≈
+          code_phase atol = 0.08
 
     est_doppler = (maxidx[2] - 1) * step(dopplers) + first(dopplers)
     @test abs(est_doppler - doppler) < step(dopplers) / 2

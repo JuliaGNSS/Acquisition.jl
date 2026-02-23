@@ -58,8 +58,9 @@ function acquire(
     min_doppler = -max_doppler,
     samples_to_integrate_coherently = ceil(Int, sampling_freq / get_data_frequency(system)),
     doppler_step_factor = 1//3,
-    dopplers = min_doppler:(doppler_step_factor * sampling_freq / samples_to_integrate_coherently):max_doppler,
+    dopplers = min_doppler:(doppler_step_factor*sampling_freq/samples_to_integrate_coherently):max_doppler,
     code_doppler_tolerance = 0.01,
+    zero_pad_power::Int = 1,
 )
     acq_plan = AcquisitionPlan(
         system,
@@ -69,6 +70,7 @@ function acquire(
         prns,
         fft_flag = FFTW.MEASURE,
         code_doppler_tolerance,
+        zero_pad_power,
     )
     acquire!(acq_plan, signal, prns; interm_freq)
 end
@@ -146,13 +148,15 @@ function acquire!(
     end
     powers_per_sats = view(acq_plan.signal_powers, acq_plan.prn_indices)
 
+    effective_sampling_freq = acq_plan.sampling_freq * acq_plan.bfft_size / chunk_samples
+
     # resize! does not allocate when shrinking or staying within original capacity
     resize!(acq_plan.output_results, length(prns))
     for (i, (powers, prn, prn_idx)) in
         enumerate(zip(powers_per_sats, prns, acq_plan.prn_indices))
         signal_power, noise_power_est, code_index, doppler_index = est_signal_noise_power(
             powers,
-            acq_plan.sampling_freq,
+            effective_sampling_freq,
             get_code_frequency(acq_plan.system),
             noise_power,
         )
@@ -167,11 +171,11 @@ function acquire!(
         code_doppler = doppler * get_code_center_frequency_ratio(acq_plan.system)
         code_phase =
             (code_index - 1) /
-            (acq_plan.sampling_freq / (get_code_frequency(acq_plan.system) + code_doppler))
+            (effective_sampling_freq / (get_code_frequency(acq_plan.system) + code_doppler))
         result = AcquisitionResults(
             acq_plan.system,
             prn,
-            acq_plan.sampling_freq,
+            effective_sampling_freq,
             doppler,
             code_phase,
             CN0,
@@ -206,6 +210,7 @@ function acquire!(
     chunk_samples = fine_plan.num_samples_to_integrate_coherently
     num_signal_samples = length(signal)
     num_chunks = cld(num_signal_samples, chunk_samples)
+    effective_sampling_freq = fine_plan.sampling_freq * fine_plan.bfft_size / chunk_samples
 
     # resize! does not allocate when shrinking or staying within original capacity
     resize!(fine_plan.output_results, length(prns))
@@ -221,8 +226,12 @@ function acquire!(
         ratio = get_code_center_frequency_ratio(fine_plan.system)
         @inbounds for (doppler_idx, doppler) in enumerate(fine_plan.dopplers)
             cd_idx = clamp(
-                round(Int, ustrip(doppler + doppler_offset) * ratio / fine_plan.code_doppler_step) + fine_plan.code_doppler_offset_idx,
-                1, fine_plan.num_code_dopplers
+                round(
+                    Int,
+                    ustrip(doppler + doppler_offset) * ratio / fine_plan.code_doppler_step,
+                ) + fine_plan.code_doppler_offset_idx,
+                1,
+                fine_plan.num_code_dopplers,
             )
             # Process signal in chunks, accumulating powers non-coherently
             for chunk_idx = 1:num_chunks
@@ -239,7 +248,7 @@ function acquire!(
                     fine_plan.code_baseband,
                     signal_chunk,
                     fine_plan.fft_plan,
-                    fine_plan.ifft_plan,
+                    fine_plan.bfft_plan,
                     codes_freq_domain_view,
                     cd_idx,
                     doppler + doppler_offset,
@@ -254,7 +263,7 @@ function acquire!(
         powers = fine_plan.signal_powers[prn_idx]
         signal_power, noise_power_est, code_index, doppler_index = est_signal_noise_power(
             powers,
-            fine_plan.sampling_freq,
+            effective_sampling_freq,
             get_code_frequency(fine_plan.system),
             noise_power,
         )
@@ -268,12 +277,14 @@ function acquire!(
             doppler_offset
         code_doppler = doppler * get_code_center_frequency_ratio(fine_plan.system)
         code_phase =
-            (code_index - 1) /
-            (fine_plan.sampling_freq / (get_code_frequency(fine_plan.system) + code_doppler))
+            (code_index - 1) / (
+                effective_sampling_freq /
+                (get_code_frequency(fine_plan.system) + code_doppler)
+            )
         result = AcquisitionResults(
             fine_plan.system,
             prn,
-            fine_plan.sampling_freq,
+            effective_sampling_freq,
             doppler,
             code_phase,
             CN0,
@@ -337,10 +348,23 @@ function acquire(
     min_doppler = -max_doppler,
     samples_to_integrate_coherently = ceil(Int, sampling_freq / get_data_frequency(system)),
     doppler_step_factor = 1//3,
-    dopplers = min_doppler:(doppler_step_factor * sampling_freq / samples_to_integrate_coherently):max_doppler,
+    dopplers = min_doppler:(doppler_step_factor*sampling_freq/samples_to_integrate_coherently):max_doppler,
     code_doppler_tolerance = 0.01,
+    zero_pad_power::Int = 1,
 )
-    only(acquire(system, signal, sampling_freq, [prn]; interm_freq, dopplers, samples_to_integrate_coherently, code_doppler_tolerance))
+    only(
+        acquire(
+            system,
+            signal,
+            sampling_freq,
+            [prn];
+            interm_freq,
+            dopplers,
+            samples_to_integrate_coherently,
+            code_doppler_tolerance,
+            zero_pad_power,
+        ),
+    )
 end
 
 function acquire!(
@@ -423,6 +447,7 @@ function coarse_fine_acquire(
     coarse_step = doppler_step_factor * sampling_freq / samples_to_integrate_coherently,
     fine_step = coarse_step / 10,
     code_doppler_tolerance = 0.01,
+    zero_pad_power::Int = 1,
 )
     acq_plan = CoarseFineAcquisitionPlan(
         system,
@@ -435,6 +460,7 @@ function coarse_fine_acquire(
         prns,
         fft_flag = FFTW.MEASURE,
         code_doppler_tolerance,
+        zero_pad_power,
     )
     acquire!(acq_plan, signal, prns; interm_freq)
 end
@@ -492,6 +518,7 @@ function coarse_fine_acquire(
     coarse_step = doppler_step_factor * sampling_freq / samples_to_integrate_coherently,
     fine_step = coarse_step / 10,
     code_doppler_tolerance = 0.01,
+    zero_pad_power::Int = 1,
 )
     only(
         coarse_fine_acquire(
@@ -506,6 +533,7 @@ function coarse_fine_acquire(
             coarse_step,
             fine_step,
             code_doppler_tolerance,
+            zero_pad_power,
         ),
     )
 end
