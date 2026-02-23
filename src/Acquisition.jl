@@ -3,8 +3,8 @@ module Acquisition
 using DocStringExtensions,
     GNSSSignals, RecipesBase, FFTW, Statistics, LinearAlgebra, LoopVectorization, Unitful
 
-import Unitful: s, Hz
-using Unitful: ustrip
+import Unitful: s, Hz, dB
+using Unitful: ustrip, Gain
 using AbstractFFTs: fft
 using Scratch: @get_scratch!
 using PrettyTables: pretty_table, AnsiTextCell
@@ -24,18 +24,21 @@ export acquire,
 Results from GNSS signal acquisition for a single PRN.
 
 # Fields
-- `system::S`: GNSS system used for acquisition
-- `prn::Int`: PRN number of the satellite
-- `sampling_frequency`: Sampling frequency of the signal
-- `carrier_doppler`: Estimated carrier Doppler frequency
-- `code_phase::Float64`: Estimated code phase in chips
-- `CN0::Float64`: Carrier-to-noise density ratio in dB-Hz
-- `noise_power::T`: Estimated noise power
-- `power_bins::Matrix{T}`: Correlation power over code phase and Doppler (for plotting)
-- `dopplers`: Doppler frequencies searched
+
+  - `system::S`: GNSS system used for acquisition
+  - `prn::Int`: PRN number of the satellite
+  - `sampling_frequency`: Sampling frequency of the signal
+  - `carrier_doppler`: Estimated carrier Doppler frequency
+  - `code_phase::Float64`: Estimated code phase in chips
+  - `CN0::Float64`: Carrier-to-noise density ratio in dB-Hz
+  - `noise_power::T`: Estimated noise power
+  - `power_bins::Matrix{T}`: Correlation power over code phase and Doppler (for plotting)
+  - `dopplers`: Doppler frequencies searched
 
 # Plotting
+
 `AcquisitionResults` can be plotted directly using Plots.jl:
+
 ```julia
 using Plots
 plot(result)  # 3D surface plot of correlation power
@@ -43,6 +46,7 @@ plot(result, true)  # Use log scale (dB)
 ```
 
 # See also
+
 [`acquire`](@ref), [`coarse_fine_acquire`](@ref)
 """
 struct AcquisitionResults{S<:AbstractGNSS,T,D<:AbstractRange}
@@ -80,16 +84,28 @@ function _format_cn0(cn0, use_color::Bool)
     end
 end
 
-function Base.show(io::IO, ::MIME"text/plain", acq_channels::Vector{<:Acquisition.AcquisitionResults})
+function Base.show(
+    io::IO,
+    ::MIME"text/plain",
+    acq_channels::Vector{<:Acquisition.AcquisitionResults},
+)
     column_labels = ["PRN", "CN0 (dBHz)", "Carrier Doppler (Hz)", "Code phase (chips)"]
     use_color = get(io, :color, false)
-    data = reduce(vcat, map(acq -> permutedims([acq.prn, _format_cn0(acq.CN0, use_color), acq.carrier_doppler, acq.code_phase]), acq_channels))
+    data = reduce(
+        vcat,
+        map(
+            acq -> permutedims([
+                acq.prn,
+                _format_cn0(acq.CN0, use_color),
+                acq.carrier_doppler,
+                acq.code_phase,
+            ]),
+            acq_channels,
+        ),
+    )
 
-    pretty_table(io, data; column_labels=column_labels)
+    pretty_table(io, data; column_labels = column_labels)
 end
-
-
-
 
 include("plan_acquire.jl")
 include("downconvert.jl")
