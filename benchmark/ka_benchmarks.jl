@@ -33,7 +33,7 @@ end
 const KA_SUITE = BenchmarkGroup()
 
 const KA_SAMPLE_SIZES = [16368, 32736, 60000]
-const KA_PRN_COUNTS = [1, 8, 32]
+const KA_PRN_COUNTS = [1, 32]
 const KA_SAMPLING_FREQ = 16.368e6Hz
 
 function _ka_make_signal(num_samples)
@@ -48,7 +48,13 @@ for num_samples in KA_SAMPLE_SIZES
         system = GPSL1()
         signal_cpu = _ka_make_signal(num_samples)
 
-        plan = KAAcquisitionPlan(system, num_samples, KA_SAMPLING_FREQ, GPUArrayType; prns=1:32)
+        plan = KAAcquisitionPlan(
+            system,
+            num_samples,
+            KA_SAMPLING_FREQ,
+            GPUArrayType;
+            prns = 1:32,
+        )
         signal = GPUArrayType(signal_cpu)
 
         KA_SUITE["$(num_samples)_samples"]["$(num_prns)_prns"] =
