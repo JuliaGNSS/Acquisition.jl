@@ -21,8 +21,9 @@ using KernelAbstractions
             code_phase,
         )
 
-        carrier =
-            cis.(2π * (0:num_samples-1) * (interm_freq + doppler) / sampling_freq .+ π / 8)
+        carrier = cis.(
+            2π * (0:(num_samples-1)) * (interm_freq + doppler) / sampling_freq .+ π / 8,
+        )
 
         noise_power = 10 * log10(sampling_freq / 1.0Hz)
         signal_power = CN0
@@ -31,7 +32,7 @@ using KernelAbstractions
         signal_f32 = ComplexF32.(signal)
 
         max_doppler = 7000Hz
-        dopplers = -max_doppler:250Hz:max_doppler
+        dopplers = (-max_doppler):250Hz:max_doppler
 
         # Create KAAcquisitionPlan with Array (CPU backend)
         ka_plan = KAAcquisitionPlan(
@@ -40,7 +41,7 @@ using KernelAbstractions
             sampling_freq,
             Array;
             dopplers,
-            prns=1:34,
+            prns = 1:34,
         )
 
         # Test single PRN acquisition
@@ -59,13 +60,8 @@ using KernelAbstractions
         @test ka_res_multi[3].prn == 3
 
         # Compare with CPU AcquisitionPlan results
-        cpu_plan = AcquisitionPlan(
-            system,
-            num_samples,
-            sampling_freq;
-            dopplers,
-            prns=1:34,
-        )
+        cpu_plan =
+            AcquisitionPlan(system, num_samples, sampling_freq; dopplers, prns = 1:34)
         cpu_res = acquire!(cpu_plan, signal_f32, prn; interm_freq)
 
         # Results should be very similar (not identical due to different FFT implementations)
@@ -81,16 +77,30 @@ end
     sampling_freq = 5e6Hz
 
     # Test default eltype (Float32)
-    plan_default = KAAcquisitionPlan(system, num_samples, sampling_freq, Array; prns=1:1)
+    plan_default = KAAcquisitionPlan(system, num_samples, sampling_freq, Array; prns = 1:1)
     @test eltype(plan_default.signal_baseband) == ComplexF32
     @test eltype(plan_default.codes_freq_domain) == ComplexF32
 
     # Test explicit Float32
-    plan_f32 = KAAcquisitionPlan(system, num_samples, sampling_freq, Array; prns=1:1, eltype=Float32)
+    plan_f32 = KAAcquisitionPlan(
+        system,
+        num_samples,
+        sampling_freq,
+        Array;
+        prns = 1:1,
+        eltype = Float32,
+    )
     @test eltype(plan_f32.signal_baseband) == ComplexF32
 
     # Test Float64
-    plan_f64 = KAAcquisitionPlan(system, num_samples, sampling_freq, Array; prns=1:1, eltype=Float64)
+    plan_f64 = KAAcquisitionPlan(
+        system,
+        num_samples,
+        sampling_freq,
+        Array;
+        prns = 1:1,
+        eltype = Float64,
+    )
     @test eltype(plan_f64.signal_baseband) == ComplexF64
     @test eltype(plan_f64.codes_freq_domain) == ComplexF64
 
@@ -106,7 +116,7 @@ end
     num_samples = 10000
     sampling_freq = 5e6Hz
 
-    plan = KAAcquisitionPlan(system, num_samples, sampling_freq, Array; prns=1:10)
+    plan = KAAcquisitionPlan(system, num_samples, sampling_freq, Array; prns = 1:10)
 
     signal = randn(ComplexF32, num_samples)
 
@@ -123,7 +133,7 @@ end
     num_samples = 10000
     sampling_freq = 5e6Hz
 
-    plan = KAAcquisitionPlan(system, num_samples, sampling_freq, Array; prns=1:10)
+    plan = KAAcquisitionPlan(system, num_samples, sampling_freq, Array; prns = 1:10)
     signal = randn(ComplexF32, num_samples)
 
     # Empty PRNs should return empty vector
@@ -151,12 +161,14 @@ end
         code_phase,
     )
 
-    carrier = cis.(2π * (0:num_samples-1) * doppler / sampling_freq)
+    carrier = cis.(2π * (0:(num_samples-1)) * doppler / sampling_freq)
 
     noise_power = 10 * log10(sampling_freq / 1.0Hz)
     signal_power = CN0
     noise = randn(ComplexF64, num_samples)
-    signal = ComplexF32.((carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20))
+    signal = ComplexF32.(
+        (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20),
+    )
 
     # Use a narrow Doppler range with offset
     base_doppler = 1000Hz
@@ -165,12 +177,12 @@ end
         num_samples,
         sampling_freq,
         Array;
-        min_doppler=-500Hz,
-        max_doppler=500Hz,
-        prns=1:10,
+        min_doppler = -500Hz,
+        max_doppler = 500Hz,
+        prns = 1:10,
     )
 
-    result = acquire!(plan, signal, prn; doppler_offset=base_doppler)
+    result = acquire!(plan, signal, prn; doppler_offset = base_doppler)
 
     @test result.code_phase ≈ code_phase atol = 0.1
     @test abs(result.carrier_doppler - doppler) < 250Hz
@@ -183,15 +195,15 @@ end
     prn = 1
 
     signal = randn(ComplexF32, num_samples)
-    plan = KAAcquisitionPlan(system, num_samples, sampling_freq, Array; prns=1:5)
+    plan = KAAcquisitionPlan(system, num_samples, sampling_freq, Array; prns = 1:5)
 
     # Test with store_powers=true
-    result = acquire!(plan, signal, prn; store_powers=true)
+    result = acquire!(plan, signal, prn; store_powers = true)
     @test size(result.power_bins, 1) > 0
     @test size(result.power_bins, 2) > 0
 
     # Test with store_powers=false (default)
-    result_no_powers = acquire!(plan, signal, prn; store_powers=false)
+    result_no_powers = acquire!(plan, signal, prn; store_powers = false)
     @test size(result_no_powers.power_bins) == (0, 0)
 end
 
@@ -219,7 +231,7 @@ end
         code_phase,
     )
 
-    carrier = cis.(2π * (0:num_samples-1) * doppler / sampling_freq)
+    carrier = cis.(2π * (0:(num_samples-1)) * doppler / sampling_freq)
 
     noise_power = 10 * log10(sampling_freq / 1.0Hz)
     signal_power = CN0
@@ -228,7 +240,7 @@ end
     signal_typed = ComplexF32.(signal)
 
     # Test with plan using default bit period chunk size (uses convenience constructor)
-    ka_plan = KAAcquisitionPlan(system, sampling_freq, Array; prns=[prn])
+    ka_plan = KAAcquisitionPlan(system, sampling_freq, Array; prns = [prn])
     @test ka_plan.num_samples_to_integrate_coherently == bit_period_samples
 
     result = acquire!(ka_plan, signal_typed, prn)
@@ -245,7 +257,8 @@ end
     @test result.CN0 ≈ expected_CN0 atol = 5
 
     # Compare with CPU AcquisitionPlan - results should be similar
-    cpu_plan = AcquisitionPlan(system, sampling_freq; prns=[prn], fft_flag=FFTW.ESTIMATE)
+    cpu_plan =
+        AcquisitionPlan(system, sampling_freq; prns = [prn], fft_flag = FFTW.ESTIMATE)
     cpu_result = acquire!(cpu_plan, signal_typed, prn)
 
     @test abs(result.carrier_doppler - cpu_result.carrier_doppler) < 250Hz
@@ -275,7 +288,7 @@ end
         code_phase,
     )
 
-    carrier = cis.(2π * (0:num_samples-1) * doppler / sampling_freq)
+    carrier = cis.(2π * (0:(num_samples-1)) * doppler / sampling_freq)
 
     noise_power = 10 * log10(sampling_freq / 1.0Hz)
     signal_power = CN0
@@ -283,13 +296,7 @@ end
     signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
     signal_typed = ComplexF32.(signal)
 
-    ka_plan = KAAcquisitionPlan(
-        system,
-        num_samples,
-        sampling_freq,
-        Array;
-        prns = [prn],
-    )
+    ka_plan = KAAcquisitionPlan(system, num_samples, sampling_freq, Array; prns = [prn])
 
     @test ka_plan.num_code_dopplers > 1
 
@@ -297,4 +304,96 @@ end
 
     @test result.code_phase ≈ code_phase atol = 0.5
     @test abs(result.carrier_doppler - doppler) < step(ka_plan.dopplers) * 1.0Hz
+end
+
+@testset "KAAcquisitionPlan zero_pad_power=0 (no padding)" begin
+    Random.seed!(2345)
+    system = GPSL1()
+    num_samples = 60000
+    doppler = 1234Hz
+    code_phase = 110.613261
+    prn = 1
+    sampling_freq = 15e6Hz - 1Hz
+    interm_freq = 243.0Hz
+    CN0 = 45
+
+    code = gen_code(
+        num_samples,
+        system,
+        prn,
+        sampling_freq,
+        get_code_frequency(system) + doppler * get_code_center_frequency_ratio(system),
+        code_phase,
+    )
+
+    carrier =
+        cis.(2π * (0:(num_samples-1)) * (interm_freq + doppler) / sampling_freq .+ π / 8)
+
+    noise_power = 10 * log10(sampling_freq / 1.0Hz)
+    signal_power = CN0
+    noise = randn(ComplexF64, num_samples)
+    signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
+    signal_f32 = ComplexF32.(signal)
+
+    ka_plan = KAAcquisitionPlan(
+        system,
+        num_samples,
+        sampling_freq,
+        Array;
+        prns = 1:34,
+        zero_pad_power = 0,
+    )
+
+    @test ka_plan.bfft_size == num_samples
+
+    result = acquire!(ka_plan, signal_f32, prn; interm_freq)
+
+    @test result.code_phase ≈ code_phase atol = 0.5
+    @test abs(result.carrier_doppler - doppler) < 250Hz
+    @test result.CN0 ≈ CN0 atol = 7
+end
+
+@testset "KAAcquisitionPlan with zero-padding (non-smooth sample count)" begin
+    Random.seed!(2345)
+    system = GPSL1()
+    # 16368 = 2^4 × 3 × 11 × 31 — not FFTW-friendly, pads to 16384
+    num_samples = 16368
+    doppler = 1234Hz
+    code_phase = 50.5
+    prn = 1
+    sampling_freq = 16.368e6Hz
+    CN0 = 45
+
+    code = gen_code(
+        num_samples,
+        system,
+        prn,
+        sampling_freq,
+        get_code_frequency(system) + doppler * get_code_center_frequency_ratio(system),
+        code_phase,
+    )
+
+    carrier = cis.(2π * (0:(num_samples-1)) * doppler / sampling_freq)
+
+    noise_power = 10 * log10(sampling_freq / 1.0Hz)
+    signal_power = CN0
+    noise = randn(ComplexF64, num_samples)
+    signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
+    signal_f32 = ComplexF32.(signal)
+
+    ka_plan = KAAcquisitionPlan(
+        system,
+        num_samples,
+        sampling_freq,
+        Array;
+        prns = 1:34,
+    )
+
+    @test ka_plan.bfft_size > num_samples
+
+    result = acquire!(ka_plan, signal_f32, prn)
+
+    @test result.code_phase ≈ code_phase atol = 0.5
+    @test abs(result.carrier_doppler - doppler) < 250Hz
+    @test result.CN0 ≈ CN0 atol = 7
 end

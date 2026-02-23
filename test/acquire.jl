@@ -21,7 +21,7 @@
     )
 
     carrier =
-        cis.(2π * (0:num_samples-1) * (interm_freq + doppler) / sampling_freq .+ π / 8)
+        cis.(2π * (0:(num_samples-1)) * (interm_freq + doppler) / sampling_freq .+ π / 8)
 
     noise_power = 10 * log10(sampling_freq / 1.0Hz)
     signal_power = CN0
@@ -34,7 +34,7 @@
     end
 
     max_doppler = 7000Hz
-    dopplers = -max_doppler:250Hz:max_doppler
+    dopplers = (-max_doppler):250Hz:max_doppler
 
     acq_res =
         @inferred acquire(system, signal_typed, sampling_freq, prn; interm_freq, dopplers)
@@ -94,17 +94,25 @@ end
     @test eltype(plan_default.signal_baseband_freq_domain) == ComplexF32
 
     # Test explicit Float32
-    plan_f32 = AcquisitionPlan(system, num_samples, sampling_freq; prns = 1:1, eltype = Float32)
+    plan_f32 =
+        AcquisitionPlan(system, num_samples, sampling_freq; prns = 1:1, eltype = Float32)
     @test eltype(plan_f32.signal_baseband) == ComplexF32
     @test eltype(plan_f32.signal_baseband_freq_domain) == ComplexF32
 
     # Test Float64
-    plan_f64 = AcquisitionPlan(system, num_samples, sampling_freq; prns = 1:1, eltype = Float64)
+    plan_f64 =
+        AcquisitionPlan(system, num_samples, sampling_freq; prns = 1:1, eltype = Float64)
     @test eltype(plan_f64.signal_baseband) == ComplexF64
     @test eltype(plan_f64.signal_baseband_freq_domain) == ComplexF64
 
     # Test CoarseFineAcquisitionPlan with eltype
-    cf_plan_f64 = CoarseFineAcquisitionPlan(system, num_samples, sampling_freq; prns = 1:1, eltype = Float64)
+    cf_plan_f64 = CoarseFineAcquisitionPlan(
+        system,
+        num_samples,
+        sampling_freq;
+        prns = 1:1,
+        eltype = Float64,
+    )
     @test eltype(cf_plan_f64.coarse_plan.signal_baseband) == ComplexF64
     @test eltype(cf_plan_f64.fine_plan.signal_baseband) == ComplexF64
 
@@ -136,7 +144,7 @@ end
     )
 
     carrier =
-        cis.(2π * (0:num_samples-1) * (interm_freq + doppler) / sampling_freq .+ π / 8)
+        cis.(2π * (0:(num_samples-1)) * (interm_freq + doppler) / sampling_freq .+ π / 8)
 
     noise_power = 10 * log10(sampling_freq / 1.0Hz)
     signal_power = CN0
@@ -247,7 +255,7 @@ end
     @test contains(output, "chips")
 
     # Test show for Vector{AcquisitionResults}
-    results = [acquire!(plan, signal, prn) for prn in 1:3]
+    results = [acquire!(plan, signal, prn) for prn = 1:3]
     io = IOBuffer()
     show(io, MIME"text/plain"(), results)
     output = String(take!(io))
@@ -258,10 +266,26 @@ end
 
     # Test CN0 highlighting (green for CN0 > 42, red for CN0 < 42)
     high_cn0_result = Acquisition.AcquisitionResults(
-        system, 1, sampling_freq, 0.0Hz, 0.0, 50.0, 0.0, zeros(1, 1), 0.0Hz:1.0Hz:0.0Hz
+        system,
+        1,
+        sampling_freq,
+        0.0Hz,
+        0.0,
+        50.0,
+        0.0,
+        zeros(1, 1),
+        0.0Hz:1.0Hz:0.0Hz,
     )
     low_cn0_result = Acquisition.AcquisitionResults(
-        system, 2, sampling_freq, 0.0Hz, 0.0, 30.0, 0.0, zeros(1, 1), 0.0Hz:1.0Hz:0.0Hz
+        system,
+        2,
+        sampling_freq,
+        0.0Hz,
+        0.0,
+        30.0,
+        0.0,
+        zeros(1, 1),
+        0.0Hz:1.0Hz:0.0Hz,
     )
     io = IOBuffer()
     ioc = IOContext(io, :color => true)
@@ -281,12 +305,7 @@ end
     # Use ComplexF32 signal to match default Float32 buffers (avoids type conversion allocations)
     signal = randn(ComplexF32, num_samples)
 
-    acq_plan = AcquisitionPlan(
-        system,
-        num_samples,
-        sampling_freq;
-        prns = 1:5,
-    )
+    acq_plan = AcquisitionPlan(system, num_samples, sampling_freq; prns = 1:5)
 
     # Verify plan.results field exists and is populated
     @test hasfield(typeof(acq_plan), :results)
@@ -316,12 +335,7 @@ end
     @test results[2].power_bins === acq_plan.signal_powers[3]
 
     # Test CoarseFineAcquisitionPlan is also allocation-free
-    cf_plan = CoarseFineAcquisitionPlan(
-        system,
-        num_samples,
-        sampling_freq;
-        prns = 1:5,
-    )
+    cf_plan = CoarseFineAcquisitionPlan(system, num_samples, sampling_freq; prns = 1:5)
 
     # Warmup
     acquire!(cf_plan, signal, prns)
@@ -361,7 +375,7 @@ end
         code_phase,
     )
 
-    carrier = cis.(2π * (0:num_samples-1) * doppler / sampling_freq)
+    carrier = cis.(2π * (0:(num_samples-1)) * doppler / sampling_freq)
 
     noise_power = 10 * log10(sampling_freq / 1.0Hz)
     signal_power = CN0
@@ -370,7 +384,8 @@ end
     signal_typed = ComplexF32.(signal)
 
     # Test with plan using default bit period chunk size
-    acq_plan = AcquisitionPlan(system, sampling_freq; prns = [prn], fft_flag = FFTW.ESTIMATE)
+    acq_plan =
+        AcquisitionPlan(system, sampling_freq; prns = [prn], fft_flag = FFTW.ESTIMATE)
     @test acq_plan.num_samples_to_integrate_coherently == bit_period_samples
 
     result = acquire!(acq_plan, signal_typed, prn)
@@ -390,7 +405,12 @@ end
     @test result.CN0 ≈ expected_CN0 atol = 5
 
     # Test CoarseFineAcquisitionPlan with long signal
-    cf_plan = CoarseFineAcquisitionPlan(system, sampling_freq; prns = [prn], fft_flag = FFTW.ESTIMATE)
+    cf_plan = CoarseFineAcquisitionPlan(
+        system,
+        sampling_freq;
+        prns = [prn],
+        fft_flag = FFTW.ESTIMATE,
+    )
     cf_result = acquire!(cf_plan, signal_typed, prn)
 
     @test cf_result.code_phase ≈ code_phase atol = 0.5
@@ -425,7 +445,12 @@ end
     @test allocs == 0
 
     # Also test CoarseFineAcquisitionPlan
-    cf_plan = CoarseFineAcquisitionPlan(system, sampling_freq; prns = 1:5, fft_flag = FFTW.ESTIMATE)
+    cf_plan = CoarseFineAcquisitionPlan(
+        system,
+        sampling_freq;
+        prns = 1:5,
+        fft_flag = FFTW.ESTIMATE,
+    )
 
     # Warmup
     acquire!(cf_plan, signal, prns)
@@ -459,7 +484,7 @@ end
         code_phase,
     )
 
-    carrier = cis.(2π * (0:num_samples-1) * doppler / sampling_freq)
+    carrier = cis.(2π * (0:(num_samples-1)) * doppler / sampling_freq)
 
     noise_power = 10 * log10(sampling_freq / 1.0Hz)
     signal_power = CN0
@@ -496,4 +521,26 @@ end
 
     @test cf_result.code_phase ≈ code_phase atol = 0.5
     @test abs(cf_result.carrier_doppler - doppler) < step(cf_plan.coarse_plan.dopplers)
+end
+
+@testset "max_phase_error_from_loss" begin
+    import Unitful: dB
+
+    # sinc(ε) = sin(πε)/(πε), loss = -20log10(sinc(ε))
+    # Verify round-trip: compute ε from loss, then verify sinc(ε) matches
+    for loss_dB in [0.1, 0.5, 1.0, 3.0]
+        ε = Acquisition.max_phase_error_from_loss(loss_dB * dB)
+        sinc_val = sin(π * ε) / (π * ε)
+        expected_sinc = 10^(-loss_dB / 20)
+        @test sinc_val ≈ expected_sinc atol = 1e-10
+    end
+
+    # Edge case: 0 dB loss → 0 phase error
+    @test Acquisition.max_phase_error_from_loss(0.0dB) == 0.0
+
+    # Phase error should increase with loss
+    ε1 = Acquisition.max_phase_error_from_loss(0.5dB)
+    ε2 = Acquisition.max_phase_error_from_loss(1.0dB)
+    ε3 = Acquisition.max_phase_error_from_loss(3.0dB)
+    @test 0 < ε1 < ε2 < ε3 <= 0.5
 end

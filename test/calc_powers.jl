@@ -64,6 +64,81 @@
     @test (maxidx - 1) * get_code_frequency(system) / sampling_freq ≈ code_phase atol = 0.15
 end
 
+@testset "Power over code with zero-padding for $system" for system in [GPSL1(), GalileoE1B()]
+    Random.seed!(2345)
+    # 16368 = 2^4 × 3 × 11 × 31 — not FFTW-friendly, pads to 16384
+    num_samples = 16368
+    doppler = 1234Hz
+    code_phase = 50.5
+    prn = 1
+    sampling_freq = 16.368e6Hz
+    interm_freq = 0.0Hz
+    CN0 = 45
+
+    code = gen_code(
+        num_samples,
+        system,
+        prn,
+        sampling_freq,
+        get_code_frequency(system) + doppler * get_code_center_frequency_ratio(system),
+        code_phase,
+    )
+
+    carrier =
+        cis.(2π * (0:(num_samples-1)) * (interm_freq + doppler) / sampling_freq .+ π / 8)
+
+    noise_power = 1
+    signal_power = CN0 - 10 * log10(sampling_freq / 1.0Hz)
+    noise = randn(ComplexF64, num_samples)
+    signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
+
+    bfft_size = Acquisition.fftw_friendly_size(num_samples)
+    @test bfft_size > num_samples  # Verify padding actually occurs
+
+    code_freq_domain = fft(
+        get_code.(
+            system,
+            (0:(num_samples-1)) .* get_code_frequency(system) ./ sampling_freq,
+            prn,
+        ),
+    )
+    codes_freq_domain = [[code_freq_domain]]
+    effective_sampling_freq = sampling_freq * bfft_size / num_samples
+    code_interval = get_code_length(system) / get_code_frequency(system)
+    num_code_samples =
+        ceil(Int, effective_sampling_freq * min(num_samples / sampling_freq, code_interval))
+    signal_powers = [Matrix{Float32}(undef, num_code_samples, 1)]
+
+    signal_baseband = Vector{ComplexF32}(undef, num_samples)
+    signal_baseband_freq_domain = similar(signal_baseband)
+    code_freq_baseband_freq_domain = Vector{ComplexF32}(undef, bfft_size)
+    code_baseband = similar(code_freq_baseband_freq_domain)
+    fft_plan = plan_fft(signal_baseband)
+    bfft_plan = plan_bfft(code_freq_baseband_freq_domain)
+
+    Acquisition.power_over_code!(
+        signal_powers,
+        1,
+        signal_baseband,
+        signal_baseband_freq_domain,
+        code_freq_baseband_freq_domain,
+        code_baseband,
+        signal,
+        fft_plan,
+        bfft_plan,
+        codes_freq_domain,
+        1,
+        doppler,
+        sampling_freq,
+        interm_freq,
+    )
+
+    maxval, maxidx = findmax(signal_powers[1][:, 1])
+
+    @test (maxidx - 1) * get_code_frequency(system) / effective_sampling_freq ≈
+          code_phase atol = 0.15
+end
+
 @testset "Power over code and Doppler for $system" for system in [GPSL1(), GalileoE1B()]
     Random.seed!(2345)
     num_samples = 60000
