@@ -65,6 +65,8 @@ function acquire(
         system,
         min(length(signal), samples_to_integrate_coherently),
         sampling_freq;
+        min_doppler,
+        max_doppler,
         dopplers,
         prns,
         fft_flag = FFTW.MEASURE,
@@ -147,7 +149,8 @@ function acquire!(
     end
     powers_per_sats = view(acq_plan.signal_powers, acq_plan.prn_indices)
 
-    effective_sampling_freq = acq_plan.sampling_freq * acq_plan.bfft_size / chunk_samples
+    effective_sampling_freq =
+        acq_plan.sampling_freq * acq_plan.bfft_size / acq_plan.linear_fft_size
 
     # resize! does not allocate when shrinking or staying within original capacity
     resize!(acq_plan.output_results, length(prns))
@@ -209,7 +212,8 @@ function acquire!(
     chunk_samples = fine_plan.num_samples_to_integrate_coherently
     num_signal_samples = length(signal)
     num_chunks = cld(num_signal_samples, chunk_samples)
-    effective_sampling_freq = fine_plan.sampling_freq * fine_plan.bfft_size / chunk_samples
+    effective_sampling_freq =
+        fine_plan.sampling_freq * fine_plan.bfft_size / fine_plan.linear_fft_size
 
     # resize! does not allocate when shrinking or staying within original capacity
     resize!(fine_plan.output_results, length(prns))
@@ -357,6 +361,8 @@ function acquire(
             sampling_freq,
             [prn];
             interm_freq,
+            min_doppler,
+            max_doppler,
             dopplers,
             samples_to_integrate_coherently,
             max_code_doppler_loss,

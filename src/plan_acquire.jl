@@ -10,6 +10,7 @@ multiple signals with the same length and sampling frequency.
 
   - `system`: GNSS system (e.g., `GPSL1()`)
   - `num_samples_to_integrate_coherently`: Number of samples per coherent integration chunk
+  - `linear_fft_size`: FFT size for linear correlation (2 × num_samples_to_integrate_coherently)
   - `sampling_freq`: Sampling frequency
   - `dopplers`: Range of Doppler frequencies to search
   - `avail_prn_channels`: PRN channels available in this plan
@@ -21,6 +22,7 @@ multiple signals with the same length and sampling frequency.
 struct AcquisitionPlan{T<:AbstractFloat,S,DS,CS,P,BP,PS}
     system::S
     num_samples_to_integrate_coherently::Int
+    linear_fft_size::Int
     bfft_size::Int
     sampling_freq::typeof(1.0Hz)
     dopplers::DS
@@ -122,10 +124,16 @@ function AcquisitionPlan(
         num_code_dopplers,
     )
 
+    # Double Block Zero Padding (DBZP): zero-pad signal and code to >= 2N before FFT to
+    # convert circular correlation into linear correlation, eliminating boundary artifacts
+    # when code_length * sampling_freq / code_freq is non-integer.
+    # See: D.J.R. van Nee and A.J.R.M. Coenen, "New Fast GPS Code-Acquisition Technique
+    # Using FFT," Electronics Letters, vol. 27, no. 2, pp. 158-160, Jan. 1991.
+    linear_fft_size = fftw_friendly_size(2 * num_samples_to_integrate_coherently)
     bfft_size =
         zero_pad_power > 0 ?
-        fftw_friendly_size(num_samples_to_integrate_coherently) << (zero_pad_power - 1) :
-        num_samples_to_integrate_coherently
+        nextpow(2, linear_fft_size) << (zero_pad_power - 1) :
+        linear_fft_size
     signal_baseband,
     signal_baseband_freq_domain,
     code_freq_baseband_freq_domain,
@@ -136,6 +144,7 @@ function AcquisitionPlan(
         T,
         system,
         num_samples_to_integrate_coherently,
+        linear_fft_size,
         bfft_size,
         sampling_freq,
         prns,
@@ -144,8 +153,7 @@ function AcquisitionPlan(
     )
     chunk_duration = num_samples_to_integrate_coherently / sampling_freq
     code_interval = get_code_length(system) / get_code_frequency(system)
-    effective_sampling_freq =
-        sampling_freq * bfft_size / num_samples_to_integrate_coherently
+    effective_sampling_freq = sampling_freq * bfft_size / linear_fft_size
     signal_powers = [
         Matrix{Float32}(
             undef,
@@ -171,6 +179,7 @@ function AcquisitionPlan(
     AcquisitionPlan(
         system,
         num_samples_to_integrate_coherently,
+        linear_fft_size,
         bfft_size,
         sampling_freq,
         dopplers,
@@ -303,10 +312,12 @@ function CoarseFineAcquisitionPlan(
         num_code_dopplers,
     )
 
+    # DBZP: see comment in AcquisitionPlan constructor
+    linear_fft_size = fftw_friendly_size(2 * num_samples_to_integrate_coherently)
     bfft_size =
         zero_pad_power > 0 ?
-        fftw_friendly_size(num_samples_to_integrate_coherently) << (zero_pad_power - 1) :
-        num_samples_to_integrate_coherently
+        nextpow(2, linear_fft_size) << (zero_pad_power - 1) :
+        linear_fft_size
     signal_baseband,
     signal_baseband_freq_domain,
     code_freq_baseband_freq_domain,
@@ -317,6 +328,7 @@ function CoarseFineAcquisitionPlan(
         T,
         system,
         num_samples_to_integrate_coherently,
+        linear_fft_size,
         bfft_size,
         sampling_freq,
         prns,
@@ -325,8 +337,7 @@ function CoarseFineAcquisitionPlan(
     )
     Δt = num_samples_to_integrate_coherently / sampling_freq
     code_interval = get_code_length(system) / get_code_frequency(system)
-    effective_sampling_freq =
-        sampling_freq * bfft_size / num_samples_to_integrate_coherently
+    effective_sampling_freq = sampling_freq * bfft_size / linear_fft_size
     coarse_signal_powers = [
         Matrix{Float32}(
             undef,
@@ -372,6 +383,7 @@ function CoarseFineAcquisitionPlan(
     coarse_plan = AcquisitionPlan(
         system,
         num_samples_to_integrate_coherently,
+        linear_fft_size,
         bfft_size,
         sampling_freq,
         coarse_dopplers,
@@ -410,6 +422,7 @@ function CoarseFineAcquisitionPlan(
     fine_plan = AcquisitionPlan(
         system,
         num_samples_to_integrate_coherently,
+        linear_fft_size,
         bfft_size,
         sampling_freq,
         fine_doppler_range,
@@ -563,6 +576,7 @@ function common_buffers(
     ::Type{T},
     system,
     num_samples_to_integrate_coherently,
+    linear_fft_size,
     bfft_size,
     sampling_freq,
     prns,
@@ -571,16 +585,21 @@ function common_buffers(
 ) where {T}
     codes = [
         [
-            gen_code(
-                num_samples_to_integrate_coherently,
-                system,
-                sat_prn,
-                sampling_freq,
-                get_code_frequency(system) + code_doppler * 1.0Hz,
-            ) for code_doppler in code_dopplers
+            begin
+                code = gen_code(
+                    num_samples_to_integrate_coherently,
+                    system,
+                    sat_prn,
+                    sampling_freq,
+                    get_code_frequency(system) + code_doppler * 1.0Hz,
+                )
+                padded = zeros(eltype(code), linear_fft_size)
+                padded[1:num_samples_to_integrate_coherently] .= code
+                padded
+            end for code_doppler in code_dopplers
         ] for sat_prn in prns
     ]
-    signal_baseband = Vector{Complex{T}}(undef, num_samples_to_integrate_coherently)
+    signal_baseband = Vector{Complex{T}}(undef, linear_fft_size)
     signal_baseband_freq_domain = similar(signal_baseband)
     code_freq_baseband_freq_domain = Vector{ComplexF32}(undef, bfft_size)
     code_baseband = similar(code_freq_baseband_freq_domain)
