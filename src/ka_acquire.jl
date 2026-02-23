@@ -528,7 +528,8 @@ function acquire!(
         CN0 = 10 * log10(snr / code_period / 1.0Hz)
         doppler = (doppler_index - 1) * step(plan.dopplers) + first(plan.dopplers) +
                   Float64(ustrip(doppler_offset))
-        code_phase = (code_index - 1) / (plan.sampling_frequency / get_code_frequency(plan.system))
+        code_doppler = doppler * get_code_center_frequency_ratio(plan.system)
+        code_phase = (code_index - 1) / (plan.sampling_frequency / (get_code_frequency(plan.system) + code_doppler * 1.0Hz))
 
         # Only keep full power matrix if requested
         result_powers = if store_powers
