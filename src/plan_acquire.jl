@@ -497,6 +497,26 @@ function compute_code_doppler_grid(system, min_doppler, max_doppler, code_dopple
 end
 
 """
+    code_doppler_index(doppler_hz, ratio, code_doppler_step, code_doppler_offset_idx, num_code_dopplers)
+
+Map a single carrier Doppler value (in Hz, unitless) to the index of the nearest
+pre-computed code Doppler replica.
+"""
+@inline function code_doppler_index(
+    doppler_hz,
+    ratio,
+    code_doppler_step,
+    code_doppler_offset_idx,
+    num_code_dopplers,
+)
+    clamp(
+        round(Int, doppler_hz * ratio / code_doppler_step) + code_doppler_offset_idx,
+        1,
+        num_code_dopplers,
+    )
+end
+
+"""
     compute_code_doppler_indices(dopplers, system, code_doppler_step, code_doppler_offset_idx, num_code_dopplers)
 
 Map each carrier Doppler bin to the index of the nearest pre-computed code Doppler replica.
@@ -510,10 +530,11 @@ function compute_code_doppler_indices(
 )
     ratio = get_code_center_frequency_ratio(system)
     [
-        clamp(
-            round(Int, ustrip(doppler) * ratio / code_doppler_step) +
+        code_doppler_index(
+            ustrip(doppler),
+            ratio,
+            code_doppler_step,
             code_doppler_offset_idx,
-            1,
             num_code_dopplers,
         ) for doppler in dopplers
     ]
