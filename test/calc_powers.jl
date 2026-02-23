@@ -171,7 +171,7 @@ end
     dopplers = (-max_doppler):250Hz:max_doppler
 
     acq_plan = AcquisitionPlan(system, length(signal), sampling_freq; dopplers, prns = 1:1)
-    effective_sampling_freq = sampling_freq * acq_plan.bfft_size / length(signal)
+    effective_sampling_freq = sampling_freq * acq_plan.bfft_size / acq_plan.linear_fft_size
 
     powers_per_sats = @inferred Acquisition.power_over_doppler_and_codes!(
         acq_plan,
@@ -182,8 +182,9 @@ end
     )
 
     maxval, maxidx = findmax(powers_per_sats[1])
+    # Max quantization error is code_phase_step/2 ≈ 0.031 chips for these parameters
     @test (maxidx[1] - 1) * get_code_frequency(system) / effective_sampling_freq ≈
-          code_phase atol = 0.08
+          code_phase atol = 0.04
 
     est_doppler = (maxidx[2] - 1) * step(dopplers) + first(dopplers)
     @test abs(est_doppler - doppler) < step(dopplers) / 2

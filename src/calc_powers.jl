@@ -68,10 +68,8 @@ function power_over_code!(
     signal_samples = length(signal)
     buffer_length = length(signal_baseband)
     bfft_length = length(code_freq_baseband_freq_domain)
-    # Zero-pad remaining samples if signal is shorter than buffer
-    if signal_samples < buffer_length
-        signal_baseband[(signal_samples+1):buffer_length] .= zero(eltype(signal_baseband))
-    end
+    # Zero-pad the portion beyond the signal (DBZP: buffer is 2N, signal is ≤ N)
+    signal_baseband[(signal_samples+1):buffer_length] .= zero(eltype(signal_baseband))
     # Downconvert actual signal samples
     downconvert!(
         signal_baseband,

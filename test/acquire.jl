@@ -49,12 +49,12 @@
 
     inplace_acq_res = @inferred acquire!(acq_plan, signal_typed, prn; interm_freq)
 
-    @test acq_res.code_phase ≈ code_phase atol = 0.08
+    @test acq_res.code_phase ≈ code_phase atol = 0.04
     @test abs(acq_res.carrier_doppler - doppler) < step(dopplers) / 2
     @test acq_res.prn == prn
     @test acq_res.CN0 ≈ CN0 atol = 7
 
-    @test inplace_acq_res.code_phase ≈ code_phase atol = 0.08
+    @test inplace_acq_res.code_phase ≈ code_phase atol = 0.04
     @test abs(inplace_acq_res.carrier_doppler - doppler) < step(dopplers) / 2
     @test inplace_acq_res.prn == prn
     @test inplace_acq_res.CN0 ≈ CN0 atol = 7
@@ -72,12 +72,12 @@
     inplace_inplace_acq_res =
         @inferred acquire!(coarse_fine_acq_plan, signal_typed, prn; interm_freq)
 
-    @test coarse_fine_acq_res.code_phase ≈ code_phase atol = 0.08
+    @test coarse_fine_acq_res.code_phase ≈ code_phase atol = 0.04
     @test abs(coarse_fine_acq_res.carrier_doppler - doppler) < step(dopplers) / 2
     @test coarse_fine_acq_res.prn == prn
     @test coarse_fine_acq_res.CN0 ≈ CN0 atol = 7
 
-    @test inplace_inplace_acq_res.code_phase ≈ code_phase atol = 0.08
+    @test inplace_inplace_acq_res.code_phase ≈ code_phase atol = 0.04
     @test abs(inplace_inplace_acq_res.carrier_doppler - doppler) < step(dopplers) / 2
     @test inplace_inplace_acq_res.prn == prn
     @test inplace_inplace_acq_res.CN0 ≈ CN0 atol = 7
@@ -168,7 +168,7 @@ end
         max_doppler,
     )
 
-    @test acq_res.code_phase ≈ code_phase atol = 0.08
+    @test acq_res.code_phase ≈ code_phase atol = 0.04
     @test abs(acq_res.carrier_doppler - doppler) < step(dopplers) / 2
     @test acq_res.prn == prn
     @test acq_res.CN0 ≈ CN0 atol = 7
@@ -188,7 +188,7 @@ end
 
     inplace_acq_res = @inferred acquire!(acq_plan, signal_typed, prn; interm_freq)
 
-    @test inplace_acq_res.code_phase ≈ code_phase atol = 0.08
+    @test inplace_acq_res.code_phase ≈ code_phase atol = 0.04
     @test abs(inplace_acq_res.carrier_doppler - doppler) < step(dopplers) / 2
     @test inplace_acq_res.prn == prn
     @test inplace_acq_res.CN0 ≈ CN0 atol = 7
@@ -204,7 +204,7 @@ end
         max_doppler,
     )
 
-    @test coarse_fine_acq_res.code_phase ≈ code_phase atol = 0.08
+    @test coarse_fine_acq_res.code_phase ≈ code_phase atol = 0.04
     @test abs(coarse_fine_acq_res.carrier_doppler - doppler) < step(dopplers) / 2
     @test coarse_fine_acq_res.prn == prn
     @test coarse_fine_acq_res.CN0 ≈ CN0 atol = 7
@@ -226,7 +226,7 @@ end
     inplace_coarse_fine_acq_res =
         @inferred acquire!(coarse_fine_acq_plan, signal_typed, prn; interm_freq)
 
-    @test inplace_coarse_fine_acq_res.code_phase ≈ code_phase atol = 0.08
+    @test inplace_coarse_fine_acq_res.code_phase ≈ code_phase atol = 0.04
     @test abs(inplace_coarse_fine_acq_res.carrier_doppler - doppler) < step(dopplers) / 2
     @test inplace_coarse_fine_acq_res.prn == prn
     @test inplace_coarse_fine_acq_res.CN0 ≈ CN0 atol = 7
