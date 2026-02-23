@@ -68,10 +68,10 @@ Create an acquisition plan for efficient repeated acquisition.
   - `doppler_step_factor`: Factor for computing Doppler step from integration time (default: `1//3`)
   - `prns`: PRN channels to prepare (default: `1:34`)
   - `fft_flag`: FFTW planning flag (default: `FFTW.MEASURE`)
-  - `code_doppler_tolerance`: Maximum allowed code Doppler mismatch × integration time (default: `0.01`).
-    Controls how many code replicas are pre-computed at different code Doppler offsets.
-    Smaller values improve accuracy at high Dopplers with long integration times, at the
-    cost of more memory.
+  - `max_code_doppler_loss`: Maximum acceptable correlation loss in dB from code Doppler
+    mismatch (default: `0.5`). Controls how many code replicas are pre-computed at different
+    code Doppler offsets. This parameter works uniformly across all GNSS systems regardless
+    of chip rate. Typical values: `0.5` (negligible loss), `1.0` (mild loss), `3.0` (aggressive).
 
 # Example
 
@@ -101,14 +101,15 @@ function AcquisitionPlan(
     doppler_step = doppler_step_factor * sampling_freq /
                    num_samples_to_integrate_coherently,
     dopplers = min_doppler:doppler_step:max_doppler,
-    code_doppler_tolerance = 0.01,
+    max_code_doppler_loss = 0.5dB,
     prns = 1:34,
     fft_flag = FFTW.MEASURE,
     zero_pad_power::Int = 1,
 ) where {T<:AbstractFloat}
-    # Code Doppler step: tolerance (cycles of phase error) / integration time (s) = Hz
+    # Convert dB loss to max phase error (cycles), then to code Doppler step (Hz)
     T_coh = num_samples_to_integrate_coherently / sampling_freq
-    code_doppler_step = code_doppler_tolerance / ustrip(T_coh)
+    max_phase_err = max_phase_error_from_loss(max_code_doppler_loss)
+    code_doppler_step = max_phase_err > 0 ? max_phase_err / ustrip(T_coh) : Inf
     code_dopplers, n_neg =
         compute_code_doppler_grid(system, min_doppler, max_doppler, code_doppler_step)
     code_doppler_offset_idx = n_neg + 1
@@ -247,10 +248,10 @@ Create a two-stage coarse-fine acquisition plan.
   - `doppler_step_factor`: Factor for computing coarse step from integration time (default: `1//3`)
   - `prns`: PRN channels to prepare (default: `1:34`)
   - `fft_flag`: FFTW planning flag (default: `FFTW.MEASURE`)
-  - `code_doppler_tolerance`: Maximum allowed code Doppler mismatch × integration time (default: `0.01`).
-    Controls how many code replicas are pre-computed at different code Doppler offsets.
-    Smaller values improve accuracy at high Dopplers with long integration times, at the
-    cost of more memory.
+  - `max_code_doppler_loss`: Maximum acceptable correlation loss in dB from code Doppler
+    mismatch (default: `0.5`). Controls how many code replicas are pre-computed at different
+    code Doppler offsets. This parameter works uniformly across all GNSS systems regardless
+    of chip rate. Typical values: `0.5` (negligible loss), `1.0` (mild loss), `3.0` (aggressive).
 
 # Example
 
@@ -279,14 +280,15 @@ function CoarseFineAcquisitionPlan(
     doppler_step_factor = 1//3,
     coarse_step = doppler_step_factor * sampling_freq / num_samples_to_integrate_coherently,
     fine_step = coarse_step / 10,
-    code_doppler_tolerance = 0.01,
+    max_code_doppler_loss = 0.5dB,
     prns = 1:34,
     fft_flag = FFTW.MEASURE,
     zero_pad_power::Int = 1,
 ) where {T<:AbstractFloat}
-    # Code Doppler step: tolerance (cycles of phase error) / integration time (s) = Hz
+    # Convert dB loss to max phase error (cycles), then to code Doppler step (Hz)
     T_coh = num_samples_to_integrate_coherently / sampling_freq
-    code_doppler_step = code_doppler_tolerance / ustrip(T_coh)
+    max_phase_err = max_phase_error_from_loss(max_code_doppler_loss)
+    code_doppler_step = max_phase_err > 0 ? max_phase_err / ustrip(T_coh) : Inf
     code_dopplers, n_neg =
         compute_code_doppler_grid(system, min_doppler, max_doppler, code_doppler_step)
     code_doppler_offset_idx = n_neg + 1
@@ -442,6 +444,37 @@ function CoarseFineAcquisitionPlan(system, sampling_freq; kwargs...)
         sampling_freq;
         kwargs...,
     )
+end
+
+"""
+    max_phase_error_from_loss(loss_dB)
+
+Compute the maximum code phase error (in cycles) that produces at most `loss_dB` of
+correlation loss. The correlation loss from a linear code frequency mismatch over the
+integration interval is `sinc²(ε)` where `ε` is the accumulated phase error in cycles.
+
+Accepts a Unitful `Gain` value (e.g. `0.5u"dB"`).
+
+Uses Newton's method to invert `sinc(ε) = 10^(-loss_dB/20)` for `ε ∈ [0, 0.5]`.
+"""
+function max_phase_error_from_loss(loss::Gain)
+    loss_dB = loss.val
+    loss_dB <= 0 && return 0.0
+    target = 10^(-loss_dB / 20)  # sinc(ε) threshold
+    target >= 1 && return 0.0
+    # Initial guess from small-angle approximation: sinc(ε) ≈ 1 - π²ε²/6
+    ε = sqrt(6 * (1 - target)) / π
+    # Newton iterations on f(ε) = sinc(ε) - target = sin(πε)/(πε) - target
+    for _ = 1:10
+        πε = π * ε
+        s, c = sincos(πε)
+        sinc_val = s / πε
+        # d/dε sinc(ε) = (cos(πε) - sinc(ε)) / ε
+        sinc_deriv = (c - sinc_val) / ε
+        ε -= (sinc_val - target) / sinc_deriv
+        ε = clamp(ε, 0.0, 0.5)
+    end
+    return ε
 end
 
 """

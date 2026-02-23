@@ -116,10 +116,9 @@ Create a GPU-accelerated acquisition plan.
     `T = num_samples_to_integrate_coherently / sampling_freq`)
   - `doppler_step_factor`: Factor for computing Doppler step from integration time (default: `1//3`)
   - `prns`: PRN channels to prepare (default: `1:34`)
-  - `code_doppler_tolerance`: Maximum allowed code Doppler mismatch × integration time (default: `0.01`).
-    Controls how many code replicas are pre-computed at different code Doppler offsets.
-    Smaller values improve accuracy at high Dopplers with long integration times, at the
-    cost of more memory.
+  - `max_code_doppler_loss`: Maximum acceptable correlation loss in dB from code Doppler
+    mismatch (default: `0.5`). Controls how many code replicas are pre-computed at different
+    code Doppler offsets. Works uniformly across all GNSS systems regardless of chip rate.
 
 # Example
 
@@ -145,7 +144,7 @@ function KAAcquisitionPlan(
     doppler_step = doppler_step_factor * sampling_freq /
                    num_samples_to_integrate_coherently,
     dopplers = min_doppler:doppler_step:max_doppler,
-    code_doppler_tolerance = 0.01,
+    max_code_doppler_loss = 0.5dB,
     prns = 1:34,
     zero_pad_power::Int = 1,
 ) where {T<:AbstractFloat,S<:AbstractGNSS}
@@ -162,9 +161,10 @@ function KAAcquisitionPlan(
         fftw_friendly_size(num_samples_to_integrate_coherently) << (zero_pad_power - 1) :
         num_samples_to_integrate_coherently
 
-    # Code Doppler grid (reuse helpers from plan_acquire.jl)
+    # Convert dB loss to max phase error (cycles), then to code Doppler step (Hz)
     T_coh = num_samples_to_integrate_coherently / sampling_freq
-    code_doppler_step_val = code_doppler_tolerance / ustrip(T_coh)
+    max_phase_err = max_phase_error_from_loss(max_code_doppler_loss)
+    code_doppler_step_val = max_phase_err > 0 ? max_phase_err / ustrip(T_coh) : Inf
     code_dopplers_grid, n_neg =
         compute_code_doppler_grid(system, min_doppler, max_doppler, code_doppler_step_val)
     code_doppler_offset_idx = n_neg + 1

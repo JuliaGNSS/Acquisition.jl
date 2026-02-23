@@ -23,10 +23,9 @@ replica codes across a grid of Doppler frequencies and code phases.
   - `doppler_step_factor`: Factor for computing Doppler step from integration time (default: `1//3`).
     The step is `doppler_step_factor / T` where `T = samples_to_integrate_coherently / sampling_freq`.
   - `dopplers`: Custom Doppler search range (default: computed from `doppler_step_factor`)
-  - `code_doppler_tolerance`: Maximum allowed code Doppler mismatch × integration time (default: `0.01`).
-    Controls how many code replicas are pre-computed at different code Doppler offsets.
-    Smaller values improve accuracy at high Dopplers with long integration times, at the
-    cost of more memory.
+  - `max_code_doppler_loss`: Maximum acceptable correlation loss in dB from code Doppler
+    mismatch (default: `0.5`). Controls how many code replicas are pre-computed at different
+    code Doppler offsets. Works uniformly across all GNSS systems regardless of chip rate.
 
 # Returns
 
@@ -59,7 +58,7 @@ function acquire(
     samples_to_integrate_coherently = ceil(Int, sampling_freq / get_data_frequency(system)),
     doppler_step_factor = 1//3,
     dopplers = min_doppler:(doppler_step_factor*sampling_freq/samples_to_integrate_coherently):max_doppler,
-    code_doppler_tolerance = 0.01,
+    max_code_doppler_loss = 0.5dB,
     zero_pad_power::Int = 1,
 )
     acq_plan = AcquisitionPlan(
@@ -69,7 +68,7 @@ function acquire(
         dopplers,
         prns,
         fft_flag = FFTW.MEASURE,
-        code_doppler_tolerance,
+        max_code_doppler_loss,
         zero_pad_power,
     )
     acquire!(acq_plan, signal, prns; interm_freq)
@@ -349,7 +348,7 @@ function acquire(
     samples_to_integrate_coherently = ceil(Int, sampling_freq / get_data_frequency(system)),
     doppler_step_factor = 1//3,
     dopplers = min_doppler:(doppler_step_factor*sampling_freq/samples_to_integrate_coherently):max_doppler,
-    code_doppler_tolerance = 0.01,
+    max_code_doppler_loss = 0.5dB,
     zero_pad_power::Int = 1,
 )
     only(
@@ -361,7 +360,7 @@ function acquire(
             interm_freq,
             dopplers,
             samples_to_integrate_coherently,
-            code_doppler_tolerance,
+            max_code_doppler_loss,
             zero_pad_power,
         ),
     )
@@ -414,10 +413,9 @@ resolution while reducing computational cost compared to a single high-resolutio
     The coarse step is `doppler_step_factor / T` where `T = samples_to_integrate_coherently / sampling_freq`.
   - `coarse_step`: Doppler step for coarse search (default: computed from `doppler_step_factor`)
   - `fine_step`: Doppler step for fine search (default: `coarse_step / 10`)
-  - `code_doppler_tolerance`: Maximum allowed code Doppler mismatch × integration time (default: `0.01`).
-    Controls how many code replicas are pre-computed at different code Doppler offsets.
-    Smaller values improve accuracy at high Dopplers with long integration times, at the
-    cost of more memory.
+  - `max_code_doppler_loss`: Maximum acceptable correlation loss in dB from code Doppler
+    mismatch (default: `0.5`). Controls how many code replicas are pre-computed at different
+    code Doppler offsets. Works uniformly across all GNSS systems regardless of chip rate.
 
 # Returns
 
@@ -446,7 +444,7 @@ function coarse_fine_acquire(
     doppler_step_factor = 1//3,
     coarse_step = doppler_step_factor * sampling_freq / samples_to_integrate_coherently,
     fine_step = coarse_step / 10,
-    code_doppler_tolerance = 0.01,
+    max_code_doppler_loss = 0.5dB,
     zero_pad_power::Int = 1,
 )
     acq_plan = CoarseFineAcquisitionPlan(
@@ -459,7 +457,7 @@ function coarse_fine_acquire(
         fine_step,
         prns,
         fft_flag = FFTW.MEASURE,
-        code_doppler_tolerance,
+        max_code_doppler_loss,
         zero_pad_power,
     )
     acquire!(acq_plan, signal, prns; interm_freq)
@@ -517,7 +515,7 @@ function coarse_fine_acquire(
     doppler_step_factor = 1//3,
     coarse_step = doppler_step_factor * sampling_freq / samples_to_integrate_coherently,
     fine_step = coarse_step / 10,
-    code_doppler_tolerance = 0.01,
+    max_code_doppler_loss = 0.5dB,
     zero_pad_power::Int = 1,
 )
     only(
@@ -532,7 +530,7 @@ function coarse_fine_acquire(
             samples_to_integrate_coherently,
             coarse_step,
             fine_step,
-            code_doppler_tolerance,
+            max_code_doppler_loss,
             zero_pad_power,
         ),
     )
