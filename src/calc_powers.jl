@@ -20,8 +20,12 @@ function power_over_doppler_and_codes!(
             acq_plan.code_doppler_indices[doppler_idx]
         else
             clamp(
-                round(Int, ustrip(doppler + doppler_offset) * ratio / acq_plan.code_doppler_step) + acq_plan.code_doppler_offset_idx,
-                1, acq_plan.num_code_dopplers
+                round(
+                    Int,
+                    ustrip(doppler + doppler_offset) * ratio / acq_plan.code_doppler_step,
+                ) + acq_plan.code_doppler_offset_idx,
+                1,
+                acq_plan.num_code_dopplers,
             )
         end
         power_over_code!(
@@ -33,7 +37,7 @@ function power_over_doppler_and_codes!(
             acq_plan.code_baseband,
             signal,
             acq_plan.fft_plan,
-            acq_plan.ifft_plan,
+            acq_plan.bfft_plan,
             codes_freq_domain_view,
             cd_idx,
             doppler + doppler_offset,
@@ -54,7 +58,7 @@ function power_over_code!(
     code_baseband,
     signal,
     fft_plan,
-    ifft_plan,
+    bfft_plan,
     codes_freq_domain,
     code_doppler_idx::Int,
     doppler,
@@ -64,18 +68,51 @@ function power_over_code!(
 )
     signal_samples = length(signal)
     buffer_length = length(signal_baseband)
+    bfft_length = length(code_freq_baseband_freq_domain)
     # Zero-pad remaining samples if signal is shorter than buffer
     if signal_samples < buffer_length
-        signal_baseband[signal_samples+1:buffer_length] .= zero(eltype(signal_baseband))
+        signal_baseband[(signal_samples+1):buffer_length] .= zero(eltype(signal_baseband))
     end
     # Downconvert actual signal samples
-    downconvert!(signal_baseband, signal, interm_freq + doppler, sampling_freq, signal_samples)
+    downconvert!(
+        signal_baseband,
+        signal,
+        interm_freq + doppler,
+        sampling_freq,
+        signal_samples,
+    )
     mul!(signal_baseband_freq_domain, fft_plan, signal_baseband)
-    @inbounds for (code_freq_domain_variants, signal_power) in zip(codes_freq_domain, signal_powers)
+    # When zero-padding, zero the middle gap once before the PRN loop.
+    # Positive freqs (1..pos_end) and negative freqs (bfft_length-neg_count+1..bfft_length)
+    # are overwritten each iteration, so only the gap in between needs to stay zero.
+    if bfft_length > buffer_length
+        pos_end = buffer_length ÷ 2 + 1
+        neg_count = buffer_length - pos_end
+        gap_start = pos_end + 1
+        gap_end = bfft_length - neg_count
+        @inbounds for i = gap_start:gap_end
+            code_freq_baseband_freq_domain[i] = zero(eltype(code_freq_baseband_freq_domain))
+        end
+    end
+    @inbounds for (code_freq_domain_variants, signal_power) in
+                  zip(codes_freq_domain, signal_powers)
         code_freq_domain = code_freq_domain_variants[code_doppler_idx]
-        code_freq_baseband_freq_domain .=
-            code_freq_domain .* conj.(signal_baseband_freq_domain)
-        mul!(code_baseband, ifft_plan, code_freq_baseband_freq_domain)
+        if bfft_length > buffer_length
+            neg_dest_start = bfft_length - neg_count
+            @inbounds for i = 1:pos_end
+                code_freq_baseband_freq_domain[i] =
+                    code_freq_domain[i] * conj(signal_baseband_freq_domain[i])
+            end
+            @inbounds for i = 1:neg_count
+                code_freq_baseband_freq_domain[neg_dest_start+i] =
+                    code_freq_domain[pos_end+i] *
+                    conj(signal_baseband_freq_domain[pos_end+i])
+            end
+        else
+            code_freq_baseband_freq_domain .=
+                code_freq_domain .* conj.(signal_baseband_freq_domain)
+        end
+        mul!(code_baseband, bfft_plan, code_freq_baseband_freq_domain)
         num_code_samples = size(signal_power, 1)
         signal_power_col = view(signal_power, :, doppler_idx)
         code_baseband_view = view(code_baseband, 1:num_code_samples)
@@ -98,7 +135,7 @@ function power_over_code!(
     code_baseband,
     signal,
     fft_plan,
-    ifft_plan,
+    bfft_plan,
     codes_freq_domain,
     doppler,
     sampling_freq,
@@ -116,7 +153,7 @@ function power_over_code!(
         code_baseband,
         signal,
         fft_plan,
-        ifft_plan,
+        bfft_plan,
         wrapped_codes,
         1,
         doppler,
