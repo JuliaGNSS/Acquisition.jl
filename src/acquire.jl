@@ -164,9 +164,10 @@ function acquire!(
             (doppler_index - 1) * step(acq_plan.dopplers) +
             first(acq_plan.dopplers) +
             doppler_offset
+        code_doppler = doppler * get_code_center_frequency_ratio(acq_plan.system)
         code_phase =
             (code_index - 1) /
-            (acq_plan.sampling_freq / get_code_frequency(acq_plan.system))
+            (acq_plan.sampling_freq / (get_code_frequency(acq_plan.system) + code_doppler))
         result = AcquisitionResults(
             acq_plan.system,
             prn,
@@ -265,9 +266,10 @@ function acquire!(
             (doppler_index - 1) * step(fine_plan.dopplers) +
             first(fine_plan.dopplers) +
             doppler_offset
+        code_doppler = doppler * get_code_center_frequency_ratio(fine_plan.system)
         code_phase =
             (code_index - 1) /
-            (fine_plan.sampling_freq / get_code_frequency(fine_plan.system))
+            (fine_plan.sampling_freq / (get_code_frequency(fine_plan.system) + code_doppler))
         result = AcquisitionResults(
             fine_plan.system,
             prn,
