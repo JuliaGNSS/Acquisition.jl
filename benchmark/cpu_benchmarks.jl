@@ -20,20 +20,20 @@ const _supports_eltype = hasmethod(AcquisitionPlan,
 function _make_acq_plan(system, num_samples, sampling_freq, buffer_eltype; prns=1:32)
     if _supports_eltype
         AcquisitionPlan(system, num_samples, sampling_freq;
-            prns=prns, fft_flag=FFTW.ESTIMATE, eltype=buffer_eltype)
+            prns=prns, fft_flag=FFTW.MEASURE, eltype=buffer_eltype)
     else
         AcquisitionPlan(system, num_samples, sampling_freq;
-            prns=prns, fft_flag=FFTW.ESTIMATE)
+            prns=prns, fft_flag=FFTW.MEASURE)
     end
 end
 
 function _make_coarse_fine_plan(system, num_samples, sampling_freq, buffer_eltype; prns=1:32)
     if _supports_eltype
         CoarseFineAcquisitionPlan(system, num_samples, sampling_freq;
-            prns=prns, fft_flag=FFTW.ESTIMATE, eltype=buffer_eltype)
+            prns=prns, fft_flag=FFTW.MEASURE, eltype=buffer_eltype)
     else
         CoarseFineAcquisitionPlan(system, num_samples, sampling_freq;
-            prns=prns, fft_flag=FFTW.ESTIMATE)
+            prns=prns, fft_flag=FFTW.MEASURE)
     end
 end
 
@@ -147,7 +147,7 @@ if _supports_noncoherent
         num_samples = ceil(Int, multiplier * bit_period_samples)
 
         # Create plan with default bit period chunk size (single PRN for faster benchmarks)
-        plan = AcquisitionPlan(system, CPU_SAMPLING_FREQ; prns=1:1, fft_flag=FFTW.ESTIMATE)
+        plan = AcquisitionPlan(system, CPU_SAMPLING_FREQ; prns=1:1, fft_flag=FFTW.MEASURE)
         signal = _make_signal(num_samples, Float32)
 
         CPU_SUITE["NonCoherent"]["$(multiplier)x_bit_period"] =
@@ -161,7 +161,7 @@ if _supports_noncoherent
         bit_period_samples = ceil(Int, CPU_SAMPLING_FREQ / get_data_frequency(system))
         num_samples = ceil(Int, multiplier * bit_period_samples)
 
-        plan = CoarseFineAcquisitionPlan(system, CPU_SAMPLING_FREQ; prns=1:1, fft_flag=FFTW.ESTIMATE)
+        plan = CoarseFineAcquisitionPlan(system, CPU_SAMPLING_FREQ; prns=1:1, fft_flag=FFTW.MEASURE)
         signal = _make_signal(num_samples, Float32)
 
         CPU_SUITE["NonCoherent CoarseFine"]["$(multiplier)x_bit_period"] =
