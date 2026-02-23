@@ -224,12 +224,11 @@ function acquire!(
 
         ratio = get_code_center_frequency_ratio(fine_plan.system)
         @inbounds for (doppler_idx, doppler) in enumerate(fine_plan.dopplers)
-            cd_idx = clamp(
-                round(
-                    Int,
-                    ustrip(doppler + doppler_offset) * ratio / fine_plan.code_doppler_step,
-                ) + fine_plan.code_doppler_offset_idx,
-                1,
+            cd_idx = code_doppler_index(
+                ustrip(doppler + doppler_offset),
+                ratio,
+                fine_plan.code_doppler_step,
+                fine_plan.code_doppler_offset_idx,
                 fine_plan.num_code_dopplers,
             )
             # Process signal in chunks, accumulating powers non-coherently

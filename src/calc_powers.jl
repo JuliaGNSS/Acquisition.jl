@@ -19,12 +19,11 @@ function power_over_doppler_and_codes!(
         cd_idx = if iszero(ustrip(doppler_offset))
             acq_plan.code_doppler_indices[doppler_idx]
         else
-            clamp(
-                round(
-                    Int,
-                    ustrip(doppler + doppler_offset) * ratio / acq_plan.code_doppler_step,
-                ) + acq_plan.code_doppler_offset_idx,
-                1,
+            code_doppler_index(
+                ustrip(doppler + doppler_offset),
+                ratio,
+                acq_plan.code_doppler_step,
+                acq_plan.code_doppler_offset_idx,
                 acq_plan.num_code_dopplers,
             )
         end
@@ -122,43 +121,4 @@ function power_over_code!(
             signal_power_col .= abs2.(code_baseband_view)
         end
     end
-end
-
-# Backward-compatible method: when codes_freq_domain is a flat Vector{Vector}
-# (no code Doppler dimension), wrap each entry and delegate to the new method.
-function power_over_code!(
-    signal_powers,
-    doppler_idx,
-    signal_baseband,
-    signal_baseband_freq_domain,
-    code_freq_baseband_freq_domain,
-    code_baseband,
-    signal,
-    fft_plan,
-    bfft_plan,
-    codes_freq_domain,
-    doppler,
-    sampling_freq,
-    interm_freq;
-    accumulate = false,
-)
-    # Wrap each code vector in a single-element vector to match the new nested format
-    wrapped_codes = [[c] for c in codes_freq_domain]
-    power_over_code!(
-        signal_powers,
-        doppler_idx,
-        signal_baseband,
-        signal_baseband_freq_domain,
-        code_freq_baseband_freq_domain,
-        code_baseband,
-        signal,
-        fft_plan,
-        bfft_plan,
-        wrapped_codes,
-        1,
-        doppler,
-        sampling_freq,
-        interm_freq;
-        accumulate,
-    )
 end

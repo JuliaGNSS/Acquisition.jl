@@ -505,13 +505,11 @@ function acquire!(
     active_cd_indices = if !iszero(ustrip(doppler_offset))
         ratio = get_code_center_frequency_ratio(plan.system)
         [
-            clamp(
-                round(
-                    Int,
-                    (dopplers_hz[d] + Float64(ustrip(doppler_offset))) * ratio /
-                    plan.code_doppler_step,
-                ) + plan.code_doppler_offset_idx,
-                1,
+            code_doppler_index(
+                dopplers_hz[d] + Float64(ustrip(doppler_offset)),
+                ratio,
+                plan.code_doppler_step,
+                plan.code_doppler_offset_idx,
                 plan.num_code_dopplers,
             ) for d = 1:num_dopplers
         ]
