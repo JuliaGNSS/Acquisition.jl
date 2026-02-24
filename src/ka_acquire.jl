@@ -120,6 +120,9 @@ Create a GPU-accelerated acquisition plan.
   - `max_code_doppler_loss`: Maximum acceptable correlation loss in dB from code Doppler
     mismatch (default: `0.5`). Controls how many code replicas are pre-computed at different
     code Doppler offsets. Works uniformly across all GNSS systems regardless of chip rate.
+  - `fft_flag`: FFTW planning flag for CPU Arrays (default: `FFTW.MEASURE`). Ignored for
+    GPU arrays. `FFTW.MEASURE` spends extra time during plan creation to find the fastest
+    FFT algorithm for the given size, then caches the result via FFTW wisdom.
 
 # Example
 
@@ -148,6 +151,7 @@ function KAAcquisitionPlan(
     max_code_doppler_loss = 0.5dB,
     prns = 1:34,
     zero_pad_power::Int = 0,
+    fft_flag = FFTW.MEASURE,
 ) where {T<:AbstractFloat,S<:AbstractGNSS}
     # Normalize dopplers to Float64 StepRangeLen for consistency
     dopplers_hz =
@@ -232,11 +236,20 @@ function KAAcquisitionPlan(
     sum_buffer_gpu = ArrayType{T}(undef, num_reduction_threads)
     sum_buffer_cpu = Vector{T}(undef, num_reduction_threads)         # CPU side for final reduction
 
-    # Create FFT plans using AbstractFFTs (will use cuFFT/rocFFT etc.)
-    # Plan along dimension 1 (samples) — FFT on original-size signal
-    fft_plan = plan_fft(signal_baseband, 1)
-    # BFFT plan on the (possibly padded) buffer
-    bfft_plan = plan_bfft(code_baseband_freq_domain, 1)
+    # Create FFT plans. For CPU Arrays, use FFTW with configurable planning flags
+    # (MEASURE/PATIENT find faster algorithms). For GPU arrays, use AbstractFFTs
+    # which delegates to cuFFT/rocFFT (no planning flags needed).
+    fft_plan, bfft_plan = if ArrayType <: Array && fft_flag != FFTW.ESTIMATE
+        with_fftw_wisdom() do
+            plan_fft(signal_baseband, 1; flags = fft_flag),
+            plan_bfft(code_baseband_freq_domain, 1; flags = fft_flag)
+        end
+    elseif ArrayType <: Array
+        plan_fft(signal_baseband, 1; flags = fft_flag),
+        plan_bfft(code_baseband_freq_domain, 1; flags = fft_flag)
+    else
+        plan_fft(signal_baseband, 1), plan_bfft(code_baseband_freq_domain, 1)
+    end
 
     # Transform codes to frequency domain
     # Transfer 3D array to GPU and FFT each (sample) column
@@ -516,29 +529,112 @@ function acquire!(
         plan.code_doppler_indices
     end
 
-    # Allocate per-PRN power accumulators (reuse power_buffer for first PRN, allocate rest)
-    # We need to track accumulated powers per PRN across chunks
+    N = plan.linear_fft_size
+    N_pad = plan.bfft_size
+    needs_padding = N_pad > N
+
+    # For single-chunk signals, process each PRN inline to avoid allocating
+    # per-PRN power matrices (~10 MiB each). Instead, reuse plan.power_buffer.
+    if num_chunks == 1
+        signal_chunk = view(signal, 1:min(chunk_samples, num_signal_samples))
+        actual_chunk_size = length(signal_chunk)
+
+        # 1. Batched downconversion
+        # Zero only the DBZP pad region (signal region will be overwritten by downconvert)
+        if actual_chunk_size < size(plan.signal_baseband, 1)
+            view(plan.signal_baseband, (actual_chunk_size+1):size(plan.signal_baseband, 1), :) .=
+                zero(eltype(plan.signal_baseband))
+        end
+
+        if iszero(ustrip(interm_freq)) && iszero(ustrip(doppler_offset))
+            signal_view = view(plan.signal_baseband, 1:actual_chunk_size, :)
+            phases_view = view(plan.downconvert_phases, 1:actual_chunk_size, :)
+            signal_view .= signal_chunk .* phases_view
+        else
+            freq_offset = T(ustrip(doppler_offset + interm_freq))
+            inv_sampling_freq = T(1.0 / ustrip(plan.sampling_frequency))
+            ka_downconvert_kernel!(backend)(
+                plan.signal_baseband,
+                signal_chunk,
+                plan.dopplers_gpu,
+                freq_offset,
+                inv_sampling_freq;
+                ndrange = (actual_chunk_size, size(plan.signal_baseband, 2)),
+            )
+            # Zero pad region for kernel path (kernel only writes 1:actual_chunk_size)
+            if actual_chunk_size < size(plan.signal_baseband, 1)
+                view(
+                    plan.signal_baseband,
+                    (actual_chunk_size+1):size(plan.signal_baseband, 1),
+                    :,
+                ) .= zero(eltype(plan.signal_baseband))
+            end
+        end
+
+        # 2. Batched FFT
+        mul!(plan.signal_baseband_freq_domain, plan.fft_plan, plan.signal_baseband)
+
+        # 3-6. Process each PRN: correlate → power → findmax → result
+        return map(enumerate(prns)) do (p_idx, prn)
+            prn_idx = prn_indices[p_idx]
+            _ka_correlate_prn!(
+                plan,
+                prn_idx,
+                active_cd_indices,
+                num_dopplers,
+                N,
+                N_pad,
+                needs_padding,
+            )
+
+            # Compute power into pre-allocated buffer
+            plan.power_buffer .= abs2.(view(plan.code_baseband, 1:num_code_samples, :))
+
+            _ka_make_result(
+                plan,
+                prn,
+                plan.power_buffer,
+                num_code_samples,
+                samples_per_chip,
+                code_period,
+                effective_sampling_freq,
+                doppler_offset,
+                result_dopplers,
+                backend,
+                store_powers,
+            )
+        end
+    end
+
+    # Multi-chunk path: need per-PRN accumulators across chunks
     power_accumulators = [similar(plan.power_accumulator) for _ = 1:num_prns]
 
-    # Process signal in chunks - downconvert/FFT once per chunk for all PRNs
+    # Zero the DBZP pad region once (it stays zero across all chunks since
+    # downconvert only writes to 1:actual_chunk_size)
+    pad_start = chunk_samples + 1
+    if pad_start <= size(plan.signal_baseband, 1)
+        view(plan.signal_baseband, pad_start:size(plan.signal_baseband, 1), :) .=
+            zero(eltype(plan.signal_baseband))
+    end
+
     for chunk_idx = 1:num_chunks
         start_idx = (chunk_idx - 1) * chunk_samples + 1
         end_idx = min(chunk_idx * chunk_samples, num_signal_samples)
         actual_chunk_size = end_idx - start_idx + 1
         signal_chunk = view(signal, start_idx:end_idx)
 
-        # 1. Batched downconversion for this chunk (ONCE per chunk, not per PRN)
-        # Zero the full buffer (DBZP: signal_baseband is linear_fft_size ≈ 2N,
-        # only first actual_chunk_size samples get signal data)
-        plan.signal_baseband .= zero(eltype(plan.signal_baseband))
+        # 1. Batched downconversion for this chunk
+        # For partial last chunk, zero the unfilled signal region
+        if actual_chunk_size < chunk_samples
+            view(plan.signal_baseband, (actual_chunk_size+1):chunk_samples, :) .=
+                zero(eltype(plan.signal_baseband))
+        end
 
         if iszero(ustrip(interm_freq)) && iszero(ustrip(doppler_offset))
-            # Fast path: use precomputed phases (phases beyond N are already zero)
             signal_view = view(plan.signal_baseband, 1:actual_chunk_size, :)
             phases_view = view(plan.downconvert_phases, 1:actual_chunk_size, :)
             signal_view .= signal_chunk .* phases_view
         else
-            # Slow path: use kernel for runtime frequency offsets
             freq_offset = T(ustrip(doppler_offset + interm_freq))
             inv_sampling_freq = T(1.0 / ustrip(plan.sampling_frequency))
             ka_downconvert_kernel!(backend)(
@@ -551,62 +647,22 @@ function acquire!(
             )
         end
 
-        # 2. Batched FFT along sample dimension (ONCE per chunk, not per PRN)
+        # 2. Batched FFT
         mul!(plan.signal_baseband_freq_domain, plan.fft_plan, plan.signal_baseband)
 
         # 3-5. Process each PRN with the already-transformed signal
-        N = plan.linear_fft_size
-        N_pad = plan.bfft_size
-        needs_padding = N_pad > N
         for (p_idx, prn_idx) in enumerate(prn_indices)
-            # 3. Code multiplication for this PRN, grouped by code Doppler index
-            # When zero-padding, clear the padded buffer first, then write
-            # positive freqs (1..N÷2+1) and negative freqs (N_pad-neg_count+1..N_pad)
-            if needs_padding
-                plan.code_baseband_freq_domain .=
-                    zero(eltype(plan.code_baseband_freq_domain))
-                pos_end = N ÷ 2 + 1
-                neg_count = N - pos_end
-                group_start = 1
-                for d_idx = 1:num_dopplers
-                    cd_idx = active_cd_indices[d_idx]
-                    if d_idx == num_dopplers || active_cd_indices[d_idx+1] != cd_idx
-                        code_col = view(plan.codes_freq_domain, :, prn_idx, cd_idx)
-                        doppler_range = group_start:d_idx
-                        sig_view = view(plan.signal_baseband_freq_domain, :, doppler_range)
-                        # Positive frequencies
-                        view(plan.code_baseband_freq_domain, 1:pos_end, doppler_range) .=
-                            view(code_col, 1:pos_end) .* conj.(view(sig_view, 1:pos_end, :))
-                        # Negative frequencies
-                        view(
-                            plan.code_baseband_freq_domain,
-                            (N_pad-neg_count+1):N_pad,
-                            doppler_range,
-                        ) .=
-                            view(code_col, (pos_end+1):N) .*
-                            conj.(view(sig_view, (pos_end+1):N, :))
-                        group_start = d_idx + 1
-                    end
-                end
-            else
-                group_start = 1
-                for d_idx = 1:num_dopplers
-                    cd_idx = active_cd_indices[d_idx]
-                    if d_idx == num_dopplers || active_cd_indices[d_idx+1] != cd_idx
-                        code_col = view(plan.codes_freq_domain, :, prn_idx, cd_idx)
-                        doppler_range = group_start:d_idx
-                        view(plan.code_baseband_freq_domain, :, doppler_range) .=
-                            code_col .*
-                            conj.(view(plan.signal_baseband_freq_domain, :, doppler_range))
-                        group_start = d_idx + 1
-                    end
-                end
-            end
+            _ka_correlate_prn!(
+                plan,
+                prn_idx,
+                active_cd_indices,
+                num_dopplers,
+                N,
+                N_pad,
+                needs_padding,
+            )
 
-            # 4. Backward FFT
-            mul!(plan.code_baseband, plan.bfft_plan, plan.code_baseband_freq_domain)
-
-            # 5. Compute power and accumulate
+            # Compute power and accumulate
             if chunk_idx == 1
                 power_accumulators[p_idx] .=
                     abs2.(view(plan.code_baseband, 1:num_code_samples, :))
@@ -619,71 +675,153 @@ function acquire!(
 
     # 6. Process results for each PRN
     map(enumerate(prns)) do (p_idx, prn)
-        power_acc = power_accumulators[p_idx]
-
-        # Fused findmax + sum on accumulated powers
-        signal_noise_power, linear_idx, total_power = gpu_findmax_and_sum!(
-            plan.findmax_vals_gpu,
-            plan.findmax_vals_cpu,
-            plan.findmax_idxs_gpu,
-            plan.findmax_idxs_cpu,
-            plan.sum_buffer_gpu,
-            plan.sum_buffer_cpu,
-            power_acc,
-            backend,
-        )
-
-        # Convert linear index to (code_index, doppler_index)
-        doppler_index = div(linear_idx - 1, num_code_samples) + 1
-        code_index = mod(linear_idx - 1, num_code_samples) + 1
-
-        # Compute noise power from total minus peak region
-        num_dopplers = size(power_acc, 2)
-        lower_end = max(1, code_index - samples_per_chip)
-        upper_start = min(num_code_samples, code_index + samples_per_chip) + 1
-        peak_rows = (upper_start - 1) - (lower_end - 1)
-        peak_region_samples = peak_rows * num_dopplers
-        total_samples = length(power_acc)
-        noise_samples = total_samples - peak_region_samples
-
-        noise_power = noise_samples > 0 ? (total_power / total_samples) : zero(T)
-        signal_power = signal_noise_power - noise_power
-
-        # CN0 includes coherent integration gain (normalized by code_period).
-        # Non-coherent integration improves detection probability but doesn't increase
-        # the measured SNR ratio, so no explicit gain is added here.
-        snr = max(signal_power / noise_power, T(1e-10))
-        CN0 = 10 * log10(snr / code_period / 1.0Hz)
-        doppler =
-            (doppler_index - 1) * step(plan.dopplers) +
-            first(plan.dopplers) +
-            Float64(ustrip(doppler_offset))
-        code_doppler = doppler * get_code_center_frequency_ratio(plan.system)
-        code_phase =
-            (code_index - 1) / (
-                effective_sampling_freq /
-                (get_code_frequency(plan.system) + code_doppler * 1.0Hz)
-            )
-
-        # Only keep full power matrix if requested
-        result_powers = if store_powers
-            Matrix{Float32}(Array(power_acc))
-        else
-            Matrix{Float32}(undef, 0, 0)
-        end
-
-        AcquisitionResults(
-            plan.system,
+        _ka_make_result(
+            plan,
             prn,
+            power_accumulators[p_idx],
+            num_code_samples,
+            samples_per_chip,
+            code_period,
             effective_sampling_freq,
-            doppler * 1.0Hz,
-            code_phase,
-            CN0,
-            Float32(noise_power),
-            result_powers,
+            doppler_offset,
             result_dopplers,
+            backend,
+            store_powers,
         )
     end
+end
+
+"""
+Correlate a single PRN: code multiplication + backward FFT.
+Operates on plan's pre-allocated buffers (code_baseband_freq_domain → code_baseband).
+"""
+function _ka_correlate_prn!(
+    plan,
+    prn_idx,
+    active_cd_indices,
+    num_dopplers,
+    N,
+    N_pad,
+    needs_padding,
+)
+    if needs_padding
+        plan.code_baseband_freq_domain .= zero(eltype(plan.code_baseband_freq_domain))
+        pos_end = N ÷ 2 + 1
+        neg_count = N - pos_end
+        group_start = 1
+        for d_idx = 1:num_dopplers
+            cd_idx = active_cd_indices[d_idx]
+            if d_idx == num_dopplers || active_cd_indices[d_idx+1] != cd_idx
+                code_col = view(plan.codes_freq_domain, :, prn_idx, cd_idx)
+                doppler_range = group_start:d_idx
+                sig_view = view(plan.signal_baseband_freq_domain, :, doppler_range)
+                # Positive frequencies
+                view(plan.code_baseband_freq_domain, 1:pos_end, doppler_range) .=
+                    view(code_col, 1:pos_end) .* conj.(view(sig_view, 1:pos_end, :))
+                # Negative frequencies
+                view(
+                    plan.code_baseband_freq_domain,
+                    (N_pad-neg_count+1):N_pad,
+                    doppler_range,
+                ) .=
+                    view(code_col, (pos_end+1):N) .*
+                    conj.(view(sig_view, (pos_end+1):N, :))
+                group_start = d_idx + 1
+            end
+        end
+    else
+        group_start = 1
+        for d_idx = 1:num_dopplers
+            cd_idx = active_cd_indices[d_idx]
+            if d_idx == num_dopplers || active_cd_indices[d_idx+1] != cd_idx
+                code_col = view(plan.codes_freq_domain, :, prn_idx, cd_idx)
+                doppler_range = group_start:d_idx
+                view(plan.code_baseband_freq_domain, :, doppler_range) .=
+                    code_col .*
+                    conj.(view(plan.signal_baseband_freq_domain, :, doppler_range))
+                group_start = d_idx + 1
+            end
+        end
+    end
+
+    # Backward FFT
+    mul!(plan.code_baseband, plan.bfft_plan, plan.code_baseband_freq_domain)
+    return nothing
+end
+
+"""
+Build AcquisitionResults from a power matrix (either plan.power_buffer or an accumulator).
+"""
+function _ka_make_result(
+    plan::KAAcquisitionPlan{T,S},
+    prn,
+    power_acc,
+    num_code_samples,
+    samples_per_chip,
+    code_period,
+    effective_sampling_freq,
+    doppler_offset,
+    result_dopplers,
+    backend,
+    store_powers,
+) where {T,S}
+    signal_noise_power, linear_idx, total_power = gpu_findmax_and_sum!(
+        plan.findmax_vals_gpu,
+        plan.findmax_vals_cpu,
+        plan.findmax_idxs_gpu,
+        plan.findmax_idxs_cpu,
+        plan.sum_buffer_gpu,
+        plan.sum_buffer_cpu,
+        power_acc,
+        backend,
+    )
+
+    # Convert linear index to (code_index, doppler_index)
+    doppler_index = div(linear_idx - 1, num_code_samples) + 1
+    code_index = mod(linear_idx - 1, num_code_samples) + 1
+
+    # Compute noise power from total minus peak region
+    num_dopplers = size(power_acc, 2)
+    lower_end = max(1, code_index - samples_per_chip)
+    upper_start = min(num_code_samples, code_index + samples_per_chip) + 1
+    peak_rows = (upper_start - 1) - (lower_end - 1)
+    peak_region_samples = peak_rows * num_dopplers
+    total_samples = length(power_acc)
+    noise_samples = total_samples - peak_region_samples
+
+    noise_power = noise_samples > 0 ? (total_power / total_samples) : zero(T)
+    signal_power = signal_noise_power - noise_power
+
+    snr = max(signal_power / noise_power, T(1e-10))
+    CN0 = 10 * log10(snr / code_period / 1.0Hz)
+    doppler =
+        (doppler_index - 1) * step(plan.dopplers) +
+        first(plan.dopplers) +
+        Float64(ustrip(doppler_offset))
+    code_doppler = doppler * get_code_center_frequency_ratio(plan.system)
+    code_phase =
+        (code_index - 1) / (
+            effective_sampling_freq /
+            (get_code_frequency(plan.system) + code_doppler * 1.0Hz)
+        )
+
+    result_powers = if store_powers
+        Matrix{Float32}(Array(power_acc))
+    else
+        Matrix{Float32}(undef, 0, 0)
+    end
+
+    AcquisitionResults(
+        plan.system,
+        prn,
+        effective_sampling_freq,
+        doppler * 1.0Hz,
+        code_phase,
+        CN0,
+        Float32(noise_power),
+        result_powers,
+        result_dopplers,
+    )
 end
 
 # Single PRN convenience method
