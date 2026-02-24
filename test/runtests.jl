@@ -1,6 +1,8 @@
 using Test, FFTW, Acquisition, GNSSSignals, Random, Aqua
 import Unitful: Hz
 
+include("test_utils.jl")
+
 @testset "Aqua" begin
     Aqua.test_all(Acquisition; ambiguities=false)
 end
