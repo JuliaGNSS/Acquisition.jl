@@ -344,7 +344,7 @@ end
         zero_pad_power = 0,
     )
 
-    @test ka_plan.bfft_size == num_samples
+    @test ka_plan.bfft_size == Acquisition.fftw_friendly_size(2 * num_samples)
 
     result = acquire!(ka_plan, signal_f32, prn; interm_freq)
 

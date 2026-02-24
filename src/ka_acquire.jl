@@ -63,6 +63,7 @@ struct KAAcquisitionPlan{
 }
     system::S
     num_samples_to_integrate_coherently::Int
+    linear_fft_size::Int
     bfft_size::Int
     dopplers::StepRangeLen{
         Float64,
@@ -146,7 +147,7 @@ function KAAcquisitionPlan(
     dopplers = min_doppler:doppler_step:max_doppler,
     max_code_doppler_loss = 0.5dB,
     prns = 1:34,
-    zero_pad_power::Int = 1,
+    zero_pad_power::Int = 0,
 ) where {T<:AbstractFloat,S<:AbstractGNSS}
     # Normalize dopplers to Float64 StepRangeLen for consistency
     dopplers_hz =
@@ -156,10 +157,10 @@ function KAAcquisitionPlan(
     num_dopplers = length(dopplers_hz)
     num_prns = length(prns)
 
-    bfft_size =
-        zero_pad_power > 0 ?
-        fftw_friendly_size(num_samples_to_integrate_coherently) << (zero_pad_power - 1) :
-        num_samples_to_integrate_coherently
+    # Double Block Zero Padding (DBZP): pad to >= 2N for linear correlation
+    # (same as CPU path in AcquisitionPlan)
+    linear_fft_size = fftw_friendly_size(2 * num_samples_to_integrate_coherently)
+    bfft_size = fftw_friendly_size(linear_fft_size << zero_pad_power)
 
     # Convert dB loss to max phase error (cycles), then to code Doppler step (Hz)
     T_coh = num_samples_to_integrate_coherently / sampling_freq
@@ -177,16 +178,12 @@ function KAAcquisitionPlan(
         num_code_dopplers_val,
     )
 
-    # Generate 3D codes on CPU: (samples × num_prns × num_code_dopplers)
-    codes_cpu = Array{T}(
-        undef,
-        num_samples_to_integrate_coherently,
-        num_prns,
-        num_code_dopplers_val,
-    )
+    # Generate 3D codes on CPU: (linear_fft_size × num_prns × num_code_dopplers)
+    # Zero-pad codes from N to linear_fft_size for DBZP linear correlation
+    codes_cpu = zeros(T, linear_fft_size, num_prns, num_code_dopplers_val)
     for (cd_idx, cd) in enumerate(code_dopplers_grid)
         for (p_idx, prn) in enumerate(prns)
-            codes_cpu[:, p_idx, cd_idx] .= gen_code(
+            codes_cpu[1:num_samples_to_integrate_coherently, p_idx, cd_idx] .= gen_code(
                 num_samples_to_integrate_coherently,
                 system,
                 prn,
@@ -201,26 +198,27 @@ function KAAcquisitionPlan(
 
     # Precompute downconversion phase factors on CPU, then transfer to GPU
     # phase[i,d] = cis(-2π * doppler[d] * (i-1) / sampling_freq)
+    # Only N phases needed; indices N+1:linear_fft_size are zero-padded (DBZP)
     sampling_freq_val = T(ustrip(sampling_freq))
     downconvert_phases_cpu = [
-        cis(T(-2) * T(π) * T(dopplers_hz[d]) * T(i - 1) / sampling_freq_val) for
-        i = 1:num_samples_to_integrate_coherently, d = 1:num_dopplers
+        i <= num_samples_to_integrate_coherently ?
+        cis(T(-2) * T(π) * T(dopplers_hz[d]) * T(i - 1) / sampling_freq_val) :
+        zero(Complex{T}) for i = 1:linear_fft_size, d = 1:num_dopplers
     ]
     downconvert_phases = ArrayType{Complex{T}}(downconvert_phases_cpu)
 
     # Allocate buffers on GPU - use 2D arrays to reduce memory (reused per PRN)
-    signal_baseband =
-        ArrayType{Complex{T}}(undef, num_samples_to_integrate_coherently, num_dopplers)
+    # Signal buffers are linear_fft_size (DBZP: 2N) for forward FFT
+    signal_baseband = ArrayType{Complex{T}}(undef, linear_fft_size, num_dopplers)
     signal_baseband_freq_domain = similar(signal_baseband)
-    # BFFT buffers are sized at bfft_size for zero-padding
+    # BFFT buffers are sized at bfft_size for additional zero-padding
     code_baseband_freq_domain = ArrayType{Complex{T}}(undef, bfft_size, num_dopplers)
     code_baseband = similar(code_baseband_freq_domain)
 
     # Preallocate power buffer using effective sampling freq for proper row count
     Δt = num_samples_to_integrate_coherently / sampling_freq
     code_period = get_code_length(system) / get_code_frequency(system)
-    effective_sampling_freq =
-        sampling_freq * bfft_size / num_samples_to_integrate_coherently
+    effective_sampling_freq = sampling_freq * bfft_size / linear_fft_size
     num_code_samples = ceil(Int, effective_sampling_freq * min(Δt, code_period))
     power_buffer = ArrayType{T}(undef, num_code_samples, num_dopplers)
     power_accumulator = ArrayType{T}(undef, num_code_samples, num_dopplers)
@@ -263,6 +261,7 @@ function KAAcquisitionPlan(
     }(
         system,
         num_samples_to_integrate_coherently,
+        linear_fft_size,
         bfft_size,
         dopplers_hz,
         sampling_freq,
@@ -485,7 +484,7 @@ function acquire!(
     num_chunks = cld(num_signal_samples, chunk_samples)
     code_period = get_code_length(plan.system) / get_code_frequency(plan.system)
     Δt = chunk_samples / plan.sampling_frequency
-    effective_sampling_freq = plan.sampling_frequency * plan.bfft_size / chunk_samples
+    effective_sampling_freq = plan.sampling_frequency * plan.bfft_size / plan.linear_fft_size
     num_code_samples = ceil(Int, effective_sampling_freq * min(Δt, code_period))
     samples_per_chip = floor(Int, effective_sampling_freq / get_code_frequency(plan.system))
     backend = get_backend(plan.signal_baseband)
@@ -529,13 +528,12 @@ function acquire!(
         signal_chunk = view(signal, start_idx:end_idx)
 
         # 1. Batched downconversion for this chunk (ONCE per chunk, not per PRN)
-        # Zero-pad for partial chunks
-        if actual_chunk_size < chunk_samples
-            plan.signal_baseband .= zero(eltype(plan.signal_baseband))
-        end
+        # Zero the full buffer (DBZP: signal_baseband is linear_fft_size ≈ 2N,
+        # only first actual_chunk_size samples get signal data)
+        plan.signal_baseband .= zero(eltype(plan.signal_baseband))
 
         if iszero(ustrip(interm_freq)) && iszero(ustrip(doppler_offset))
-            # Fast path: use precomputed phases
+            # Fast path: use precomputed phases (phases beyond N are already zero)
             signal_view = view(plan.signal_baseband, 1:actual_chunk_size, :)
             phases_view = view(plan.downconvert_phases, 1:actual_chunk_size, :)
             signal_view .= signal_chunk .* phases_view
@@ -557,7 +555,7 @@ function acquire!(
         mul!(plan.signal_baseband_freq_domain, plan.fft_plan, plan.signal_baseband)
 
         # 3-5. Process each PRN with the already-transformed signal
-        N = chunk_samples
+        N = plan.linear_fft_size
         N_pad = plan.bfft_size
         needs_padding = N_pad > N
         for (p_idx, prn_idx) in enumerate(prn_indices)
