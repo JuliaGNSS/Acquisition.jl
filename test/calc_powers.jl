@@ -1,29 +1,8 @@
 @testset "Power over code for $system" for system in [GPSL1(), GalileoE1B()]
-    Random.seed!(2345)
-    num_samples = 60000
-    doppler = 1234Hz
-    code_phase = 110.613261
-    prn = 1
-    sampling_freq = 15e6Hz - 1Hz # Allow num_samples * sampling_freq to be non integer of ms
-    interm_freq = 0.0Hz
-    CN0 = 45
-
-    code = gen_code(
-        num_samples,
-        system,
-        prn,
-        sampling_freq,
-        get_code_frequency(system) + doppler * get_code_center_frequency_ratio(system),
-        code_phase,
-    )
-
-    carrier =
-        cis.(2π * (0:(num_samples-1)) * (interm_freq + doppler) / sampling_freq .+ π / 8)
-
-    noise_power = 1
-    signal_power = CN0 - 10 * log10(sampling_freq / 1.0Hz)
-    noise = randn(ComplexF64, num_samples)
-    signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
+    (; signal, doppler, code_phase, prn, sampling_freq, interm_freq, num_samples) =
+        generate_test_signal(
+            system, 1; interm_freq = 0.0Hz, unit_noise_power = true,
+        )
 
     code_freq_domain = fft(
         get_code.(
@@ -66,32 +45,13 @@
 end
 
 @testset "Power over code with zero-padding for $system" for system in [GPSL1(), GalileoE1B()]
-    Random.seed!(2345)
     # 16368 = 2^4 × 3 × 11 × 31 — not FFTW-friendly, pads to 16384
-    num_samples = 16368
-    doppler = 1234Hz
-    code_phase = 50.5
-    prn = 1
-    sampling_freq = 16.368e6Hz
-    interm_freq = 0.0Hz
-    CN0 = 45
-
-    code = gen_code(
-        num_samples,
-        system,
-        prn,
-        sampling_freq,
-        get_code_frequency(system) + doppler * get_code_center_frequency_ratio(system),
-        code_phase,
-    )
-
-    carrier =
-        cis.(2π * (0:(num_samples-1)) * (interm_freq + doppler) / sampling_freq .+ π / 8)
-
-    noise_power = 1
-    signal_power = CN0 - 10 * log10(sampling_freq / 1.0Hz)
-    noise = randn(ComplexF64, num_samples)
-    signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
+    (; signal, doppler, code_phase, prn, sampling_freq, interm_freq, num_samples) =
+        generate_test_signal(
+            system, 1;
+            num_samples = 16368, code_phase = 50.5, sampling_freq = 16.368e6Hz,
+            interm_freq = 0.0Hz, unit_noise_power = true,
+        )
 
     bfft_size = Acquisition.fftw_friendly_size(num_samples)
     @test bfft_size > num_samples  # Verify padding actually occurs
@@ -141,31 +101,8 @@ end
 end
 
 @testset "Power over code and Doppler for $system" for system in [GPSL1(), GalileoE1B()]
-    Random.seed!(2345)
-    num_samples = 60000
-    doppler = 1234Hz
-    code_phase = 110.613261
-    prn = 1
-    sampling_freq = 15e6Hz - 1Hz # Allow num_samples * sampling_freq to be non integer of ms
-    interm_freq = 243.0Hz
-    CN0 = 45
-
-    code = gen_code(
-        num_samples,
-        system,
-        prn,
-        sampling_freq,
-        get_code_frequency(system) + doppler * get_code_center_frequency_ratio(system),
-        code_phase,
-    )
-
-    carrier =
-        cis.(2π * (0:(num_samples-1)) * (interm_freq + doppler) / sampling_freq .+ π / 8)
-
-    noise_power = 1
-    signal_power = CN0 - 10 * log10(sampling_freq / 1.0Hz)
-    noise = randn(ComplexF64, num_samples)
-    signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
+    (; signal, doppler, code_phase, prn, sampling_freq, interm_freq, num_samples) =
+        generate_test_signal(system, 1; unit_noise_power = true)
 
     max_doppler = 7000Hz
     dopplers = (-max_doppler):250Hz:max_doppler

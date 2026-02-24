@@ -3,32 +3,8 @@ using KernelAbstractions
 # Test with CPU backend (KernelAbstractions works on regular Arrays)
 @testset "KAAcquisitionPlan CPU backend" begin
     @testset "Acquire signal $system" for system in [GPSL1(), GalileoE1B()]
-        Random.seed!(2345)
-        num_samples = 60000
-        doppler = 1234Hz
-        code_phase = 110.613261
-        prn = 1
-        sampling_freq = 15e6Hz - 1Hz
-        interm_freq = 243.0Hz
-        CN0 = 45
-
-        code = gen_code(
-            num_samples,
-            system,
-            prn,
-            sampling_freq,
-            get_code_frequency(system) + doppler * get_code_center_frequency_ratio(system),
-            code_phase,
-        )
-
-        carrier = cis.(
-            2π * (0:(num_samples-1)) * (interm_freq + doppler) / sampling_freq .+ π / 8,
-        )
-
-        noise_power = 10 * log10(sampling_freq / 1.0Hz)
-        signal_power = CN0
-        noise = randn(ComplexF64, num_samples)
-        signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
+        (; signal, doppler, code_phase, prn, sampling_freq, interm_freq, CN0, num_samples) =
+            generate_test_signal(system, 1)
         signal_f32 = ComplexF32.(signal)
 
         max_doppler = 7000Hz
@@ -143,32 +119,14 @@ end
 end
 
 @testset "KAAcquisitionPlan with doppler_offset" begin
-    Random.seed!(4567)
     system = GPSL1()
-    num_samples = 60000
-    doppler = 1234Hz
-    code_phase = 50.0
-    prn = 1
-    sampling_freq = 15e6Hz
-    CN0 = 45
-
-    code = gen_code(
-        num_samples,
-        system,
-        prn,
-        sampling_freq,
-        get_code_frequency(system) + doppler * get_code_center_frequency_ratio(system),
-        code_phase,
-    )
-
-    carrier = cis.(2π * (0:(num_samples-1)) * doppler / sampling_freq)
-
-    noise_power = 10 * log10(sampling_freq / 1.0Hz)
-    signal_power = CN0
-    noise = randn(ComplexF64, num_samples)
-    signal = ComplexF32.(
-        (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20),
-    )
+    (; signal, doppler, code_phase, prn, sampling_freq, num_samples) =
+        generate_test_signal(
+            system, 1;
+            seed = 4567, code_phase = 50.0, sampling_freq = 15e6Hz,
+            interm_freq = 0.0Hz, phase_offset = 0.0,
+        )
+    signal = ComplexF32.(signal)
 
     # Use a narrow Doppler range with offset
     base_doppler = 1000Hz
@@ -208,13 +166,8 @@ end
 end
 
 @testset "KAAcquisitionPlan non-coherent integration" begin
-    Random.seed!(4567)
     system = GPSL1()
     sampling_freq = 5e6Hz
-    doppler = 500Hz
-    code_phase = 50.5
-    prn = 1
-    CN0 = 45
 
     # Calculate bit period samples (20ms for GPS L1 at 50Hz data rate)
     bit_period_samples = ceil(Int, sampling_freq / get_data_frequency(system))
@@ -222,21 +175,11 @@ end
     # Create signal spanning 2.5 bit periods (50ms)
     num_samples = ceil(Int, 2.5 * bit_period_samples)
 
-    code = gen_code(
-        num_samples,
-        system,
-        prn,
-        sampling_freq,
-        get_code_frequency(system) + doppler * get_code_center_frequency_ratio(system),
-        code_phase,
+    (; signal, doppler, code_phase, prn, CN0) = generate_test_signal(
+        system, 1;
+        seed = 4567, num_samples, doppler = 500Hz, code_phase = 50.5,
+        sampling_freq, interm_freq = 0.0Hz, phase_offset = 0.0,
     )
-
-    carrier = cis.(2π * (0:(num_samples-1)) * doppler / sampling_freq)
-
-    noise_power = 10 * log10(sampling_freq / 1.0Hz)
-    signal_power = CN0
-    noise = randn(ComplexF64, num_samples)
-    signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
     signal_typed = ComplexF32.(signal)
 
     # Test with plan using default bit period chunk size (uses convenience constructor)
@@ -267,33 +210,17 @@ end
 end
 
 @testset "KAAcquisitionPlan code Doppler compensation" begin
-    Random.seed!(7890)
     system = GPSL1()
     sampling_freq = 5e6Hz
-    doppler = 5000Hz
-    code_phase = 50.5
-    prn = 1
-    CN0 = 55
 
     T_coh_ms = 10
     num_samples = ceil(Int, T_coh_ms * 1e-3 * (sampling_freq / 1.0Hz))
 
-    code_doppler = doppler * get_code_center_frequency_ratio(system)
-    code = gen_code(
-        num_samples,
-        system,
-        prn,
-        sampling_freq,
-        get_code_frequency(system) + code_doppler,
-        code_phase,
+    (; signal, doppler, code_phase, prn) = generate_test_signal(
+        system, 1;
+        seed = 7890, num_samples, doppler = 5000Hz, code_phase = 50.5,
+        sampling_freq, interm_freq = 0.0Hz, CN0 = 55, phase_offset = 0.0,
     )
-
-    carrier = cis.(2π * (0:(num_samples-1)) * doppler / sampling_freq)
-
-    noise_power = 10 * log10(sampling_freq / 1.0Hz)
-    signal_power = CN0
-    noise = randn(ComplexF64, num_samples)
-    signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
     signal_typed = ComplexF32.(signal)
 
     ka_plan = KAAcquisitionPlan(system, num_samples, sampling_freq, Array; prns = [prn])
@@ -307,32 +234,9 @@ end
 end
 
 @testset "KAAcquisitionPlan zero_pad_power=0 (no padding)" begin
-    Random.seed!(2345)
     system = GPSL1()
-    num_samples = 60000
-    doppler = 1234Hz
-    code_phase = 110.613261
-    prn = 1
-    sampling_freq = 15e6Hz - 1Hz
-    interm_freq = 243.0Hz
-    CN0 = 45
-
-    code = gen_code(
-        num_samples,
-        system,
-        prn,
-        sampling_freq,
-        get_code_frequency(system) + doppler * get_code_center_frequency_ratio(system),
-        code_phase,
-    )
-
-    carrier =
-        cis.(2π * (0:(num_samples-1)) * (interm_freq + doppler) / sampling_freq .+ π / 8)
-
-    noise_power = 10 * log10(sampling_freq / 1.0Hz)
-    signal_power = CN0
-    noise = randn(ComplexF64, num_samples)
-    signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
+    (; signal, doppler, code_phase, prn, sampling_freq, interm_freq, CN0, num_samples) =
+        generate_test_signal(system, 1)
     signal_f32 = ComplexF32.(signal)
 
     ka_plan = KAAcquisitionPlan(
@@ -354,30 +258,13 @@ end
 end
 
 @testset "KAAcquisitionPlan zero_pad_power=1 (frequency-domain zero-padding)" begin
-    Random.seed!(2345)
     system = GPSL1()
-    num_samples = 16368
-    doppler = 1234Hz
-    code_phase = 50.5
-    prn = 1
-    sampling_freq = 16.368e6Hz
-    CN0 = 50
-
-    code = gen_code(
-        num_samples,
-        system,
-        prn,
-        sampling_freq,
-        get_code_frequency(system) + doppler * get_code_center_frequency_ratio(system),
-        code_phase,
-    )
-
-    carrier = cis.(2π * (0:(num_samples-1)) * doppler / sampling_freq)
-
-    noise_power = 10 * log10(sampling_freq / 1.0Hz)
-    signal_power = CN0
-    noise = randn(ComplexF64, num_samples)
-    signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
+    (; signal, doppler, code_phase, prn, sampling_freq, num_samples, CN0) =
+        generate_test_signal(
+            system, 1;
+            num_samples = 16368, code_phase = 50.5, sampling_freq = 16.368e6Hz,
+            CN0 = 50, interm_freq = 0.0Hz, phase_offset = 0.0,
+        )
     signal_f32 = ComplexF32.(signal)
 
     ka_plan = KAAcquisitionPlan(
@@ -401,31 +288,14 @@ end
 end
 
 @testset "KAAcquisitionPlan with zero-padding (non-smooth sample count)" begin
-    Random.seed!(2345)
     system = GPSL1()
     # 16368 = 2^4 × 3 × 11 × 31 — not FFTW-friendly, pads to 16384
-    num_samples = 16368
-    doppler = 1234Hz
-    code_phase = 50.5
-    prn = 1
-    sampling_freq = 16.368e6Hz
-    CN0 = 45
-
-    code = gen_code(
-        num_samples,
-        system,
-        prn,
-        sampling_freq,
-        get_code_frequency(system) + doppler * get_code_center_frequency_ratio(system),
-        code_phase,
-    )
-
-    carrier = cis.(2π * (0:(num_samples-1)) * doppler / sampling_freq)
-
-    noise_power = 10 * log10(sampling_freq / 1.0Hz)
-    signal_power = CN0
-    noise = randn(ComplexF64, num_samples)
-    signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
+    (; signal, doppler, code_phase, prn, sampling_freq, num_samples, CN0) =
+        generate_test_signal(
+            system, 1;
+            num_samples = 16368, code_phase = 50.5, sampling_freq = 16.368e6Hz,
+            interm_freq = 0.0Hz, phase_offset = 0.0,
+        )
     signal_f32 = ComplexF32.(signal)
 
     ka_plan = KAAcquisitionPlan(
