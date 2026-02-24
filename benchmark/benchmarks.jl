@@ -35,6 +35,6 @@ if isdefined(Acquisition, :KAAcquisitionPlan)
     include(joinpath(@__DIR__, "ka_benchmarks.jl"))
 
     for (key, group) in KA_SUITE
-        SUITE["GPU $key"] = group
+        SUITE["$KA_BACKEND_LABEL $key"] = group
     end
 end
