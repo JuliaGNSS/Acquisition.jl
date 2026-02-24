@@ -19,15 +19,15 @@ catch
     false
 end
 
-const GPUArrayType = if HAS_ROCM
+const GPUArrayType, KA_BACKEND_LABEL = if HAS_ROCM
     @info "GPU backend: AMDGPU (ROCm)"
-    AMDGPU.ROCArray
+    AMDGPU.ROCArray, "ROCm"
 elseif HAS_CUDA
     @info "GPU backend: CUDA"
-    CUDA.CuArray
+    CUDA.CuArray, "CUDA"
 else
     @info "GPU backend: None (using CPU Array fallback)"
-    Array
+    Array, "KA-CPU"
 end
 
 const KA_SUITE = BenchmarkGroup()
