@@ -59,7 +59,7 @@ function acquire(
     doppler_step_factor = 1//3,
     dopplers = min_doppler:(doppler_step_factor*sampling_freq/samples_to_integrate_coherently):max_doppler,
     max_code_doppler_loss = 0.5dB,
-    zero_pad_power::Int = 1,
+    zero_pad_power::Int = 0,
 )
     acq_plan = AcquisitionPlan(
         system,
@@ -352,7 +352,7 @@ function acquire(
     doppler_step_factor = 1//3,
     dopplers = min_doppler:(doppler_step_factor*sampling_freq/samples_to_integrate_coherently):max_doppler,
     max_code_doppler_loss = 0.5dB,
-    zero_pad_power::Int = 1,
+    zero_pad_power::Int = 0,
 )
     only(
         acquire(
@@ -450,7 +450,7 @@ function coarse_fine_acquire(
     coarse_step = doppler_step_factor * sampling_freq / samples_to_integrate_coherently,
     fine_step = coarse_step / 10,
     max_code_doppler_loss = 0.5dB,
-    zero_pad_power::Int = 1,
+    zero_pad_power::Int = 0,
 )
     acq_plan = CoarseFineAcquisitionPlan(
         system,
@@ -521,7 +521,7 @@ function coarse_fine_acquire(
     coarse_step = doppler_step_factor * sampling_freq / samples_to_integrate_coherently,
     fine_step = coarse_step / 10,
     max_code_doppler_loss = 0.5dB,
-    zero_pad_power::Int = 1,
+    zero_pad_power::Int = 0,
 )
     only(
         coarse_fine_acquire(

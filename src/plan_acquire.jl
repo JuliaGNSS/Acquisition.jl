@@ -106,7 +106,7 @@ function AcquisitionPlan(
     max_code_doppler_loss = 0.5dB,
     prns = 1:34,
     fft_flag = FFTW.MEASURE,
-    zero_pad_power::Int = 1,
+    zero_pad_power::Int = 0,
 ) where {T<:AbstractFloat}
     # Convert dB loss to max phase error (cycles), then to code Doppler step (Hz)
     T_coh = num_samples_to_integrate_coherently / sampling_freq
@@ -130,10 +130,7 @@ function AcquisitionPlan(
     # See: D.J.R. van Nee and A.J.R.M. Coenen, "New Fast GPS Code-Acquisition Technique
     # Using FFT," Electronics Letters, vol. 27, no. 2, pp. 158-160, Jan. 1991.
     linear_fft_size = fftw_friendly_size(2 * num_samples_to_integrate_coherently)
-    bfft_size =
-        zero_pad_power > 0 ?
-        nextpow(2, linear_fft_size) << (zero_pad_power - 1) :
-        linear_fft_size
+    bfft_size = fftw_friendly_size(linear_fft_size << zero_pad_power)
     signal_baseband,
     signal_baseband_freq_domain,
     code_freq_baseband_freq_domain,
@@ -292,7 +289,7 @@ function CoarseFineAcquisitionPlan(
     max_code_doppler_loss = 0.5dB,
     prns = 1:34,
     fft_flag = FFTW.MEASURE,
-    zero_pad_power::Int = 1,
+    zero_pad_power::Int = 0,
 ) where {T<:AbstractFloat}
     # Convert dB loss to max phase error (cycles), then to code Doppler step (Hz)
     T_coh = num_samples_to_integrate_coherently / sampling_freq
@@ -314,10 +311,7 @@ function CoarseFineAcquisitionPlan(
 
     # DBZP: see comment in AcquisitionPlan constructor
     linear_fft_size = fftw_friendly_size(2 * num_samples_to_integrate_coherently)
-    bfft_size =
-        zero_pad_power > 0 ?
-        nextpow(2, linear_fft_size) << (zero_pad_power - 1) :
-        linear_fft_size
+    bfft_size = fftw_friendly_size(linear_fft_size << zero_pad_power)
     signal_baseband,
     signal_baseband_freq_domain,
     code_freq_baseband_freq_domain,
