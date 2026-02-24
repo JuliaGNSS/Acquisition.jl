@@ -185,7 +185,7 @@ end
     result = acquire!(plan, signal, prn; doppler_offset = base_doppler)
 
     @test result.code_phase ≈ code_phase atol = 0.1
-    @test abs(result.carrier_doppler - doppler) < 250Hz
+    @test abs(result.carrier_doppler - doppler) < step(plan.dopplers) / 2 * 1.0Hz
 end
 
 @testset "KAAcquisitionPlan store_powers" begin
@@ -246,8 +246,8 @@ end
     result = acquire!(ka_plan, signal_typed, prn)
 
     # Verify acquisition still finds the signal correctly
-    @test result.code_phase ≈ code_phase atol = 0.5
-    @test abs(result.carrier_doppler - doppler) < 250Hz
+    @test result.code_phase ≈ code_phase atol = 0.08
+    @test abs(result.carrier_doppler - doppler) < step(ka_plan.dopplers) / 2 * 1.0Hz
     @test result.prn == prn
 
     # CN0 includes coherent integration gain only (no explicit non-coherent gain)
@@ -261,8 +261,8 @@ end
         AcquisitionPlan(system, sampling_freq; prns = [prn], fft_flag = FFTW.ESTIMATE)
     cpu_result = acquire!(cpu_plan, signal_typed, prn)
 
-    @test abs(result.carrier_doppler - cpu_result.carrier_doppler) < 250Hz
-    @test abs(result.code_phase - cpu_result.code_phase) < 0.5
+    @test abs(result.carrier_doppler - cpu_result.carrier_doppler) < step(ka_plan.dopplers) / 2 * 1.0Hz
+    @test abs(result.code_phase - cpu_result.code_phase) < 0.02
     @test abs(result.CN0 - cpu_result.CN0) < 3
 end
 
@@ -302,8 +302,8 @@ end
 
     result = acquire!(ka_plan, signal_typed, prn)
 
-    @test result.code_phase ≈ code_phase atol = 0.5
-    @test abs(result.carrier_doppler - doppler) < step(ka_plan.dopplers) * 1.0Hz
+    @test result.code_phase ≈ code_phase atol = 0.08
+    @test abs(result.carrier_doppler - doppler) < step(ka_plan.dopplers) / 2 * 1.0Hz
 end
 
 @testset "KAAcquisitionPlan zero_pad_power=0 (no padding)" begin
@@ -348,8 +348,55 @@ end
 
     result = acquire!(ka_plan, signal_f32, prn; interm_freq)
 
-    @test result.code_phase ≈ code_phase atol = 0.5
-    @test abs(result.carrier_doppler - doppler) < 250Hz
+    @test result.code_phase ≈ code_phase atol = 0.08
+    @test abs(result.carrier_doppler - doppler) < step(ka_plan.dopplers) / 2 * 1.0Hz
+    @test result.CN0 ≈ CN0 atol = 7
+end
+
+@testset "KAAcquisitionPlan zero_pad_power=1 (frequency-domain zero-padding)" begin
+    Random.seed!(2345)
+    system = GPSL1()
+    num_samples = 16368
+    doppler = 1234Hz
+    code_phase = 50.5
+    prn = 1
+    sampling_freq = 16.368e6Hz
+    CN0 = 50
+
+    code = gen_code(
+        num_samples,
+        system,
+        prn,
+        sampling_freq,
+        get_code_frequency(system) + doppler * get_code_center_frequency_ratio(system),
+        code_phase,
+    )
+
+    carrier = cis.(2π * (0:(num_samples-1)) * doppler / sampling_freq)
+
+    noise_power = 10 * log10(sampling_freq / 1.0Hz)
+    signal_power = CN0
+    noise = randn(ComplexF64, num_samples)
+    signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
+    signal_f32 = ComplexF32.(signal)
+
+    ka_plan = KAAcquisitionPlan(
+        system,
+        num_samples,
+        sampling_freq,
+        Array;
+        prns = 1:34,
+        zero_pad_power = 1,
+    )
+
+    linear_fft_size = Acquisition.fftw_friendly_size(2 * num_samples)
+    @test ka_plan.bfft_size == Acquisition.fftw_friendly_size(linear_fft_size << 1)
+    @test ka_plan.bfft_size > ka_plan.linear_fft_size  # needs_padding == true
+
+    result = acquire!(ka_plan, signal_f32, prn)
+
+    @test result.code_phase ≈ code_phase atol = 0.001
+    @test abs(result.carrier_doppler - doppler) < step(ka_plan.dopplers) / 2 * 1.0Hz
     @test result.CN0 ≈ CN0 atol = 7
 end
 
@@ -393,7 +440,7 @@ end
 
     result = acquire!(ka_plan, signal_f32, prn)
 
-    @test result.code_phase ≈ code_phase atol = 0.5
-    @test abs(result.carrier_doppler - doppler) < 250Hz
+    @test result.code_phase ≈ code_phase atol = 0.08
+    @test abs(result.carrier_doppler - doppler) < step(ka_plan.dopplers) / 2 * 1.0Hz
     @test result.CN0 ≈ CN0 atol = 7
 end
