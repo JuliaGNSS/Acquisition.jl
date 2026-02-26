@@ -1,5 +1,27 @@
 # Changelog
 
+# [1.5.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v1.4.0...v1.5.0) (2026-02-26)
+
+
+### Bug Fixes
+
+* eliminate benchmark regressions and add DBZP to KA path ([318964f](https://github.com/JuliaGNSS/Acquisition.jl/commit/318964fdcb79aca31be44babc88b091afa44799f))
+* include code Doppler in code phase computation ([a61ab93](https://github.com/JuliaGNSS/Acquisition.jl/commit/a61ab93be9b4e94cec5a6cc5eba6c7fe356a8492))
+
+
+### Features
+
+* add code Doppler compensation to CPU acquisition ([9c2502a](https://github.com/JuliaGNSS/Acquisition.jl/commit/9c2502ac8df0ff1c12e40d633080ec59ab6d9eca)), closes [hi#Doppler](https://github.com/hi/issues/Doppler)
+* add code Doppler compensation to KAAcquisitionPlan ([57012f3](https://github.com/JuliaGNSS/Acquisition.jl/commit/57012f3905cab5ae3ee65a89eab068a5efb91cc7))
+* add DBZP for linear correlation and fix acquire() code Doppler grid ([eb3bd96](https://github.com/JuliaGNSS/Acquisition.jl/commit/eb3bd9675fcd2fdab3ecafca5db7ad106688b6a0))
+* add frequency-domain zero-padding for improved code phase resolution ([b0748dc](https://github.com/JuliaGNSS/Acquisition.jl/commit/b0748dc054a586b6a0917644b11cedd4234511a8))
+* pass code_doppler_tolerance through convenience functions ([c52ca4a](https://github.com/JuliaGNSS/Acquisition.jl/commit/c52ca4a4bd7903a4b4575e444793c1495835dd65))
+
+
+### Performance Improvements
+
+* optimize KA acquire! and tighten test tolerances ([4b0879e](https://github.com/JuliaGNSS/Acquisition.jl/commit/4b0879e272b97a910168bcf2825c0fd9fd9e1a18))
+
 # [1.4.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v1.3.1...v1.4.0) (2026-02-17)
 
 
