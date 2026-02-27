@@ -1,5 +1,12 @@
 # Changelog
 
+# [1.6.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v1.5.0...v1.6.0) (2026-02-27)
+
+
+### Features
+
+* Doppler batching and fused GPU kernels for KAAcquisitionPlan ([7d27be7](https://github.com/JuliaGNSS/Acquisition.jl/commit/7d27be7cb320f0e498ae3733fb42bccf02b731b2))
+
 # [1.5.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v1.4.0...v1.5.0) (2026-02-26)
 
 
