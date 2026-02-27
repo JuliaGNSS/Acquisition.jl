@@ -308,3 +308,46 @@ end
     @test abs(result.carrier_doppler - doppler) < step(ka_plan.dopplers) / 2 * 1.0Hz
     @test result.CN0 ≈ CN0 atol = 7
 end
+
+@testset "KAAcquisitionPlan max_gpu_memory=nothing (no batching)" begin
+    system = GPSL1()
+    (; signal, doppler, code_phase, prn, sampling_freq, interm_freq, num_samples) =
+        generate_test_signal(system, 1)
+    signal_f32 = ComplexF32.(signal)
+
+    ka_plan = KAAcquisitionPlan(
+        system,
+        num_samples,
+        sampling_freq,
+        Array;
+        prns = 1:34,
+        max_gpu_memory = nothing,
+    )
+
+    # With max_gpu_memory=nothing, batch_size should equal num_dopplers (no batching)
+    @test ka_plan.doppler_batch_size == length(ka_plan.dopplers)
+
+    result = acquire!(ka_plan, signal_f32, prn; interm_freq)
+    @test result.code_phase ≈ code_phase atol = 0.08
+    @test abs(result.carrier_doppler - doppler) < step(ka_plan.dopplers) / 2 * 1.0Hz
+end
+
+@testset "KAAcquisitionPlan with fft_flag=FFTW.ESTIMATE" begin
+    system = GPSL1()
+    (; signal, doppler, code_phase, prn, sampling_freq, interm_freq, num_samples) =
+        generate_test_signal(system, 1)
+    signal_f32 = ComplexF32.(signal)
+
+    ka_plan = KAAcquisitionPlan(
+        system,
+        num_samples,
+        sampling_freq,
+        Array;
+        prns = 1:34,
+        fft_flag = FFTW.ESTIMATE,
+    )
+
+    result = acquire!(ka_plan, signal_f32, prn; interm_freq)
+    @test result.code_phase ≈ code_phase atol = 0.08
+    @test abs(result.carrier_doppler - doppler) < step(ka_plan.dopplers) / 2 * 1.0Hz
+end
