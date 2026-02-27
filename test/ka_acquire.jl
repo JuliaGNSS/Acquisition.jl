@@ -146,7 +146,7 @@ end
     @test abs(result.carrier_doppler - doppler) < step(plan.dopplers) / 2 * 1.0Hz
 end
 
-@testset "KAAcquisitionPlan store_powers" begin
+@testset "KAAcquisitionPlan power_bins always empty (no store_powers)" begin
     system = GPSL1()
     sampling_freq = 4e6Hz
     num_samples = 4000
@@ -155,14 +155,8 @@ end
     signal = randn(ComplexF32, num_samples)
     plan = KAAcquisitionPlan(system, num_samples, sampling_freq, Array; prns = 1:5)
 
-    # Test with store_powers=true
-    result = acquire!(plan, signal, prn; store_powers = true)
-    @test size(result.power_bins, 1) > 0
-    @test size(result.power_bins, 2) > 0
-
-    # Test with store_powers=false (default)
-    result_no_powers = acquire!(plan, signal, prn; store_powers = false)
-    @test size(result_no_powers.power_bins) == (0, 0)
+    result = acquire!(plan, signal, prn)
+    @test size(result.power_bins) == (0, 0)
 end
 
 @testset "KAAcquisitionPlan non-coherent integration" begin
