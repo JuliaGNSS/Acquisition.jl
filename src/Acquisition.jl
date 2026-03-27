@@ -1,7 +1,8 @@
 module Acquisition
 
 using DocStringExtensions,
-    GNSSSignals, RecipesBase, FFTW, Statistics, LinearAlgebra, LoopVectorization, Unitful
+    GNSSSignals, RecipesBase, FFTW, Statistics, LinearAlgebra, LoopVectorization, Unitful,
+    SpecialFunctions
 
 import Unitful: s, Hz, dB
 using Unitful: ustrip, Gain
@@ -16,7 +17,8 @@ export acquire,
     AcquisitionPlan,
     CoarseFineAcquisitionPlan,
     AcquisitionResults,
-    KAAcquisitionPlan
+    KAAcquisitionPlan,
+    cfar_threshold
 
 """
     AcquisitionResults{S,T}
@@ -32,6 +34,8 @@ Results from GNSS signal acquisition for a single PRN.
   - `code_phase::Float64`: Estimated code phase in chips
   - `CN0::Float64`: Carrier-to-noise density ratio in dB-Hz
   - `noise_power::T`: Estimated noise power
+  - `peak_to_noise_ratio::T`: Ratio of peak correlation power to noise power (detection metric).
+    Compare against [`cfar_threshold`](@ref) to decide if a satellite is present.
   - `power_bins::Matrix{T}`: Correlation power over code phase and Doppler (for plotting)
   - `dopplers`: Doppler frequencies searched
 
@@ -57,6 +61,7 @@ struct AcquisitionResults{S<:AbstractGNSS,T,D<:AbstractRange}
     code_phase::Float64
     CN0::Float64
     noise_power::T
+    peak_to_noise_ratio::T
     power_bins::Matrix{T}
     dopplers::D
 end
@@ -112,6 +117,7 @@ include("downconvert.jl")
 include("plot.jl")
 include("calc_powers.jl")
 include("est_signal_noise_power.jl")
+include("cfar.jl")
 include("acquire.jl")
 include("ka_acquire.jl")
 end
