@@ -10,5 +10,6 @@ end
 include("downconvert.jl")
 include("est_signal_noise_power.jl")
 include("calc_powers.jl")
+include("cfar.jl")
 include("acquire.jl")
 include("ka_acquire.jl")

@@ -156,7 +156,7 @@ function acquire!(
     resize!(acq_plan.output_results, length(prns))
     for (i, (powers, prn, prn_idx)) in
         enumerate(zip(powers_per_sats, prns, acq_plan.prn_indices))
-        signal_power, noise_power_est, code_index, doppler_index = est_signal_noise_power(
+        signal_power, noise_power_est, peak_to_noise, code_index, doppler_index = est_signal_noise_power(
             powers,
             effective_sampling_freq,
             get_code_frequency(acq_plan.system),
@@ -182,6 +182,7 @@ function acquire!(
             code_phase,
             CN0,
             noise_power_est,
+            peak_to_noise,
             powers,
             acq_plan.dopplers,
         )
@@ -263,7 +264,7 @@ function acquire!(
 
         # Compute result
         powers = fine_plan.signal_powers[prn_idx]
-        signal_power, noise_power_est, code_index, doppler_index = est_signal_noise_power(
+        signal_power, noise_power_est, peak_to_noise, code_index, doppler_index = est_signal_noise_power(
             powers,
             effective_sampling_freq,
             get_code_frequency(fine_plan.system),
@@ -291,6 +292,7 @@ function acquire!(
             code_phase,
             CN0,
             noise_power_est,
+            peak_to_noise,
             powers,
             fine_plan.dopplers,
         )

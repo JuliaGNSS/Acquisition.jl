@@ -11,5 +11,6 @@ function est_signal_noise_power(power_bins, sampling_freq, code_freq, noise_powe
             sum(view(power_bins, upper_code_phases, :))
         ) / samples : noise_power
     signal_power = signal_noise_power - noise_power
-    signal_power, noise_power, index[1], index[2]
+    peak_to_noise_ratio = signal_noise_power / noise_power
+    signal_power, noise_power, peak_to_noise_ratio, index[1], index[2]
 end

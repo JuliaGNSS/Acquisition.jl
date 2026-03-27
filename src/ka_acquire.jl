@@ -640,6 +640,7 @@ function acquire!(
 
         noise_power = total_samples > 0 ? (total_power[p_idx] / total_samples) : zero(T)
         signal_power = signal_noise_power - noise_power
+        peak_to_noise = noise_power > 0 ? signal_noise_power / noise_power : T(0)
 
         snr = max(signal_power / noise_power, T(1e-10))
         CN0 = 10 * log10(snr / code_period / 1.0Hz)
@@ -662,6 +663,7 @@ function acquire!(
             code_phase,
             CN0,
             Float32(noise_power),
+            Float32(peak_to_noise),
             Matrix{Float32}(undef, 0, 0),
             result_dopplers,
         )
