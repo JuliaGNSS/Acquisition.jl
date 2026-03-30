@@ -7,7 +7,7 @@
 
     @test noise_power ≈ 1
     @test signal_power ≈ 10^(15 / 10)
-    @test peak_to_noise ≈ 1 + 10^(15 / 10)  # (signal + noise) / noise
+    @test peak_to_noise ≈ 2 * (1 + 10^(15 / 10))  # peak / (noise_mean / 2), on χ²(2M) scale
     @test code_index == 489
     @test doppler_index == 11
 

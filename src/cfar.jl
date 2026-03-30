@@ -39,10 +39,11 @@ detected = filter(r -> r.peak_to_noise_ratio > threshold, results)
 
 # Mathematical Background
 
-Under the null hypothesis (noise only), the normalized test statistic
-`peak_power / noise_power` follows a chi-squared distribution with
-`2 * num_noncoherent_integrations` degrees of freedom (since each sample is the
-sum of squared magnitudes of complex Gaussian variables).
+Under the null hypothesis (noise only), the test statistic `peak_to_noise_ratio`
+(computed as `peak_power / (noise_power / 2)`) follows a chi-squared distribution
+with `2 * num_noncoherent_integrations` degrees of freedom. The factor-of-2
+normalization in the noise estimate places the statistic on the χ²(2M) scale
+(mean = 2M under H0), matching the threshold returned by this function.
 
 The per-cell false alarm probability is adjusted for multiple testing:
 `pfa_per_cell = 1 - (1 - pfa)^(1/num_cells)`.
@@ -52,6 +53,7 @@ at `1 - pfa_per_cell`.
 
 # References
 
+  - Springer Handbook of GNSS, Section 14.3.1 "Test Statistics", Eq. 14.28–14.30
   - GNSS-SDR PCPS Acquisition: `pcps_acquisition::calculate_threshold()`
   - Kay Borre et al., "A Software-Defined GPS and Galileo Receiver", Birkhäuser, 2007
 

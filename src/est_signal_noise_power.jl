@@ -11,6 +11,11 @@ function est_signal_noise_power(power_bins, sampling_freq, code_freq, noise_powe
             sum(view(power_bins, upper_code_phases, :))
         ) / samples : noise_power
     signal_power = signal_noise_power - noise_power
-    peak_to_noise_ratio = signal_noise_power / noise_power
+    # Divide noise_power by 2 so peak_to_noise_ratio is on the chi-squared(2M) scale.
+    # Under H0, each power bin is |I|² + |Q|² ~ χ²(2M) with mean 2M.
+    # The CFAR threshold (from cfar_threshold()) is computed on this scale,
+    # so the test statistic must match: peak / (mean/2) ≈ χ²(2M) under H0.
+    # This is consistent with GNSS-SDR's pcps_acquisition::max_to_input_power_statistic().
+    peak_to_noise_ratio = signal_noise_power / (noise_power / 2)
     signal_power, noise_power, peak_to_noise_ratio, index[1], index[2]
 end
