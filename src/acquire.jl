@@ -63,7 +63,7 @@ function acquire(
 )
     acq_plan = AcquisitionPlan(
         system,
-        min(length(signal), samples_to_integrate_coherently),
+        min(length(signal) ÷ 2, samples_to_integrate_coherently),
         sampling_freq;
         min_doppler,
         max_doppler,
@@ -130,16 +130,20 @@ function acquire!(
     chunk_samples = acq_plan.num_samples_to_integrate_coherently
     num_signal_samples = length(signal)
 
+    num_signal_samples >= 2 * chunk_samples || throw(
+        ArgumentError(
+            "Signal has $num_signal_samples samples but DBZP requires at least " *
+            "$(2 * chunk_samples) (2 code periods). With Doppler, the code rate shifts " *
+            "so single-period circular correlation is inaccurate at high Dopplers."
+        )
+    )
+
     # DBZP: each chunk needs 2N samples (2 code periods) for linear correlation.
     # Windows overlap by N, striding by N samples.
-    if num_signal_samples >= 2 * chunk_samples
-        num_chunks = (num_signal_samples - chunk_samples) ÷ chunk_samples
-    else
-        num_chunks = 1
-    end
+    num_chunks = (num_signal_samples - chunk_samples) ÷ chunk_samples
     for chunk_idx = 1:num_chunks
         start_idx = (chunk_idx - 1) * chunk_samples + 1
-        end_idx = min(start_idx + 2 * chunk_samples - 1, num_signal_samples)
+        end_idx = start_idx + 2 * chunk_samples - 1
         signal_chunk = view(signal, start_idx:end_idx)
 
         power_over_doppler_and_codes!(
@@ -220,11 +224,7 @@ function acquire!(
     num_signal_samples = length(signal)
     # DBZP: each chunk needs 2N samples (2 code periods) for linear correlation.
     # Windows overlap by N, striding by N samples.
-    if num_signal_samples >= 2 * chunk_samples
-        num_chunks = (num_signal_samples - chunk_samples) ÷ chunk_samples
-    else
-        num_chunks = 1
-    end
+    num_chunks = (num_signal_samples - chunk_samples) ÷ chunk_samples
     effective_sampling_freq =
         fine_plan.sampling_freq * fine_plan.bfft_size / fine_plan.linear_fft_size
 
@@ -251,7 +251,7 @@ function acquire!(
             # Process signal in chunks, accumulating powers non-coherently
             for chunk_idx = 1:num_chunks
                 start_idx = (chunk_idx - 1) * chunk_samples + 1
-                end_idx = min(start_idx + 2 * chunk_samples - 1, num_signal_samples)
+                end_idx = start_idx + 2 * chunk_samples - 1
                 signal_chunk = view(signal, start_idx:end_idx)
 
                 power_over_code!(
@@ -470,7 +470,7 @@ function coarse_fine_acquire(
 )
     acq_plan = CoarseFineAcquisitionPlan(
         system,
-        min(length(signal), samples_to_integrate_coherently),
+        min(length(signal) ÷ 2, samples_to_integrate_coherently),
         sampling_freq;
         max_doppler,
         min_doppler,
