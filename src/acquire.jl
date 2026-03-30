@@ -130,12 +130,16 @@ function acquire!(
     chunk_samples = acq_plan.num_samples_to_integrate_coherently
     num_signal_samples = length(signal)
 
-    # Process signal in chunks, accumulating powers non-coherently
-    # First chunk overwrites (accumulate=false), subsequent chunks add (accumulate=true)
-    num_chunks = cld(num_signal_samples, chunk_samples)
+    # DBZP: each chunk needs 2N samples (2 code periods) for linear correlation.
+    # Windows overlap by N, striding by N samples.
+    if num_signal_samples >= 2 * chunk_samples
+        num_chunks = (num_signal_samples - chunk_samples) ÷ chunk_samples
+    else
+        num_chunks = 1
+    end
     for chunk_idx = 1:num_chunks
         start_idx = (chunk_idx - 1) * chunk_samples + 1
-        end_idx = min(chunk_idx * chunk_samples, num_signal_samples)
+        end_idx = min(start_idx + 2 * chunk_samples - 1, num_signal_samples)
         signal_chunk = view(signal, start_idx:end_idx)
 
         power_over_doppler_and_codes!(
@@ -214,7 +218,13 @@ function acquire!(
 
     chunk_samples = fine_plan.num_samples_to_integrate_coherently
     num_signal_samples = length(signal)
-    num_chunks = cld(num_signal_samples, chunk_samples)
+    # DBZP: each chunk needs 2N samples (2 code periods) for linear correlation.
+    # Windows overlap by N, striding by N samples.
+    if num_signal_samples >= 2 * chunk_samples
+        num_chunks = (num_signal_samples - chunk_samples) ÷ chunk_samples
+    else
+        num_chunks = 1
+    end
     effective_sampling_freq =
         fine_plan.sampling_freq * fine_plan.bfft_size / fine_plan.linear_fft_size
 
@@ -241,7 +251,7 @@ function acquire!(
             # Process signal in chunks, accumulating powers non-coherently
             for chunk_idx = 1:num_chunks
                 start_idx = (chunk_idx - 1) * chunk_samples + 1
-                end_idx = min(chunk_idx * chunk_samples, num_signal_samples)
+                end_idx = min(start_idx + 2 * chunk_samples - 1, num_signal_samples)
                 signal_chunk = view(signal, start_idx:end_idx)
 
                 power_over_code!(

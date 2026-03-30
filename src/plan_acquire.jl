@@ -124,9 +124,9 @@ function AcquisitionPlan(
         num_code_dopplers,
     )
 
-    # Double Block Zero Padding (DBZP): zero-pad signal and code to >= 2N before FFT to
-    # convert circular correlation into linear correlation, eliminating boundary artifacts
-    # when code_length * sampling_freq / code_freq is non-integer.
+    # Double Block Zero Padding (DBZP): the code (N samples) is zero-padded to 2N, while
+    # the signal uses 2N actual samples (2 code periods). This ensures every lag has N
+    # overlapping samples, giving uniform correlation quality across all code phases.
     # See: D.J.R. van Nee and A.J.R.M. Coenen, "New Fast GPS Code-Acquisition Technique
     # Using FFT," Electronics Letters, vol. 27, no. 2, pp. 158-160, Jan. 1991.
     linear_fft_size = fftw_friendly_size(2 * num_samples_to_integrate_coherently)
