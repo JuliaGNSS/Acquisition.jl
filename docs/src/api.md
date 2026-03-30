@@ -7,6 +7,7 @@ acquire
 acquire!
 coarse_fine_acquire
 coarse_fine_acquire!
+cfar_threshold
 ```
 
 ## Types
