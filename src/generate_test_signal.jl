@@ -33,7 +33,7 @@ function generate_test_signal(
     system,
     prn;
     seed = 2345,
-    num_samples = 60000,
+    num_samples = 120000,
     doppler = 1234Hz,
     code_phase = 110.613261,
     sampling_freq = 15e6Hz - 1Hz,

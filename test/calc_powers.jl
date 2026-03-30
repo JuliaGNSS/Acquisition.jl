@@ -107,7 +107,7 @@ end
     max_doppler = 7000Hz
     dopplers = (-max_doppler):250Hz:max_doppler
 
-    acq_plan = AcquisitionPlan(system, length(signal), sampling_freq; dopplers, prns = 1:1)
+    acq_plan = AcquisitionPlan(system, length(signal) ÷ 2, sampling_freq; dopplers, prns = 1:1)
     effective_sampling_freq = sampling_freq * acq_plan.bfft_size / acq_plan.linear_fft_size
 
     powers_per_sats = @inferred Acquisition.power_over_doppler_and_codes!(
