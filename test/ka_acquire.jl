@@ -6,7 +6,6 @@ using KernelAbstractions
         (; signal, doppler, code_phase, prn, sampling_freq, interm_freq, CN0, num_samples) =
             generate_test_signal(system, 1)
         signal_f32 = ComplexF32.(signal)
-        coherent_samples = num_samples ÷ 2
 
         max_doppler = 7000Hz
         dopplers = (-max_doppler):250Hz:max_doppler
@@ -14,7 +13,7 @@ using KernelAbstractions
         # Create KAAcquisitionPlan with Array (CPU backend)
         ka_plan = KAAcquisitionPlan(
             system,
-            coherent_samples,
+            num_samples,
             sampling_freq,
             Array;
             dopplers,
@@ -38,7 +37,7 @@ using KernelAbstractions
 
         # Compare with CPU AcquisitionPlan results
         cpu_plan =
-            AcquisitionPlan(system, coherent_samples, sampling_freq; dopplers, prns = 1:34)
+            AcquisitionPlan(system, num_samples, sampling_freq; dopplers, prns = 1:34)
         cpu_res = acquire!(cpu_plan, signal_f32, prn; interm_freq)
 
         # Results should be very similar (not identical due to different FFT implementations)
@@ -83,7 +82,7 @@ end
 
     # Verify acquisition works with Float64 buffers
     Random.seed!(1234)
-    signal = randn(ComplexF64, 2 * num_samples)
+    signal = randn(ComplexF64, num_samples)
     result_f64 = acquire!(plan_f64, signal, 1)
     @test result_f64 isa AcquisitionResults
 end
@@ -95,7 +94,7 @@ end
 
     plan = KAAcquisitionPlan(system, num_samples, sampling_freq, Array; prns = 1:10)
 
-    signal = randn(ComplexF32, 2 * num_samples)
+    signal = randn(ComplexF32, num_samples)
 
     # Valid PRNs should work
     @test length(acquire!(plan, signal, [1, 5, 10])) == 3
@@ -111,7 +110,7 @@ end
     sampling_freq = 5e6Hz
 
     plan = KAAcquisitionPlan(system, num_samples, sampling_freq, Array; prns = 1:10)
-    signal = randn(ComplexF32, 2 * num_samples)
+    signal = randn(ComplexF32, num_samples)
 
     # Empty PRNs should return empty vector
     result = acquire!(plan, signal, Int[])
@@ -133,7 +132,7 @@ end
     base_doppler = 1000Hz
     plan = KAAcquisitionPlan(
         system,
-        num_samples ÷ 2,
+        num_samples,
         sampling_freq,
         Array;
         min_doppler = -500Hz,
@@ -153,7 +152,7 @@ end
     num_samples = 4000
     prn = 1
 
-    signal = randn(ComplexF32, 2 * num_samples)
+    signal = randn(ComplexF32, num_samples)
     plan = KAAcquisitionPlan(system, num_samples, sampling_freq, Array; prns = 1:5)
 
     result = acquire!(plan, signal, prn)
@@ -209,8 +208,7 @@ end
     sampling_freq = 5e6Hz
 
     T_coh_ms = 10
-    coherent_samples = ceil(Int, T_coh_ms * 1e-3 * (sampling_freq / 1.0Hz))
-    num_samples = 2 * coherent_samples
+    num_samples = ceil(Int, T_coh_ms * 1e-3 * (sampling_freq / 1.0Hz))
 
     (; signal, doppler, code_phase, prn) = generate_test_signal(
         system, 1;
@@ -219,7 +217,7 @@ end
     )
     signal_typed = ComplexF32.(signal)
 
-    ka_plan = KAAcquisitionPlan(system, coherent_samples, sampling_freq, Array; prns = [prn])
+    ka_plan = KAAcquisitionPlan(system, num_samples, sampling_freq, Array; prns = [prn])
 
     @test ka_plan.num_code_dopplers > 1
 
@@ -234,18 +232,17 @@ end
     (; signal, doppler, code_phase, prn, sampling_freq, interm_freq, CN0, num_samples) =
         generate_test_signal(system, 1)
     signal_f32 = ComplexF32.(signal)
-    coherent_samples = num_samples ÷ 2
 
     ka_plan = KAAcquisitionPlan(
         system,
-        coherent_samples,
+        num_samples,
         sampling_freq,
         Array;
         prns = 1:34,
         zero_pad_power = 0,
     )
 
-    @test ka_plan.bfft_size == Acquisition.fftw_friendly_size(2 * coherent_samples)
+    @test ka_plan.bfft_size == Acquisition.fftw_friendly_size(2 * num_samples)
 
     result = acquire!(ka_plan, signal_f32, prn; interm_freq)
 
@@ -256,25 +253,24 @@ end
 
 @testset "KAAcquisitionPlan zero_pad_power=1 (frequency-domain zero-padding)" begin
     system = GPSL1()
-    coherent_samples = 16368
     (; signal, doppler, code_phase, prn, sampling_freq, num_samples, CN0) =
         generate_test_signal(
             system, 1;
-            num_samples = 2 * coherent_samples, code_phase = 50.5, sampling_freq = 16.368e6Hz,
+            num_samples = 16368, code_phase = 50.5, sampling_freq = 16.368e6Hz,
             CN0 = 50, interm_freq = 0.0Hz, phase_offset = 0.0,
         )
     signal_f32 = ComplexF32.(signal)
 
     ka_plan = KAAcquisitionPlan(
         system,
-        coherent_samples,
+        num_samples,
         sampling_freq,
         Array;
         prns = 1:34,
         zero_pad_power = 1,
     )
 
-    linear_fft_size = Acquisition.fftw_friendly_size(2 * coherent_samples)
+    linear_fft_size = Acquisition.fftw_friendly_size(2 * num_samples)
     @test ka_plan.bfft_size == Acquisition.fftw_friendly_size(linear_fft_size << 1)
     @test ka_plan.bfft_size > ka_plan.linear_fft_size  # needs_padding == true
 
@@ -288,24 +284,23 @@ end
 @testset "KAAcquisitionPlan with zero-padding (non-smooth sample count)" begin
     system = GPSL1()
     # 16368 = 2^4 × 3 × 11 × 31 — not FFTW-friendly, pads to 16384
-    coherent_samples = 16368
     (; signal, doppler, code_phase, prn, sampling_freq, num_samples, CN0) =
         generate_test_signal(
             system, 1;
-            num_samples = 2 * coherent_samples, code_phase = 50.5, sampling_freq = 16.368e6Hz,
+            num_samples = 16368, code_phase = 50.5, sampling_freq = 16.368e6Hz,
             interm_freq = 0.0Hz, phase_offset = 0.0,
         )
     signal_f32 = ComplexF32.(signal)
 
     ka_plan = KAAcquisitionPlan(
         system,
-        coherent_samples,
+        num_samples,
         sampling_freq,
         Array;
         prns = 1:34,
     )
 
-    @test ka_plan.bfft_size > coherent_samples
+    @test ka_plan.bfft_size > num_samples
 
     result = acquire!(ka_plan, signal_f32, prn)
 
@@ -319,11 +314,10 @@ end
     (; signal, doppler, code_phase, prn, sampling_freq, interm_freq, num_samples) =
         generate_test_signal(system, 1)
     signal_f32 = ComplexF32.(signal)
-    coherent_samples = num_samples ÷ 2
 
     ka_plan = KAAcquisitionPlan(
         system,
-        coherent_samples,
+        num_samples,
         sampling_freq,
         Array;
         prns = 1:34,
@@ -343,11 +337,10 @@ end
     (; signal, doppler, code_phase, prn, sampling_freq, interm_freq, num_samples) =
         generate_test_signal(system, 1)
     signal_f32 = ComplexF32.(signal)
-    coherent_samples = num_samples ÷ 2
 
     ka_plan = KAAcquisitionPlan(
         system,
-        coherent_samples,
+        num_samples,
         sampling_freq,
         Array;
         prns = 1:34,
