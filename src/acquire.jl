@@ -47,6 +47,68 @@ results = acquire(GPSL1(), signal, 5e6Hz, 1:32)
 
 [`acquire!`](@ref), [`coarse_fine_acquire`](@ref), [`AcquisitionPlan`](@ref)
 """
+"""
+    default_coherent_samples(system, signal_length, sampling_freq)
+
+Compute the default number of samples for coherent integration, accounting for DBZP.
+
+If the signal is exactly one code period, returns `signal_length` directly (`acquire!`
+will internally repeat the signal for DBZP). Otherwise returns
+`min(signal_length, bit_period_samples) ÷ 2` so that DBZP gets proper 2N-sample windows.
+"""
+function default_coherent_samples(system, signal_length, sampling_freq)
+    code_period_samples = ceil(Int, get_code_length(system) / get_code_frequency(system) * sampling_freq)
+    bit_period_samples = ceil(Int, sampling_freq / get_data_frequency(system))
+    if signal_length == code_period_samples
+        signal_length
+    else
+        min(signal_length, bit_period_samples) ÷ 2
+    end
+end
+
+"""
+    prepare_signal_for_dbzp(signal, chunk_samples)
+
+Validate signal length and prepare it for DBZP correlation.
+
+Returns `(prepared_signal, num_chunks)` where `prepared_signal` is either the original
+signal (≥ 2N) or a repeated copy (== N).
+
+# Signal length regimes
+- `< N`: `ArgumentError` — not enough for one correlation
+- `== N`: repeat to `[signal; signal]`, returns `num_chunks = 1`
+- `N < x < 2N`: `ArgumentError` — not periodic, too short for DBZP
+- `≥ 2N`: DBZP with overlapping 2N windows, returns `num_chunks = (len - N) ÷ N`
+"""
+function prepare_signal_for_dbzp(signal, chunk_samples)
+    num_signal_samples = length(signal)
+    if num_signal_samples < chunk_samples
+        throw(
+            ArgumentError(
+                "Signal has $num_signal_samples samples but needs at least " *
+                "$chunk_samples (1 code period)."
+            )
+        )
+    elseif num_signal_samples == chunk_samples
+        # The GNSS code is periodic with period N, so repeating the signal is
+        # physically valid for DBZP. The carrier phase has a discontinuity at the
+        # repeat boundary (up to ~60° at the nearest Doppler bin), but extensive
+        # testing showed this does not affect acquisition accuracy. This is the
+        # simplest way to support backward-compatible 1-code-period signals.
+        return vcat(signal, signal), 1
+    elseif num_signal_samples < 2 * chunk_samples
+        throw(
+            ArgumentError(
+                "Signal has $num_signal_samples samples, which is between 1 and 2 code " *
+                "periods ($chunk_samples samples each). Provide exactly $chunk_samples " *
+                "samples (single period) or ≥ $(2 * chunk_samples) for DBZP."
+            )
+        )
+    else
+        return signal, (num_signal_samples - chunk_samples) ÷ chunk_samples
+    end
+end
+
 function acquire(
     system::AbstractGNSS,
     signal,
