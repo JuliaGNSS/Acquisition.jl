@@ -502,6 +502,43 @@ end
     @test abs(result.carrier_doppler - doppler) < step(acq_plan.dopplers)
 end
 
+@testset "Backward compat: 1N signal is internally repeated for DBZP" begin
+    system = GPSL1()
+    sampling_freq = 4e6Hz
+    N = 4000  # 1 code period
+
+    # Generate a 2N signal so we can extract a clean 1N slice
+    (; signal, doppler, code_phase, prn) = generate_test_signal(
+        system, 1;
+        num_samples = 2 * N, doppler = 5000Hz, code_phase = 1022.0,
+        sampling_freq, interm_freq = 0.0Hz, CN0 = 45,
+    )
+    signal_1N = signal[1:N]
+
+    # Manually repeat to produce [signal_1N; signal_1N]
+    signal_repeated = [signal_1N; signal_1N]
+
+    plan_ref = AcquisitionPlan(
+        system, N, sampling_freq;
+        prns = [prn], fft_flag = FFTW.ESTIMATE,
+    )
+    result_ref = acquire!(plan_ref, signal_repeated, prn)
+
+    plan_1N = AcquisitionPlan(
+        system, N, sampling_freq;
+        prns = [prn], fft_flag = FFTW.ESTIMATE,
+    )
+    result_1N = acquire!(plan_1N, signal_1N, prn)
+
+    # Internal repeat should produce identical results to manual repeat
+    @test result_1N.code_phase == result_ref.code_phase
+    @test result_1N.carrier_doppler == result_ref.carrier_doppler
+
+    # And it should still find the signal correctly
+    @test result_1N.code_phase ≈ code_phase atol = 0.5
+    @test abs(result_1N.carrier_doppler - doppler) < step(plan_1N.dopplers)
+end
+
 @testset "Signal length validation" begin
     system = GPSL1()
     sampling_freq = 4e6Hz
