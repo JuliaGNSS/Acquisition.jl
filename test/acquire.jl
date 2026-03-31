@@ -18,7 +18,7 @@
 
     acq_plan = @inferred AcquisitionPlan(
         system,
-        length(signal_typed),
+        length(signal_typed) ÷ 2,
         sampling_freq;
         dopplers,
         prns = 1:34,
@@ -41,7 +41,7 @@
 
     coarse_fine_acq_plan = @inferred CoarseFineAcquisitionPlan(
         system,
-        length(signal_typed),
+        length(signal_typed) ÷ 2,
         sampling_freq;
         prns = 1:34,
     )
@@ -95,7 +95,7 @@ end
 
     # Verify acquisition still works correctly with Float64 buffers
     Random.seed!(1234)
-    signal = randn(ComplexF64, num_samples)
+    signal = randn(ComplexF64, 2 * num_samples)
     result_f64 = acquire!(plan_f64, signal, 1)
     @test result_f64 isa AcquisitionResults
 end
@@ -130,7 +130,7 @@ end
     # Test AcquisitionPlan with min_doppler
     acq_plan = @inferred AcquisitionPlan(
         system,
-        length(signal_typed),
+        length(signal_typed) ÷ 2,
         sampling_freq;
         min_doppler,
         max_doppler,
@@ -166,7 +166,7 @@ end
     # Test CoarseFineAcquisitionPlan with min_doppler
     coarse_fine_acq_plan = @inferred CoarseFineAcquisitionPlan(
         system,
-        length(signal_typed),
+        length(signal_typed) ÷ 2,
         sampling_freq;
         min_doppler,
         max_doppler,
@@ -191,7 +191,7 @@ end
     system = GPSL1()
     num_samples = 10000
     sampling_freq = 5e6Hz
-    signal = randn(ComplexF64, num_samples)
+    signal = randn(ComplexF64, 2 * num_samples)
 
     plan = AcquisitionPlan(system, num_samples, sampling_freq; prns = 1:3)
 

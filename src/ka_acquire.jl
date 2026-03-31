@@ -502,7 +502,7 @@ function acquire!(
 
     # Precompute constants
     chunk_samples = plan.num_samples_to_integrate_coherently
-    signal, num_chunks = prepare_signal_for_dbzp(signal, chunk_samples)
+    signal, num_chunks = prepare_signal_for_dbzp(plan.system, signal, chunk_samples, plan.sampling_frequency)
     code_period = get_code_length(plan.system) / get_code_frequency(plan.system)
     Δt = chunk_samples / plan.sampling_frequency
     effective_sampling_freq = plan.sampling_frequency * plan.bfft_size / plan.linear_fft_size
