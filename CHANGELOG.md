@@ -1,5 +1,18 @@
 # Changelog
 
+# [1.7.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v1.6.0...v1.7.0) (2026-03-31)
+
+
+### Bug Fixes
+
+* **docs:** add Unitful to docs dependencies for [@example](https://github.com/example) blocks ([e855bde](https://github.com/JuliaGNSS/Acquisition.jl/commit/e855bde552fad75b404f455fff8e3c7a634c35c8))
+* normalize peak_to_noise_ratio to χ²(2M) scale for correct CFAR threshold ([99081a4](https://github.com/JuliaGNSS/Acquisition.jl/commit/99081a4b12fde1aaf65522e6ea47b7b8fe2a8ab2))
+
+
+### Features
+
+* add CFAR detection with peak_to_noise_ratio metric ([7847482](https://github.com/JuliaGNSS/Acquisition.jl/commit/7847482a4810ae4615e0ad29fa4804f125ab4f01))
+
 # [1.6.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v1.5.0...v1.6.0) (2026-02-27)
 
 
