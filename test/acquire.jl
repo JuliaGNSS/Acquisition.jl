@@ -18,7 +18,7 @@
 
     acq_plan = @inferred AcquisitionPlan(
         system,
-        length(signal_typed) ÷ 2,
+        length(signal_typed),
         sampling_freq;
         dopplers,
         prns = 1:34,
@@ -41,7 +41,7 @@
 
     coarse_fine_acq_plan = @inferred CoarseFineAcquisitionPlan(
         system,
-        length(signal_typed) ÷ 2,
+        length(signal_typed),
         sampling_freq;
         prns = 1:34,
     )
@@ -95,7 +95,7 @@ end
 
     # Verify acquisition still works correctly with Float64 buffers
     Random.seed!(1234)
-    signal = randn(ComplexF64, 2 * num_samples)
+    signal = randn(ComplexF64, num_samples)
     result_f64 = acquire!(plan_f64, signal, 1)
     @test result_f64 isa AcquisitionResults
 end
@@ -130,7 +130,7 @@ end
     # Test AcquisitionPlan with min_doppler
     acq_plan = @inferred AcquisitionPlan(
         system,
-        length(signal_typed) ÷ 2,
+        length(signal_typed),
         sampling_freq;
         min_doppler,
         max_doppler,
@@ -166,7 +166,7 @@ end
     # Test CoarseFineAcquisitionPlan with min_doppler
     coarse_fine_acq_plan = @inferred CoarseFineAcquisitionPlan(
         system,
-        length(signal_typed) ÷ 2,
+        length(signal_typed),
         sampling_freq;
         min_doppler,
         max_doppler,
@@ -191,7 +191,7 @@ end
     system = GPSL1()
     num_samples = 10000
     sampling_freq = 5e6Hz
-    signal = randn(ComplexF64, 2 * num_samples)
+    signal = randn(ComplexF64, num_samples)
 
     plan = AcquisitionPlan(system, num_samples, sampling_freq; prns = 1:3)
 
@@ -382,8 +382,8 @@ end
     # Create plan with bit period chunk size
     acq_plan = AcquisitionPlan(system, sampling_freq; prns = 1:5, fft_flag = FFTW.ESTIMATE)
 
-    # Create signal spanning multiple bit periods (DBZP needs >= 2 chunks of 2N)
-    num_samples = ceil(Int, 3 * bit_period_samples)
+    # Create signal spanning multiple bit periods (DBZP needs >= 2N)
+    num_samples = ceil(Int, 2.5 * bit_period_samples)
     signal = randn(ComplexF32, num_samples)
 
     prns = [1, 2]
@@ -502,14 +502,26 @@ end
     @test abs(result.carrier_doppler - doppler) < step(acq_plan.dopplers)
 end
 
-@testset "DBZP requires at least 2 code periods" begin
+@testset "Signal length validation" begin
     system = GPSL1()
     sampling_freq = 4e6Hz
+    N = 4000  # 1 code period
 
     acq_plan = AcquisitionPlan(
-        system, 4000, sampling_freq;
+        system, N, sampling_freq;
         prns = [1], fft_flag = FFTW.ESTIMATE,
     )
-    short_signal = randn(ComplexF32, 4000)
-    @test_throws ArgumentError acquire!(acq_plan, short_signal, 1)
+
+    # Too short: should error
+    @test_throws ArgumentError acquire!(acq_plan, randn(ComplexF32, N - 1), 1)
+
+    # Exactly 1 code period: should work (internally repeated)
+    @test acquire!(acq_plan, randn(ComplexF32, N), 1) isa AcquisitionResults
+
+    # Between 1N and 2N: should error
+    @test_throws ArgumentError acquire!(acq_plan, randn(ComplexF32, N + 1), 1)
+    @test_throws ArgumentError acquire!(acq_plan, randn(ComplexF32, 2 * N - 1), 1)
+
+    # Exactly 2N: should work (DBZP)
+    @test acquire!(acq_plan, randn(ComplexF32, 2 * N), 1) isa AcquisitionResults
 end
