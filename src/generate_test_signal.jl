@@ -1,8 +1,11 @@
 """
     generate_test_signal(system, prn; kwargs...) -> NamedTuple
 
-Generate a noisy GNSS signal for testing. Returns a NamedTuple with all signal
-components and parameters, so call sites can destructure what they need.
+Generate a synthetic noisy GNSS signal. Useful for testing acquisition and
+demonstrating the API.
+
+Returns a NamedTuple with fields: `signal`, `code`, `carrier`, `num_samples`,
+`doppler`, `code_phase`, `sampling_freq`, `interm_freq`, `CN0`, `prn`.
 
 # Keywords
 - `seed=2345`: Random seed for reproducibility
@@ -13,8 +16,18 @@ components and parameters, so call sites can destructure what they need.
 - `interm_freq=243.0Hz`: Intermediate frequency
 - `CN0=45`: Carrier-to-noise density ratio (dB-Hz)
 - `phase_offset=π/8`: Carrier phase offset
-- `unit_noise_power=false`: When true, scale so noise power ≈ 1 (used by calc_powers tests);
+- `unit_noise_power=false`: When true, scale so noise power ≈ 1;
   when false, scale so signal power corresponds directly to CN0
+
+# Example
+
+```julia
+using Acquisition, GNSSSignals
+
+(; signal, prn, sampling_freq, interm_freq) = generate_test_signal(GPSL1(), 1)
+result = acquire(GPSL1(), signal, sampling_freq, prn; interm_freq)
+is_detected(result)  # true
+```
 """
 function generate_test_signal(
     system,

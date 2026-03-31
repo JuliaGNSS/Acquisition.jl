@@ -9,8 +9,8 @@ search grid exceeding the threshold equals `pfa`. This accounts for the multiple
 hypothesis testing across all `num_cells` search cells (code phases × Doppler bins)
 using a Bonferroni-like correction.
 
-The test statistic is `peak_power / noise_power` (the `peak_to_noise_ratio` field
-of [`AcquisitionResults`](@ref)).
+The test statistic is `peak_power / noise_power` (the [`peak_to_noise_ratio`](@ref
+AcquisitionResults) field of [`AcquisitionResults`](@ref)).
 
 # Arguments
 
@@ -31,19 +31,19 @@ Threshold value to compare against `result.peak_to_noise_ratio`.
 ```julia
 using Acquisition, GNSSSignals
 
-results = acquire(GPSL1(), signal, 5e6Hz, 1:32)
-num_cells = size(results[1].power_bins, 1) * size(results[1].power_bins, 2)
-threshold = cfar_threshold(0.01, num_cells)
-detected = filter(r -> r.peak_to_noise_ratio > threshold, results)
+system = GPSL1()
+(; signal, sampling_freq, interm_freq) = generate_test_signal(system, 1)
+results = acquire(system, signal, sampling_freq, 1:32; interm_freq)
+detected = filter(is_detected, results)
 ```
 
 # Mathematical Background
 
-Under the null hypothesis (noise only), the test statistic `peak_to_noise_ratio`
-(computed as `peak_power / (noise_power / 2)`) follows a chi-squared distribution
-with `2 * num_noncoherent_integrations` degrees of freedom. The factor-of-2
-normalization in the noise estimate places the statistic on the χ²(2M) scale
-(mean = 2M under H0), matching the threshold returned by this function.
+Under the null hypothesis (noise only), each power bin `|I|² + |Q|²` is χ²(2)-distributed
+with mean 2 (Springer Handbook of GNSS, Eq. 14.26). After `M` non-coherent
+integrations the raw power `S_nc ~ χ²(2M)` (Eq. 14.28). The test statistic
+`peak_to_noise_ratio = S_nc / noise_power` where `noise_power ≈ 2M`, so
+`peak_to_noise_ratio ~ Gamma(M, 1/M)` with mean 1 under H0.
 
 The per-cell false alarm probability is adjusted for multiple testing:
 `pfa_per_cell = 1 - (1 - pfa)^(1/num_cells)`.
@@ -68,14 +68,18 @@ function cfar_threshold(pfa, num_cells; num_noncoherent_integrations = 1)
         throw(ArgumentError("num_noncoherent_integrations must be positive"))
     # Per-cell false alarm probability (Bonferroni-like correction)
     pfa_per_cell = 1 - (1 - pfa)^(1 / num_cells)
-    # Degrees of freedom: 2M for M non-coherent integrations of complex samples
-    # Under H0, peak_power/noise_power ~ Gamma(M, 1) (after normalization)
-    # chi2(2M) = 2 * Gamma(M, 1), so threshold = 2 * gamma_quantile
+    # Under H0 (noise only), each power bin is |I|²+|Q|² ~ χ²(2) with E[noise]=2
+    # (Springer Handbook of GNSS, Eq. 14.26). After M non-coherent integrations,
+    # the raw power S_nc ~ χ²(2M) (Eq. 14.28).
+    # peak_to_noise_ratio = S_nc / noise_power, where noise_power ≈ 2M (the mean
+    # of χ²(2M)), so peak_to_noise_ratio ~ χ²(2M)/(2M) = Gamma(M, 1/M).
+    # Equivalently, M * peak_to_noise_ratio ~ Gamma(M, 1).
     # gamma_inc_inv(a, p, q) returns x such that gamma_inc(a, x) = (p, q)
     # We want P(X > threshold) = pfa_per_cell, i.e., q = pfa_per_cell
     a = Float64(num_noncoherent_integrations)
     p_lower = 1.0 - pfa_per_cell
     q_upper = pfa_per_cell
     x = gamma_inc_inv(a, p_lower, q_upper)
-    Float64(2 * x)
+    # x is the Gamma(M, 1) quantile; divide by M to get the peak_to_noise_ratio scale
+    Float64(x / a)
 end

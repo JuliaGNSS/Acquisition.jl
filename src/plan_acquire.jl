@@ -168,6 +168,7 @@ function AcquisitionPlan(
             0.0,
             Float32(0),
             Float32(0),
+            1,
             signal_powers[i],
             dopplers,
         ) for (i, prn) in enumerate(prns)
@@ -370,6 +371,7 @@ function CoarseFineAcquisitionPlan(
             0.0,
             Float32(0),
             Float32(0),
+            1,
             coarse_signal_powers[i],
             coarse_dopplers,
         ) for (i, prn) in enumerate(prns)
@@ -410,6 +412,7 @@ function CoarseFineAcquisitionPlan(
             0.0,
             Float32(0),
             Float32(0),
+            1,
             fine_signal_powers[i],
             fine_doppler_range,
         ) for (i, prn) in enumerate(prns)
