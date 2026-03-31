@@ -117,7 +117,7 @@ function acquire(
     interm_freq = 0.0Hz,
     max_doppler = 7000Hz,
     min_doppler = -max_doppler,
-    samples_to_integrate_coherently = ceil(Int, sampling_freq / get_data_frequency(system)),
+    samples_to_integrate_coherently = default_coherent_samples(system, length(signal), sampling_freq),
     doppler_step_factor = 1//3,
     dopplers = min_doppler:(doppler_step_factor*sampling_freq/samples_to_integrate_coherently):max_doppler,
     max_code_doppler_loss = 0.5dB,
@@ -125,7 +125,7 @@ function acquire(
 )
     acq_plan = AcquisitionPlan(
         system,
-        min(length(signal) ÷ 2, samples_to_integrate_coherently),
+        samples_to_integrate_coherently,
         sampling_freq;
         min_doppler,
         max_doppler,
@@ -426,7 +426,7 @@ function acquire(
     interm_freq = 0.0Hz,
     max_doppler = 7000Hz,
     min_doppler = -max_doppler,
-    samples_to_integrate_coherently = ceil(Int, sampling_freq / get_data_frequency(system)),
+    samples_to_integrate_coherently = default_coherent_samples(system, length(signal), sampling_freq),
     doppler_step_factor = 1//3,
     dopplers = min_doppler:(doppler_step_factor*sampling_freq/samples_to_integrate_coherently):max_doppler,
     max_code_doppler_loss = 0.5dB,
@@ -523,7 +523,7 @@ function coarse_fine_acquire(
     interm_freq = 0.0Hz,
     max_doppler = 7000Hz,
     min_doppler = -max_doppler,
-    samples_to_integrate_coherently = ceil(Int, sampling_freq / get_data_frequency(system)),
+    samples_to_integrate_coherently = default_coherent_samples(system, length(signal), sampling_freq),
     doppler_step_factor = 1//3,
     coarse_step = doppler_step_factor * sampling_freq / samples_to_integrate_coherently,
     fine_step = coarse_step / 10,
@@ -532,7 +532,7 @@ function coarse_fine_acquire(
 )
     acq_plan = CoarseFineAcquisitionPlan(
         system,
-        min(length(signal) ÷ 2, samples_to_integrate_coherently),
+        samples_to_integrate_coherently,
         sampling_freq;
         max_doppler,
         min_doppler,
@@ -594,7 +594,7 @@ function coarse_fine_acquire(
     interm_freq = 0.0Hz,
     max_doppler = 7000Hz,
     min_doppler = -max_doppler,
-    samples_to_integrate_coherently = ceil(Int, sampling_freq / get_data_frequency(system)),
+    samples_to_integrate_coherently = default_coherent_samples(system, length(signal), sampling_freq),
     doppler_step_factor = 1//3,
     coarse_step = doppler_step_factor * sampling_freq / samples_to_integrate_coherently,
     fine_step = coarse_step / 10,
