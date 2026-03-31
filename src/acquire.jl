@@ -190,19 +190,8 @@ function acquire!(
     code_period = get_code_length(acq_plan.system) / get_code_frequency(acq_plan.system)
 
     chunk_samples = acq_plan.num_samples_to_integrate_coherently
-    num_signal_samples = length(signal)
+    signal, num_chunks = prepare_signal_for_dbzp(signal, chunk_samples)
 
-    num_signal_samples >= 2 * chunk_samples || throw(
-        ArgumentError(
-            "Signal has $num_signal_samples samples but DBZP requires at least " *
-            "$(2 * chunk_samples) (2 code periods). With Doppler, the code rate shifts " *
-            "so single-period circular correlation is inaccurate at high Dopplers."
-        )
-    )
-
-    # DBZP: each chunk needs 2N samples (2 code periods) for linear correlation.
-    # Windows overlap by N, striding by N samples.
-    num_chunks = (num_signal_samples - chunk_samples) ÷ chunk_samples
     for chunk_idx = 1:num_chunks
         start_idx = (chunk_idx - 1) * chunk_samples + 1
         end_idx = start_idx + 2 * chunk_samples - 1
