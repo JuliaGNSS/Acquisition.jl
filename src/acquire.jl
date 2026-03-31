@@ -272,10 +272,7 @@ function acquire!(
     code_period = get_code_length(fine_plan.system) / get_code_frequency(fine_plan.system)
 
     chunk_samples = fine_plan.num_samples_to_integrate_coherently
-    num_signal_samples = length(signal)
-    # DBZP: each chunk needs 2N samples (2 code periods) for linear correlation.
-    # Windows overlap by N, striding by N samples.
-    num_chunks = (num_signal_samples - chunk_samples) ÷ chunk_samples
+    signal, num_chunks = prepare_signal_for_dbzp(signal, chunk_samples)
     effective_sampling_freq =
         fine_plan.sampling_freq * fine_plan.bfft_size / fine_plan.linear_fft_size
 
