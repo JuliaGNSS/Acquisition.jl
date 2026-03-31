@@ -664,6 +664,7 @@ function acquire!(
             CN0,
             Float32(noise_power),
             Float32(peak_to_noise),
+            num_chunks,
             Matrix{Float32}(undef, 0, 0),
             result_dopplers,
         )

@@ -156,12 +156,13 @@ function acquire!(
     resize!(acq_plan.output_results, length(prns))
     for (i, (powers, prn, prn_idx)) in
         enumerate(zip(powers_per_sats, prns, acq_plan.prn_indices))
-        signal_power, noise_power_est, peak_to_noise, code_index, doppler_index = est_signal_noise_power(
+        signal_power, noise_power_est, code_index, doppler_index = est_signal_noise_power(
             powers,
             effective_sampling_freq,
             get_code_frequency(acq_plan.system),
             noise_power,
         )
+        peak_to_noise = (signal_power + noise_power_est) / noise_power_est
         # CN0 includes coherent integration gain (normalized by code_period).
         # Non-coherent integration improves detection probability but doesn't increase
         # the measured SNR ratio, so no explicit gain is added here.
@@ -183,6 +184,7 @@ function acquire!(
             CN0,
             noise_power_est,
             peak_to_noise,
+            num_chunks,
             powers,
             acq_plan.dopplers,
         )
@@ -264,12 +266,13 @@ function acquire!(
 
         # Compute result
         powers = fine_plan.signal_powers[prn_idx]
-        signal_power, noise_power_est, peak_to_noise, code_index, doppler_index = est_signal_noise_power(
+        signal_power, noise_power_est, code_index, doppler_index = est_signal_noise_power(
             powers,
             effective_sampling_freq,
             get_code_frequency(fine_plan.system),
             noise_power,
         )
+        peak_to_noise = (signal_power + noise_power_est) / noise_power_est
         # CN0 includes coherent integration gain (normalized by code_period).
         # Non-coherent integration improves detection probability but doesn't increase
         # the measured SNR ratio, so no explicit gain is added here.
@@ -293,6 +296,7 @@ function acquire!(
             CN0,
             noise_power_est,
             peak_to_noise,
+            num_chunks,
             powers,
             fine_plan.dopplers,
         )

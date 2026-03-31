@@ -1,9 +1,9 @@
 @testset "CFAR threshold" begin
-    # For single dwell (M=1), chi2(2) = exponential(1/2)
-    # P(X > t) = exp(-t/2), so threshold = -2*log(pfa_per_cell)
+    # For single dwell (M=1), peak_to_noise_ratio ~ Exp(1)
+    # P(X > t) = exp(-t), so threshold = -log(pfa_per_cell)
     # With 1 cell: pfa_per_cell = pfa
-    @test cfar_threshold(0.01, 1) ≈ -2 * log(0.01)
-    @test cfar_threshold(0.001, 1) ≈ -2 * log(0.001)
+    @test cfar_threshold(0.01, 1) ≈ -log(0.01)
+    @test cfar_threshold(0.001, 1) ≈ -log(0.001)
 
     # Threshold increases with more cells (Bonferroni correction)
     t1 = cfar_threshold(0.01, 100)
@@ -15,10 +15,11 @@
     t_strict = cfar_threshold(0.001, 1000)
     @test t_strict > t_loose
 
-    # Multiple non-coherent integrations increase threshold
+    # More non-coherent integrations concentrate the noise distribution around mean=1,
+    # so the threshold (on peak_to_noise_ratio scale) decreases for the same pfa.
     t_m1 = cfar_threshold(0.01, 1000; num_noncoherent_integrations = 1)
     t_m3 = cfar_threshold(0.01, 1000; num_noncoherent_integrations = 3)
-    @test t_m3 > t_m1
+    @test t_m3 < t_m1
 
     # Argument validation
     @test_throws ArgumentError cfar_threshold(0.0, 100)

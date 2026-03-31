@@ -218,39 +218,49 @@ end
     @test contains(output, "Carrier Doppler")
     @test contains(output, "Code phase")
 
-    # Test CN0 highlighting (green for CN0 > 42, red for CN0 < 42)
-    high_cn0_result = Acquisition.AcquisitionResults(
+    # Test CN0 highlighting (green for detected, red for not detected)
+    detected_result = Acquisition.AcquisitionResults(
         system,
         1,
         sampling_freq,
         0.0Hz,
         0.0,
         50.0,
-        0.0,
-        0.0,
+        1.0,
+        1e6,
+        1,
         zeros(1, 1),
         0.0Hz:1.0Hz:0.0Hz,
     )
-    low_cn0_result = Acquisition.AcquisitionResults(
+    not_detected_result = Acquisition.AcquisitionResults(
         system,
         2,
         sampling_freq,
         0.0Hz,
         0.0,
         30.0,
+        1.0,
         0.0,
-        0.0,
+        1,
         zeros(1, 1),
         0.0Hz:1.0Hz:0.0Hz,
     )
-    io = IOBuffer()
-    ioc = IOContext(io, :color => true)
-    show(ioc, MIME"text/plain"(), [high_cn0_result, low_cn0_result])
-    output = String(take!(io))
-    # Verify green is applied to the high CN0 value with reset after
-    @test contains(output, "\e[32m50.0\e[0m")  # Green for CN0 > 42
-    # Verify red is applied to the low CN0 value with reset after
-    @test contains(output, "\e[31m30.0\e[0m")  # Red for CN0 < 42
+    @test is_detected(detected_result)
+    @test !is_detected(not_detected_result)
+    import PrettyTables
+    PrettyTables.Crayons.force_color(true)
+    try
+        io = IOBuffer()
+        ioc = IOContext(io, :color => true)
+        show(ioc, MIME"text/plain"(), [detected_result, not_detected_result])
+        output = String(take!(io))
+        # Verify green is applied to detected CN0 value
+        @test occursin(r"\e\[32m\s*50\.0\s*\e\[0m", output)
+        # Verify red is applied to not-detected CN0 value
+        @test occursin(r"\e\[31m\s*30\.0\s*\e\[0m", output)
+    finally
+        PrettyTables.Crayons.force_color(false)
+    end
 end
 
 @testset "Non-allocating result handling in acquire!" begin
