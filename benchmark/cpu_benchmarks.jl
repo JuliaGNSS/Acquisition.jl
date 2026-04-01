@@ -86,7 +86,7 @@ for num_samples in CPU_SAMPLE_SIZES
     for num_prns in CPU_PRN_COUNTS
         prns = 1:num_prns
         system = GPSL1()
-        signal = _make_signal(num_samples, Float32)
+        signal = _make_signal(2 * num_samples, Float32)
         plan = _make_acq_plan(system, num_samples, CPU_SAMPLING_FREQ, Float32; prns = 1:32)
 
         CPU_SUITE["Acquire"]["$(num_samples)_samples"]["$(num_prns)_prns"] =
@@ -106,7 +106,7 @@ for num_samples in CPU_SAMPLE_SIZES
     for num_prns in CPU_PRN_COUNTS
         prns = 1:num_prns
         system = GPSL1()
-        signal = _make_signal(num_samples, Float32)
+        signal = _make_signal(2 * num_samples, Float32)
         plan = _make_coarse_fine_plan(
             system,
             num_samples,
@@ -130,7 +130,7 @@ CPU_SUITE["Types"] = BenchmarkGroup()
 
 for signal_type in [Float32, Float64]
     system = GPSL1()
-    signal = _make_signal(TYPE_BENCHMARK_SAMPLES, signal_type)
+    signal = _make_signal(2 * TYPE_BENCHMARK_SAMPLES, signal_type)
     plan = _make_acq_plan(
         system,
         TYPE_BENCHMARK_SAMPLES,
@@ -155,7 +155,7 @@ const _supports_noncoherent =
 if _supports_noncoherent
     CPU_SUITE["NonCoherent"] = BenchmarkGroup()
 
-    for multiplier in [1.0, 2.0]
+    for multiplier in [2.0, 4.0]
         system = GPSL1()
         bit_period_samples = ceil(Int, CPU_SAMPLING_FREQ / get_data_frequency(system))
         num_samples = ceil(Int, multiplier * bit_period_samples)
