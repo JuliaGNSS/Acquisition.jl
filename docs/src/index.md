@@ -33,6 +33,15 @@ results = coarse_fine_acquire(GPSL1(), signal, 5e6Hz, 1:32)
 - **Pre-computed plans**: Reuse FFT plans and buffers for batch processing
 - **Plotting support**: Visualize acquisition results with Plots.jl
 
+!!! tip "Signal length recommendation"
+    Providing **at least 2 code periods** of signal is preferred over exactly 1 code period.
+    DBZP (Double Block Zero Padding) works by zero-padding the local code replica to 2N and
+    correlating it against 2N signal samples, implementing **linear** (not circular) correlation.
+    This ensures every code phase lag has exactly N overlapping samples, giving uniform
+    correlation quality and correct handling of bit transitions (circular correlation smears
+    energy from a bit flip across all phase lags). With only 1 code period, the signal is
+    internally repeated as a backward-compatible fallback, losing these properties.
+
 ## Background
 
 For an introduction to GNSS signal acquisition, see:
