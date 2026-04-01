@@ -93,8 +93,8 @@ For repeated acquisitions with the same parameters, pre-compute an acquisition p
 ```@example guide
 (; signal, num_samples, sampling_freq, interm_freq) = generate_test_signal(system, 1)
 
-# Create plan once
-plan = AcquisitionPlan(system, num_samples, sampling_freq; prns=1:3)
+# Create plan once (coherent integration length = half the signal for DBZP)
+plan = AcquisitionPlan(system, num_samples ÷ 2, sampling_freq; prns=1:3)
 
 # Reuse for multiple signals
 results = acquire!(plan, signal, 1:3; interm_freq)
@@ -103,7 +103,7 @@ results = acquire!(plan, signal, 1:3; interm_freq)
 Similarly, for coarse-fine acquisition:
 
 ```@example guide
-plan = CoarseFineAcquisitionPlan(system, num_samples, sampling_freq; prns=1:3)
+plan = CoarseFineAcquisitionPlan(system, num_samples ÷ 2, sampling_freq; prns=1:3)
 results = acquire!(plan, signal, 1:3; interm_freq)
 ```
 
