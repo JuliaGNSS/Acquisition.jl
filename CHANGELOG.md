@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.7.1](https://github.com/JuliaGNSS/Acquisition.jl/compare/v1.7.0...v1.7.1) (2026-04-01)
+
+
+### Bug Fixes
+
+* add DBZP validation, update tests for 2N signal requirement ([48dedf3](https://github.com/JuliaGNSS/Acquisition.jl/commit/48dedf303e0e8d5ec951c8156993cac0671a9fc3))
+* add default_coherent_samples and prepare_signal_for_dbzp helpers ([f5f06d5](https://github.com/JuliaGNSS/Acquisition.jl/commit/f5f06d523e608dc65551702605f9c4fc94e569b1))
+* implement true DBZP with overlapping 2N-sample windows ([5693564](https://github.com/JuliaGNSS/Acquisition.jl/commit/56935644398533c86a2898967d621ee22e1e4c58))
+* make benchmarks backward-compatible with pre-DBZP versions ([bfcf0d5](https://github.com/JuliaGNSS/Acquisition.jl/commit/bfcf0d58311376d2f91796895a30a4721bcd5376))
+* only repeat signal for DBZP when chunk_samples is one code period ([1a5ef87](https://github.com/JuliaGNSS/Acquisition.jl/commit/1a5ef87cddcd8e425192de23ef07baf251022d01))
+* revert test workarounds in calc_powers and ka_acquire tests ([78dc8fb](https://github.com/JuliaGNSS/Acquisition.jl/commit/78dc8fb1087976c8d6b727fbe0d08d2a7151650a))
+* revert test workarounds, update multi-period tests for DBZP, add validation test ([5b4246a](https://github.com/JuliaGNSS/Acquisition.jl/commit/5b4246adef768deb9ddd5aea609eddcdc7312e89))
+* update benchmarks and docs for DBZP 2N signal requirement ([2031416](https://github.com/JuliaGNSS/Acquisition.jl/commit/20314166e04b638024041bff86992f7e63b0b7b4))
+* use default_coherent_samples in convenience functions, pass directly to plan ([dedd7dd](https://github.com/JuliaGNSS/Acquisition.jl/commit/dedd7dd08a484f35f1cf9fd408627b05cf003a52))
+* use prepare_signal_for_dbzp in acquire!(::AcquisitionPlan) ([364c11e](https://github.com/JuliaGNSS/Acquisition.jl/commit/364c11eca2adc5c9c7df560aa0e23dc739879d3d))
+* use prepare_signal_for_dbzp in acquire!(::CoarseFineAcquisitionPlan) ([aa0985e](https://github.com/JuliaGNSS/Acquisition.jl/commit/aa0985ed23cea31bd3670e050681df2742fd71be))
+* use prepare_signal_for_dbzp in acquire!(::KAAcquisitionPlan) ([235ef91](https://github.com/JuliaGNSS/Acquisition.jl/commit/235ef91e1036ef70b31a16465c365924d62f8884))
+
 # [1.7.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v1.6.0...v1.7.0) (2026-03-31)
 
 
