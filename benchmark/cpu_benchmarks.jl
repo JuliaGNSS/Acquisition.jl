@@ -17,6 +17,10 @@ const _supports_eltype = hasmethod(
     (:prns, :fft_flag, :eltype),
 )
 
+# DBZP requires 2N signal samples for N coherent integration samples
+const _requires_dbzp = isdefined(Acquisition, :prepare_signal_for_dbzp)
+const _signal_factor = _requires_dbzp ? 2 : 1
+
 function _make_acq_plan(system, num_samples, sampling_freq, buffer_eltype; prns = 1:32)
     if _supports_eltype
         AcquisitionPlan(
@@ -86,7 +90,7 @@ for num_samples in CPU_SAMPLE_SIZES
     for num_prns in CPU_PRN_COUNTS
         prns = 1:num_prns
         system = GPSL1()
-        signal = _make_signal(2 * num_samples, Float32)
+        signal = _make_signal(_signal_factor * num_samples, Float32)
         plan = _make_acq_plan(system, num_samples, CPU_SAMPLING_FREQ, Float32; prns = 1:32)
 
         CPU_SUITE["Acquire"]["$(num_samples)_samples"]["$(num_prns)_prns"] =
@@ -106,7 +110,7 @@ for num_samples in CPU_SAMPLE_SIZES
     for num_prns in CPU_PRN_COUNTS
         prns = 1:num_prns
         system = GPSL1()
-        signal = _make_signal(2 * num_samples, Float32)
+        signal = _make_signal(_signal_factor * num_samples, Float32)
         plan = _make_coarse_fine_plan(
             system,
             num_samples,
@@ -130,7 +134,7 @@ CPU_SUITE["Types"] = BenchmarkGroup()
 
 for signal_type in [Float32, Float64]
     system = GPSL1()
-    signal = _make_signal(2 * TYPE_BENCHMARK_SAMPLES, signal_type)
+    signal = _make_signal(_signal_factor * TYPE_BENCHMARK_SAMPLES, signal_type)
     plan = _make_acq_plan(
         system,
         TYPE_BENCHMARK_SAMPLES,
@@ -155,10 +159,13 @@ const _supports_noncoherent =
 if _supports_noncoherent
     CPU_SUITE["NonCoherent"] = BenchmarkGroup()
 
-    for multiplier in [2.0, 4.0]
+    for multiplier in [1.0, 2.0]
         system = GPSL1()
         bit_period_samples = ceil(Int, CPU_SAMPLING_FREQ / get_data_frequency(system))
-        num_samples = ceil(Int, multiplier * bit_period_samples)
+        # On master: signal = multiplier × bit_period, coherent length = bit_period
+        # With DBZP: signal = (multiplier+1) × bit_period, coherent length = bit_period/2
+        # Both produce the same number of non-coherent chunks
+        num_samples = ceil(Int, (multiplier + _signal_factor - 1) * bit_period_samples)
 
         plan =
             AcquisitionPlan(system, CPU_SAMPLING_FREQ; prns = 1:1, fft_flag = FFTW.MEASURE)

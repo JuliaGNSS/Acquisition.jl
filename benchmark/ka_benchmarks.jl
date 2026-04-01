@@ -46,7 +46,7 @@ for num_samples in KA_SAMPLE_SIZES
     for num_prns in KA_PRN_COUNTS
         prns = 1:num_prns
         system = GPSL1()
-        signal_cpu = _ka_make_signal(2 * num_samples)
+        signal_cpu = _ka_make_signal(_signal_factor * num_samples)
 
         plan = KAAcquisitionPlan(
             system,
