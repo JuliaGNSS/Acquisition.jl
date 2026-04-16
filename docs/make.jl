@@ -10,7 +10,7 @@ makedocs(
         prettyurls = get(ENV, "CI", nothing) == "true",
         canonical = "https://JuliaGNSS.github.io/Acquisition.jl",
         example_size_threshold = nothing,
-        size_threshold = 10 * 1024 * 1024,
+        size_threshold = 50 * 1024 * 1024,
     ),
     pages = [
         "Home" => "index.md",

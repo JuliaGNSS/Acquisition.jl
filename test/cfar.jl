@@ -30,25 +30,23 @@ end
 
 @testset "CFAR detection with synthetic signal" begin
     system = GPSL1()
+    prn = 1
 
     # Generate signal with known satellite
-    (; signal, doppler, code_phase, prn, sampling_freq, interm_freq, CN0) =
-        generate_test_signal(system, 1)
+    (; signal, sampling_freq, interm_freq) = generate_test_signal(system, prn)
 
     # Acquire all PRNs
-    results = acquire(system, signal, sampling_freq, 1:32; interm_freq)
+    results = acquire(system, signal, sampling_freq, collect(1:32); interm_freq)
 
-    # Compute CFAR threshold
-    num_cells = size(results[1].power_bins, 1) * size(results[1].power_bins, 2)
-    threshold = cfar_threshold(0.01, num_cells)
+    threshold = cfar_threshold(0.01, get_num_cells(results[1]))
 
     # The signal PRN should be detected
-    signal_result = results[prn]
+    signal_result = only(filter(r -> r.prn == prn, results))
     @test signal_result.peak_to_noise_ratio > threshold
 
     # Most noise-only PRNs should NOT exceed the threshold
-    noise_prns = filter(r -> r.prn != prn, results)
-    num_false_alarms = count(r -> r.peak_to_noise_ratio > threshold, noise_prns)
+    noise_results = filter(r -> r.prn != prn, results)
+    num_false_alarms = count(r -> r.peak_to_noise_ratio > threshold, noise_results)
     # pfa=0.01 is per-PRN (each has its own search grid), so expect very few false alarms
     @test num_false_alarms <= 3
 end

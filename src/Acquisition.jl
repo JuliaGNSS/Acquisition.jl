@@ -1,23 +1,18 @@
 module Acquisition
 
 using DocStringExtensions,
-    GNSSSignals, RecipesBase, FFTW, Statistics, LinearAlgebra, LoopVectorization, Unitful,
+    GNSSSignals, RecipesBase, FFTW, Statistics, LinearAlgebra, Unitful,
     SpecialFunctions, Random
 
 import Unitful: s, Hz, dB
 using Unitful: ustrip, Gain
-using AbstractFFTs: fft
-using Scratch: @get_scratch!
 using PrettyTables: pretty_table, TextHighlighter
 
 export acquire,
-    coarse_fine_acquire,
-    coarse_fine_acquire!,
     acquire!,
+    plan_acquire,
     AcquisitionPlan,
-    CoarseFineAcquisitionPlan,
     AcquisitionResults,
-    KAAcquisitionPlan,
     cfar_threshold,
     get_num_cells,
     is_detected,
@@ -41,8 +36,10 @@ Results from GNSS signal acquisition for a single PRN.
     (`peak_power / noise_power`). Compare against [`cfar_threshold`](@ref) to decide
     if a satellite is present.
   - `num_noncoherent_integrations::Int`: Number of non-coherent integrations performed
-  - `power_bins::Matrix{T}`: Correlation power over code phase and Doppler (for plotting)
+  - `power_bins::Matrix{T}`: Correlation power over Doppler × code phase (for plotting)
   - `dopplers`: Doppler frequencies searched
+  - `num_blocks::Int`: FM-DBZP number of blocks per code period
+  - `block_size::Int`: FM-DBZP samples per block
 
 # Plotting
 
@@ -50,13 +47,13 @@ Results from GNSS signal acquisition for a single PRN.
 
 ```julia
 using Plots
-plot(result)  # 3D surface plot of correlation power
+plot(result)  # heatmap of correlation power (chip-axis sorted)
 plot(result, true)  # Use log scale (dB)
 ```
 
 # See also
 
-[`acquire`](@ref), [`coarse_fine_acquire`](@ref)
+[`acquire`](@ref), [`plan_acquire`](@ref)
 """
 struct AcquisitionResults{S<:AbstractGNSS,T,D<:AbstractRange}
     system::S
@@ -68,17 +65,19 @@ struct AcquisitionResults{S<:AbstractGNSS,T,D<:AbstractRange}
     noise_power::T
     peak_to_noise_ratio::T
     num_noncoherent_integrations::Int
-    power_bins::Matrix{T}
+    power_bins::Union{Matrix{T}, Nothing}
     dopplers::D
+    num_blocks::Int
+    block_size::Int
 end
 
 """
     get_num_cells(result::AcquisitionResults) -> Int
 
-Return the number of search cells (code phases × Doppler bins) in the acquisition
+Return the number of search cells (Doppler bins × code phases) in the acquisition
 result. This is the `num_cells` argument expected by [`cfar_threshold`](@ref).
 """
-get_num_cells(result::AcquisitionResults) = size(result.power_bins, 1) * size(result.power_bins, 2)
+get_num_cells(result::AcquisitionResults) = length(result.dopplers) * result.num_blocks * result.block_size
 
 """
     is_detected(result::AcquisitionResults; pfa=0.01) -> Bool
@@ -132,13 +131,12 @@ function Base.show(
     pretty_table(io, data; column_labels = column_labels, highlighters = highlighters)
 end
 
-include("plan_acquire.jl")
-include("downconvert.jl")
-include("plot.jl")
-include("calc_powers.jl")
 include("est_signal_noise_power.jl")
 include("cfar.jl")
+include("plan.jl")
+include("coherent_integration.jl")
+include("noncoherent_integration.jl")
 include("acquire.jl")
-include("ka_acquire.jl")
+include("plot.jl")
 include("generate_test_signal.jl")
 end
