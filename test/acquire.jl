@@ -134,6 +134,22 @@ end
     @test r2.code_phase ≈ gen2.code_phase atol = 2.0
 end
 
+@testset "_acquire_step_threaded! — threaded path runs correctly" begin
+    system = GPSL1()
+    sampling_freq = 2.048e6Hz
+    plan = plan_acquire(system, sampling_freq, [1, 2]; fft_flag = FFTW.ESTIMATE)
+    (; signal, code_phase) = generate_test_signal(system, 1;
+        num_samples = plan.samples_per_code, sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
+    plan.sig_buf .= ComplexF32.(signal)
+    for prn_idx in eachindex(plan.avail_prns)
+        fill!(plan.noncoherent_integration_matrices[prn_idx], 0f0)
+    end
+    Acquisition._acquire_step_threaded!(plan, collect(plan.avail_prns), 0)
+    # PRN 1 should have a peak; just verify noncoherent matrix was filled
+    @test maximum(plan.noncoherent_integration_matrices[1]) > 0
+    @test maximum(plan.noncoherent_integration_matrices[2]) > 0
+end
+
 @testset "acquire! — PRN not in plan throws ArgumentError" begin
     system = GPSL1()
     sampling_freq = 2.048e6Hz
