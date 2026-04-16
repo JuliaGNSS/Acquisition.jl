@@ -4,34 +4,26 @@ version = "1.7.1"
 authors = ["Soeren Schoenbrod <soeren.schoenbrod@nav.rwth-aachen.de>"]
 
 [deps]
-AbstractFFTs = "621f4979-c628-5d54-868e-fcf4e3e8185c"
 DocStringExtensions = "ffbed154-4ef7-542d-bbb7-c09d3a79fcae"
 FFTW = "7a1cc6ca-52ef-59f5-83cd-3a7055c09341"
 GNSSSignals = "52c80523-2a4e-5c38-8979-05588f836870"
-KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
-LoopVectorization = "bdcacae8-1622-11e9-2a5c-532679323890"
 PrettyTables = "08abe8d2-0d0c-5749-adfa-8a2ac140af0d"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 RecipesBase = "3cdcf5f2-1ef4-517c-9805-6587b60abb01"
-Scratch = "6c6a2e73-6563-6170-7368-637461726353"
 SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 
 [compat]
-AbstractFFTs = "1"
 Aqua = "0.8"
 DocStringExtensions = "0.6, 0.7, 0.8, 0.9"
 FFTW = "1.0"
 GNSSSignals = "0.17, 1.0.0"
-KernelAbstractions = "0.9.39"
 LinearAlgebra = "1"
-LoopVectorization = "0.12"
 PrettyTables = "3.2"
 Random = "1"
 RecipesBase = "1.0"
-Scratch = "1"
 SpecialFunctions = "2"
 Statistics = "1"
 Test = "1"
@@ -40,8 +32,7 @@ julia = "1.10"
 
 [extras]
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
-Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Aqua", "Test", "Random"]
+test = ["Aqua", "Test"]
