@@ -1,6 +1,20 @@
 # test/plot.jl
 # Tests for src/plot.jl: _fmdbzp_column_to_tau, _fmdbzp_sort_by_chip, and the @recipe
 
+@testset "plot recipe — throws when power_bins is nothing" begin
+    system = GPSL1()
+    sampling_freq = 2.048e6Hz
+    prn = 1
+    plan = plan_acquire(system, sampling_freq, [prn]; fft_flag = FFTW.ESTIMATE)
+    (; signal) = generate_test_signal(system, prn;
+        num_samples = plan.samples_per_code, sampling_freq = sampling_freq,
+        interm_freq = 0.0Hz, CN0 = 45)
+    result = only(acquire!(plan, ComplexF32.(signal), [prn]))  # no store_power_bins
+
+    @test result.power_bins === nothing
+    @test_throws ArgumentError RecipesBase.apply_recipe(Dict{Symbol,Any}(), result)
+end
+
 @testset "_fmdbzp_column_to_tau — block-permuted column to delay" begin
     # With num_blocks=4, block_size=8 (samples_per_code=32):
     #   column c=0: r=0, fine=0 → mod(4-0,4)*8 + 0 = 0
