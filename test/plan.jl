@@ -55,6 +55,9 @@ end
         num_coherently_integrated_code_periods = 0)
     @test_throws ArgumentError plan_acquire(system, sampling_freq, [1];
         bit_edge_search_steps = 0)
+    # min_doppler_coverage > sampling_freq/2 → no valid divisor → ArgumentError
+    @test_throws ArgumentError plan_acquire(system, sampling_freq, [1];
+        min_doppler_coverage = 1.1e6Hz)
 end
 
 @testset "PRN FFT precomputation" begin
