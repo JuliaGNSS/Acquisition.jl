@@ -12,6 +12,52 @@ function _parabolic_interp(left::Real, peak::Real, right::Real)
     (right - left) / denom
 end
 
+function _acquire_prn!(plan::AcquisitionPlan, scratch, prn::Int, accumulation_step_index::Int)
+    prn_idx = findfirst(==(prn), plan.avail_prns)
+    prn_fft_matrix = plan.prn_conj_ffts[prn]
+
+    _build_coherent_integration_matrix!(
+        scratch.coherent_integration_matrix,
+        plan.sig_buf,
+        prn_fft_matrix,
+        plan.samples_per_code,
+        plan.num_blocks,
+        plan.block_size,
+        plan.num_coherently_integrated_code_periods,
+        scratch.double_block_buf,
+        scratch.corr_buf,
+        plan.double_block_fft_plan,
+        plan.double_block_bfft_plan,
+    )
+
+    _accumulate_noncoherent_integration_step!(
+        plan.noncoherent_integration_matrices[prn_idx],
+        scratch.coherent_integration_matrix,
+        plan,
+        scratch,
+        accumulation_step_index,
+    )
+end
+
+function _acquire_step_threaded!(plan::AcquisitionPlan, prns, accumulation_step_index::Int)
+    Threads.@threads for i in eachindex(prns)
+        prn = @inbounds prns[i]
+        scratch = plan.thread_scratch[Threads.threadid()]
+        _acquire_prn!(plan, scratch, prn, accumulation_step_index)
+    end
+end
+
+function _acquire_step!(plan::AcquisitionPlan, prns, accumulation_step_index::Int)
+    if length(prns) > 1 && Threads.nthreads() > 1
+        _acquire_step_threaded!(plan, prns, accumulation_step_index)
+    else
+        scratch = plan.thread_scratch[Threads.threadid()]
+        for prn in prns
+            _acquire_prn!(plan, scratch, prn, accumulation_step_index)
+        end
+    end
+end
+
 """
     acquire!(plan::AcquisitionPlan, signal, prns; interm_freq=0.0Hz, subsample_interpolation=false) -> Vector{AcquisitionResults}
 
@@ -85,37 +131,12 @@ function acquire!(
             end
         end
 
-        Threads.@threads for prn in collect(prns)
-            prn_idx = findfirst(==(prn), plan.avail_prns)
-            prn_fft_matrix = plan.prn_conj_ffts[prn]
-            scratch = plan.thread_scratch[Threads.threadid()]
-
-            _build_coherent_integration_matrix!(
-                scratch.coherent_integration_matrix,
-                plan.sig_buf,
-                prn_fft_matrix,
-                plan.samples_per_code,
-                plan.num_blocks,
-                plan.block_size,
-                plan.num_coherently_integrated_code_periods,
-                scratch.double_block_buf,
-                scratch.corr_buf,
-                plan.double_block_fft_plan,
-                plan.double_block_bfft_plan,
-            )
-
-            _accumulate_noncoherent_integration_step!(
-                plan.noncoherent_integration_matrices[prn_idx],
-                scratch.coherent_integration_matrix,
-                plan,
-                scratch,
-                step_idx - 1,  # 0-based accumulation step index
-            )
-        end
+        _acquire_step!(plan, prns, step_idx - 1)
     end
 
-    # Build results
-    results = Vector{AcquisitionResults}(undef, length(prns))
+    # Build results into pre-allocated buffer (concrete-typed to avoid boxing).
+    # resize! to the requested PRN count is non-allocating when shrinking.
+    results = resize!(plan.acq_results_buf, length(prns))
     for (result_idx, prn) in enumerate(prns)
         prn_idx = findfirst(==(prn), plan.avail_prns)
         power_bins = plan.noncoherent_integration_matrices[prn_idx]

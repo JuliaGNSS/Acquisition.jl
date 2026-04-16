@@ -26,7 +26,7 @@ Pre-computed acquisition plan for FM-DBZP (Heckler & Garrison 2009).
 
 See [`plan_acquire`](@ref) and [`acquire`](@ref).
 """
-struct AcquisitionPlan{S<:AbstractGNSS,DS,P1,P2,P3}
+struct AcquisitionPlan{S<:AbstractGNSS,DS,P1,P2,P3,R}
     system::S
     sampling_freq::typeof(1.0Hz)
     samples_per_code::Int       # paper N_τ  — samples per code period
@@ -64,6 +64,8 @@ struct AcquisitionPlan{S<:AbstractGNSS,DS,P1,P2,P3}
     avail_prns::Vector{Int}
     # Per-thread scratch, indexed by Threads.threadid() (length = nthreads at plan_acquire time)
     thread_scratch::Vector{AcquisitionScratch}
+    # Pre-allocated results buffer, concrete-typed to avoid boxing allocations
+    acq_results_buf::Vector{R}
 end
 
 """
@@ -274,6 +276,14 @@ function plan_acquire(
         for _ in 1:nthreads
     ]
 
+    avail_prns_vec = collect(Int, prns)
+
+    # Pre-allocate concrete-typed results buffer to avoid boxing allocations in acquire!
+    dummy_result = AcquisitionResults(
+        system, 0, convert(typeof(1.0Hz), sampling_freq), 0.0Hz, 0.0, 0.0,
+        0f0, 0f0, 0, nothing, doppler_freqs, num_blocks, block_size)
+    acq_results_buf = Vector{typeof(dummy_result)}(undef, length(prns))
+
     return AcquisitionPlan(
         system, convert(typeof(1.0Hz), sampling_freq),
         samples_per_code, num_blocks, block_size, num_coherently_integrated_code_periods, num_data_bits, bit_edge_search_steps, num_noncoherent_accumulations,
@@ -284,7 +294,8 @@ function plan_acquire(
         coherent_integration_matrix, noncoherent_integration_max_buf, noncoherent_integration_buf, sub_block_ffts,
         noncoherent_integration_matrices, fftshift_perm, col_sums_buf,
         result_buffers,
-        collect(Int, prns),
+        avail_prns_vec,
         thread_scratch,
+        acq_results_buf,
     )
 end
