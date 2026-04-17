@@ -145,7 +145,6 @@ function acquire!(
             power_bins,
             sampling_freq_hz,
             ustrip(Hz, get_code_frequency(plan.system)),
-            nothing,
             plan.col_sums_buf,
         )
 
