@@ -238,7 +238,7 @@ The window spans whole data bit periods. Two constraints apply:
 The algorithm searches all `2^(num_data_bits - 1)` sign-flip combinations across
 the data bits in the window.
 
-**Pilot channels** (e.g. GPS L5, Galileo E1): no data bit constraint; set
+**Pilot channels** (e.g. GPS L5-Q, Galileo E1-C): no data bit constraint; set
 `num_coherently_integrated_code_periods` freely.
 
 ### Sub-sample Interpolation
