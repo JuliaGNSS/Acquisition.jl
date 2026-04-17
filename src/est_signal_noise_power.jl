@@ -46,12 +46,10 @@ function _noise_from_colsums(col_sums::Vector{T}, nrows::Int, max_ccol::Int, sam
     (total - excl) / T((ncols - n_excl) * nrows)
 end
 
-# Hot path: called from acquire! with pre-allocated col_sums buffer and noise_power=nothing
 function est_signal_noise_power(
     power_bins::AbstractMatrix{T},
     sampling_freq,
     code_freq,
-    ::Nothing,
     col_sums::Vector{T},
 ) where {T<:AbstractFloat}
     samples_per_chip = floor(Int, sampling_freq / code_freq)
@@ -60,18 +58,4 @@ function est_signal_noise_power(
     noise_power  = _noise_from_colsums(col_sums, nrows, max_ccol, samples_per_chip)
     signal_power = max_val - noise_power
     signal_power, noise_power, max_ccol, max_drow
-end
-
-# Convenience fallback: allocates col_sums (used in tests and one-off calls)
-function est_signal_noise_power(power_bins, sampling_freq, code_freq, noise_power_in)
-    T = eltype(power_bins)
-    col_sums = zeros(T, size(power_bins, 2))
-    if isnothing(noise_power_in)
-        est_signal_noise_power(power_bins, sampling_freq, code_freq, nothing, col_sums)
-    else
-        max_val, max_drow, max_ccol = _findmax_and_colsums!(col_sums, power_bins)
-        noise_power  = T(noise_power_in)
-        signal_power = max_val - noise_power
-        signal_power, noise_power, max_ccol, max_drow
-    end
 end
