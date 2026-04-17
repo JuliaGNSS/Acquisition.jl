@@ -40,10 +40,18 @@ function _acquire_prn!(plan::AcquisitionPlan, scratch, prn::Int, accumulation_st
 end
 
 function _acquire_step_threaded!(plan::AcquisitionPlan, prns, accumulation_step_index::Int)
-    Threads.@threads for i in eachindex(prns)
-        prn = @inbounds prns[i]
+    # Chunk PRNs across threads to reduce task-scheduling overhead.
+    # With 32 PRNs and 8 threads this creates 8 tasks of 4 PRNs each,
+    # rather than 32 tasks with per-task dispatch cost.
+    nt = Threads.nthreads()
+    chunk_size = cld(length(prns), nt)
+    Threads.@threads for chunk_start in 1:chunk_size:length(prns)
+        chunk_end = min(chunk_start + chunk_size - 1, length(prns))
         scratch = plan.thread_scratch[Threads.threadid()]
-        _acquire_prn!(plan, scratch, prn, accumulation_step_index)
+        for idx in chunk_start:chunk_end
+            prn = @inbounds prns[idx]
+            _acquire_prn!(plan, scratch, prn, accumulation_step_index)
+        end
     end
 end
 
