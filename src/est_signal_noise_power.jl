@@ -1,4 +1,4 @@
-# power_bins layout: (num_doppler_bins, samples_per_code)
+# power_bins layout: (num_doppler_bins, num_code_phase_bins)
 #   rows = Doppler bins, columns = code phase bins
 #
 # Single-pass strategy:
@@ -6,44 +6,49 @@
 #   Pass 2 — scan col_sums: total minus exclusion zone around peak column.
 # This avoids two separate partial-range scans over the full matrix.
 #
-# Returns: (signal_power, noise_power, code_bin_idx, doppler_bin_idx)
+# Returns: (signal_power, noise_power, code_phase_bin, doppler_bin)
 
 function _findmax_and_colsums!(col_sums::Vector{T}, power_bins::AbstractMatrix{T}) where {T<:AbstractFloat}
-    nrows, ncols = size(power_bins)
-    max_val  = power_bins[1, 1]
-    max_drow = 1
-    max_ccol = 1
-    @inbounds for c in 1:ncols
-        cs = zero(T)
-        for r in 1:nrows
+    num_doppler_bins, num_code_phase_bins = size(power_bins)
+    peak_power           = power_bins[1, 1]
+    peak_doppler_bin     = 1
+    peak_code_phase_bin  = 1
+    @inbounds for c in 1:num_code_phase_bins
+        col_sum = zero(T)
+        for r in 1:num_doppler_bins
             v = power_bins[r, c]
-            cs += v
-            if v > max_val
-                max_val  = v
-                max_drow = r
-                max_ccol = c
+            col_sum += v
+            if v > peak_power
+                peak_power          = v
+                peak_doppler_bin    = r
+                peak_code_phase_bin = c
             end
         end
-        col_sums[c] = cs
+        col_sums[c] = col_sum
     end
-    max_val, max_drow, max_ccol
+    peak_power, peak_doppler_bin, peak_code_phase_bin
 end
 
-function _noise_from_colsums(col_sums::Vector{T}, nrows::Int, max_ccol::Int, samples_per_chip::Int) where {T<:AbstractFloat}
-    ncols   = length(col_sums)
-    excl_lo = max(1, max_ccol - samples_per_chip)
-    excl_hi = min(ncols, max_ccol + samples_per_chip)
-    n_excl  = excl_hi - excl_lo + 1
-    total = zero(T)
-    excl  = zero(T)
-    @inbounds for c in 1:ncols
-        cs = col_sums[c]
-        total += cs
-        if excl_lo <= c <= excl_hi
-            excl += cs
+function _noise_from_colsums(
+    col_sums::Vector{T},
+    num_doppler_bins::Int,
+    peak_code_phase_bin::Int,
+    samples_per_chip::Int,
+) where {T<:AbstractFloat}
+    num_code_phase_bins = length(col_sums)
+    excl_col_lo   = max(1, peak_code_phase_bin - samples_per_chip)
+    excl_col_hi   = min(num_code_phase_bins, peak_code_phase_bin + samples_per_chip)
+    num_excl_cols = excl_col_hi - excl_col_lo + 1
+    total_power = zero(T)
+    excl_power  = zero(T)
+    @inbounds for c in 1:num_code_phase_bins
+        col_sum = col_sums[c]
+        total_power += col_sum
+        if excl_col_lo <= c <= excl_col_hi
+            excl_power += col_sum
         end
     end
-    (total - excl) / T((ncols - n_excl) * nrows)
+    (total_power - excl_power) / T((num_code_phase_bins - num_excl_cols) * num_doppler_bins)
 end
 
 function est_signal_noise_power(
@@ -53,9 +58,10 @@ function est_signal_noise_power(
     col_sums::Vector{T},
 ) where {T<:AbstractFloat}
     samples_per_chip = floor(Int, sampling_freq / code_freq)
-    nrows = size(power_bins, 1)
-    max_val, max_drow, max_ccol = _findmax_and_colsums!(col_sums, power_bins)
-    noise_power  = _noise_from_colsums(col_sums, nrows, max_ccol, samples_per_chip)
-    signal_power = max_val - noise_power
-    signal_power, noise_power, max_ccol, max_drow
+    num_doppler_bins = size(power_bins, 1)
+    peak_power, peak_doppler_bin, peak_code_phase_bin =
+        _findmax_and_colsums!(col_sums, power_bins)
+    noise_power  = _noise_from_colsums(col_sums, num_doppler_bins, peak_code_phase_bin, samples_per_chip)
+    signal_power = peak_power - noise_power
+    signal_power, noise_power, peak_code_phase_bin, peak_doppler_bin
 end
