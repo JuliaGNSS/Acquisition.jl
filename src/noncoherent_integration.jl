@@ -139,10 +139,23 @@ function _accumulate_noncoherent_integration_step!(
     noncoherent_integration_buf = scratch.noncoherent_integration_buf
 
     if plan.num_data_bits == 1 && plan.bit_edge_search_steps == 1
-        # Pilot channel or no bit edge search requested: fast path, single column FFT
+        # Pilot channel or no bit edge search requested: fast path
         fill!(noncoherent_integration_buf, 0.0f0)
-        _accumulate_noncoherent_integration_pilot!(noncoherent_integration_buf, coherent_integration_matrix, scratch.col_buf,
-            plan.col_fft_plan, plan.samples_per_code)
+        if num_doppler_bins <= 320
+            # Batched column FFT: FFT all columns at once along dim 1 (in-place on CIM).
+            # Faster than individual column FFTs when num_doppler_bins is small because
+            # it amortises FFTW plan-dispatch overhead across all columns.
+            mul!(coherent_integration_matrix, plan.col_batch_fft_plan, coherent_integration_matrix)
+            @inbounds for col_idx in 1:plan.samples_per_code
+                for doppler_bin in 1:num_doppler_bins
+                    noncoherent_integration_buf[doppler_bin, col_idx] += abs2(coherent_integration_matrix[doppler_bin, col_idx])
+                end
+            end
+        else
+            # Individual column FFTs: better cache utilisation for large num_doppler_bins.
+            _accumulate_noncoherent_integration_pilot!(noncoherent_integration_buf, coherent_integration_matrix, scratch.col_buf,
+                plan.col_fft_plan, plan.samples_per_code)
+        end
         _apply_code_drift!(noncoherent_integration_buf, plan, scratch, accumulation_step_index)
         # Apply fftshift permutation once: scatter natural-order rows into sorted Doppler order
         fftshift_perm = plan.fftshift_perm

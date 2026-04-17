@@ -26,7 +26,7 @@ Pre-computed acquisition plan for FM-DBZP (Heckler & Garrison 2009).
 
 See [`plan_acquire`](@ref) and [`acquire`](@ref).
 """
-struct AcquisitionPlan{S<:AbstractGNSS,DS,P1,P2,P3,R}
+struct AcquisitionPlan{S<:AbstractGNSS,DS,P1,P2,P3,P4,R}
     system::S
     sampling_freq::typeof(1.0Hz)
     samples_per_code::Int       # paper N_τ  — samples per code period
@@ -43,6 +43,7 @@ struct AcquisitionPlan{S<:AbstractGNSS,DS,P1,P2,P3,R}
     double_block_fft_plan::P1   # in-place forward FFT, size double_block_size
     double_block_bfft_plan::P2  # in-place backward FFT (unnormalised), size double_block_size
     col_fft_plan::P3            # in-place forward FFT, size num_doppler_bins = num_coherently_integrated_code_periods*num_blocks
+    col_batch_fft_plan::P4      # in-place forward FFT along dim 1 of (num_doppler_bins, samples_per_code) matrix
     # doppler_freqs: StepRangeLen of num_doppler_bins Hz values, sorted from -doppler_coverage_hz/2 to doppler_coverage_hz/2-doppler_bin_spacing_hz
     doppler_freqs::DS
     # Pre-allocated buffers for thread 1 / single-threaded use (reused across calls)
@@ -226,6 +227,14 @@ function plan_acquire(
     double_block_bfft_plan = plan_bfft!(double_block_proto; flags = fft_flag)
     col_proto = zeros(ComplexF32, num_doppler_bins)
     col_fft_plan = plan_fft!(col_proto; flags = fft_flag)
+    # Batched column FFT plan: only allocate when num_doppler_bins is small enough
+    # that the batched approach outperforms individual column FFTs (crossover ~320).
+    col_batch_fft_plan = if num_doppler_bins <= 320
+        col_batch_proto = zeros(ComplexF32, num_doppler_bins, samples_per_code)
+        plan_fft!(col_batch_proto, 1; flags = fft_flag)
+    else
+        col_fft_plan  # placeholder; not used when num_doppler_bins > 320
+    end
 
     # Precompute conjugated PRN FFTs
     prn_conj_ffts = Dict{Int,Matrix{ComplexF32}}()
@@ -288,7 +297,7 @@ function plan_acquire(
         system, convert(typeof(1.0Hz), sampling_freq),
         samples_per_code, num_blocks, block_size, num_coherently_integrated_code_periods, num_data_bits, bit_edge_search_steps, num_noncoherent_accumulations,
         prn_conj_ffts,
-        double_block_fft_plan, double_block_bfft_plan, col_fft_plan,
+        double_block_fft_plan, double_block_bfft_plan, col_fft_plan, col_batch_fft_plan,
         doppler_freqs,
         double_block_buf, corr_buf, sig_buf, col_buf, col_fftshift_buf, row_buf, row_shift_buf,
         coherent_integration_matrix, noncoherent_integration_max_buf, noncoherent_integration_buf, sub_block_ffts,
