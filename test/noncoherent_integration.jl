@@ -236,6 +236,11 @@ end
     # At CN0=30 dB-Hz with 10ms coherent integration, M=1 rarely detects (~5%) but
     # M=8 almost always detects (>95%).  The CFAR threshold automatically adjusts for
     # M via num_noncoherent_integrations stored in the result, keeping P_fa ≈ pfa.
+    #
+    # Seed the global RNG so the noise arrays used for the false-alarm measurement
+    # (below) are reproducible. Signal generation already takes explicit `seed=`
+    # arguments; the noise calls use randn() which reads the global RNG.
+    Random.seed!(20260423)
     system = GPSL1()
     sampling_freq = 2.048e6Hz
     prn = 1
