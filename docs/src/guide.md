@@ -52,6 +52,38 @@ detected = filter(r -> is_detected(r; pfa = 0.001), results)
 Under the hood, this compares each result's `peak_to_noise_ratio` against a
 CFAR (Constant False Alarm Rate) threshold computed by [`cfar_threshold`](@ref).
 
+### CFAR Threshold — How It Works
+
+The detector uses the statistic
+
+```
+peak_to_noise_ratio = peak_power / noise_power
+```
+
+Under the null hypothesis (noise only), the peak across
+`num_cells = num_doppler_bins × num_code_phases` search cells follows a scaled
+chi-squared distribution with `2M` degrees of freedom, where `M` is the number
+of non-coherent accumulations stored in the result. [`cfar_threshold`](@ref)
+returns the quantile of that distribution at the requested per-grid false alarm
+probability, using a Bonferroni-like correction across `num_cells`:
+
+```@example guide
+threshold = cfar_threshold(0.01, get_num_cells(result); num_noncoherent_integrations = 1)
+```
+
+`is_detected(result; pfa)` takes care of both arguments for you — it reads
+`num_cells` and `num_noncoherent_integrations` directly from the result — so
+you only need [`cfar_threshold`](@ref) when you want to inspect the threshold
+separately (e.g. for plotting or custom logic).
+
+Choosing `pfa`:
+
+- `pfa = 0.01` (the default) is a reasonable starting point for a cold acquire.
+- Lower values (`1e-4`, `1e-6`) are typical when a false track is expensive —
+  the threshold rises modestly because the chi-squared tail is steep.
+- Only the *ratio* matters: the threshold is independent of the absolute noise
+  power, so it works unchanged at any CN0 and any sampling frequency.
+
 ## Using Acquisition Plans
 
 For repeated acquisitions — e.g. tracking many epochs or processing a file — pre-compute
@@ -293,9 +325,31 @@ the data bits in the window.
 
 ### Sub-sample Interpolation
 
-By default, code phase and Doppler estimates are quantised to the grid resolution.
-Enable parabolic interpolation to refine both below the grid spacing:
+By default, code phase and Doppler estimates are quantised to the search grid:
+
+- Code-phase step = `1 / sampling_freq` in seconds (0.25 µs at 4 MHz ≈ 0.25 chips for GPS L1 C/A).
+- Doppler step = `1 / T_coh` (see the [Doppler Resolution and Coverage](#Doppler-Resolution-and-Coverage) table).
+
+Pass `subsample_interpolation = true` to refine both below the grid spacing
+using a parabolic fit across the peak bin and its two neighbours:
+
+```@example guide
+result_interp = acquire(system, signal, sampling_freq, 1;
+    interm_freq, subsample_interpolation = true)
+```
+
+The fit is only applied when the neighbouring bins exceed `√noise_power`
+(so it doesn't chase noise on non-detections), and it costs four extra
+array reads per PRN — negligible compared to the acquisition itself.
+
+### Storing the Power Surface
+
+Pass `store_power_bins = true` to keep the full Doppler × code-phase
+correlation matrix in the returned result. It's required for plotting
+(see [Plotting Results](#Plotting-Results)) and useful for post-hoc analysis;
+without it the `power_bins` field is `nothing` and the plan's internal buffer
+is reused across calls to keep acquisitions allocation-free.
 
 ```julia
-result = acquire!(plan, signal, prns; subsample_interpolation = true)
+result = acquire!(plan, signal, [1]; store_power_bins = true)
 ```

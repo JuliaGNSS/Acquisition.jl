@@ -59,7 +59,7 @@ function _acquire_step!(plan::AcquisitionPlan, prns, accumulation_step_index::In
 end
 
 """
-    acquire!(plan::AcquisitionPlan, signal, prns; interm_freq=0.0Hz, subsample_interpolation=false) -> Vector{AcquisitionResults}
+    acquire!(plan::AcquisitionPlan, signal, prns; interm_freq=0.0Hz, subsample_interpolation=false, store_power_bins=false) -> Vector{AcquisitionResults}
 
 Perform FM-DBZP acquisition using a pre-computed [`AcquisitionPlan`](@ref).
 
@@ -77,6 +77,9 @@ pass.
   - `interm_freq`: Intermediate frequency (default: `0.0Hz`)
   - `subsample_interpolation`: When `true`, apply parabolic interpolation to refine
     the code phase and Doppler estimates below the grid resolution (default: `false`)
+  - `store_power_bins`: When `true`, copy the full Doppler × code-phase correlation
+    power matrix into each result's `power_bins` field (required for plotting).
+    When `false`, `power_bins` is `nothing` and no extra copy is made (default: `false`)
 
 # Returns
 
@@ -252,6 +255,8 @@ Convenience wrapper: calls [`plan_acquire`](@ref) then [`acquire!`](@ref).
 
   - `interm_freq`: Intermediate frequency (default: `0.0Hz`)
   - `subsample_interpolation`: Enable parabolic interpolation (default: `false`)
+  - `store_power_bins`: Retain the full correlation power surface in each result
+    for plotting (default: `false`)
 
 # Returns
 
