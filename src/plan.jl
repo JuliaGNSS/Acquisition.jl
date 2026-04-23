@@ -1,11 +1,14 @@
 # src/plan.jl
 
-"""
-    AcquisitionScratch
+# Crossover above which individual column FFTs beat a batched 2-D FFT along dim 1.
+# Batched wins for small num_doppler_bins (amortises FFTW dispatch across columns);
+# per-column wins for large num_doppler_bins (better cache behaviour).
+# Reproduce/re-tune via `SUITE["BatchFFTCrossover"]` in benchmark/benchmarks.jl.
+const BATCH_FFT_THRESHOLD = 320
 
-Per-thread mutable scratch buffers used during acquisition.
-Allocated once per thread in `plan_acquire` to enable multi-threaded PRN processing.
-"""
+# Per-thread mutable scratch buffers used during acquisition.
+# Allocated once per thread in `plan_acquire` to enable multi-threaded PRN processing.
+# Internal — not part of the public API.
 struct AcquisitionScratch
     double_block_buf::Vector{ComplexF32}            # length double_block_size
     corr_buf::Vector{ComplexF32}                    # length double_block_size
@@ -44,7 +47,7 @@ struct AcquisitionPlan{S<:AbstractGNSS,DS,P1,P2,P3,P4,R}
     double_block_fft_plan::P1   # in-place forward FFT, size double_block_size
     double_block_bfft_plan::P2  # in-place backward FFT (unnormalised), size double_block_size
     col_fft_plan::P3            # in-place forward FFT, size num_doppler_bins = num_coherently_integrated_code_periods*num_blocks
-    col_batch_fft_plan::P4      # in-place forward FFT along dim 1 of (num_doppler_bins, samples_per_code) matrix
+    col_batch_fft_plan::P4      # in-place forward FFT along dim 1 of (num_doppler_bins, samples_per_code) matrix; `nothing` when num_doppler_bins > BATCH_FFT_THRESHOLD
     # doppler_freqs: StepRangeLen of num_doppler_bins Hz values, sorted from -doppler_coverage_hz/2 to doppler_coverage_hz/2-doppler_bin_spacing_hz
     doppler_freqs::DS
     # Pre-allocated buffers for thread 1 / single-threaded use (reused across calls)
@@ -228,12 +231,13 @@ function plan_acquire(
     col_proto = zeros(ComplexF32, num_doppler_bins)
     col_fft_plan = plan_fft!(col_proto; flags = fft_flag)
     # Batched column FFT plan: only allocate when num_doppler_bins is small enough
-    # that the batched approach outperforms individual column FFTs (crossover ~320).
-    col_batch_fft_plan = if num_doppler_bins <= 320
+    # that the batched approach outperforms individual column FFTs (see BATCH_FFT_THRESHOLD).
+    # Above the threshold, store `nothing` — the non-batched path is used instead.
+    col_batch_fft_plan = if num_doppler_bins <= BATCH_FFT_THRESHOLD
         col_batch_proto = zeros(ComplexF32, num_doppler_bins, samples_per_code)
         plan_fft!(col_batch_proto, 1; flags = fft_flag)
     else
-        col_fft_plan  # placeholder; not used when num_doppler_bins > 320
+        nothing
     end
 
     # Precompute conjugated PRN FFTs
