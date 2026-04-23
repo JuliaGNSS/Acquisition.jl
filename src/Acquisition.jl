@@ -4,8 +4,8 @@ using DocStringExtensions,
     GNSSSignals, RecipesBase, FFTW, Statistics, LinearAlgebra, Unitful,
     SpecialFunctions, Random, Polyester
 
-import Unitful: s, Hz, dB
-using Unitful: ustrip, Gain
+import Unitful: Hz
+using Unitful: ustrip
 using PrettyTables: pretty_table, TextHighlighter
 
 export acquire,
