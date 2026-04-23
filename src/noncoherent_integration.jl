@@ -111,6 +111,32 @@ end
 _apply_code_drift!(buf::Matrix{Float32}, plan::AcquisitionPlan, accumulation_step_index::Int) =
     _apply_code_drift!(buf, plan, plan, accumulation_step_index)
 
+# Scatter `src` into `dst` applying fftshift row permutation (accumulating).
+# For even num_doppler_bins — the only case in practice — this is a top/bottom
+# half swap, which SIMDs. For odd N, fall back to the indexed scatter (the
+# permutation isn't a pure swap in that case).
+function _scatter_fftshift_accumulate!(dst::Matrix{Float32}, src::Matrix{Float32}, fftshift_perm::Vector{Int}, samples_per_code::Int)
+    num_doppler_bins = size(src, 1)
+    if iseven(num_doppler_bins)
+        half = num_doppler_bins ÷ 2
+        @inbounds for c in 1:samples_per_code
+            @simd for r in 1:half
+                dst[r, c]        += src[r + half, c]
+            end
+            @simd for r in 1:half
+                dst[r + half, c] += src[r, c]
+            end
+        end
+    else
+        @inbounds for c in 1:samples_per_code
+            for r in 1:num_doppler_bins
+                dst[fftshift_perm[r], c] += src[r, c]
+            end
+        end
+    end
+    return dst
+end
+
 """
     _accumulate_noncoherent_integration_step!(noncoherent_integration_matrix, coherent_integration_matrix, plan, m)
 
@@ -157,13 +183,7 @@ function _accumulate_noncoherent_integration_step!(
                 plan.col_fft_plan, plan.samples_per_code)
         end
         _apply_code_drift!(noncoherent_integration_buf, plan, scratch, accumulation_step_index)
-        # Apply fftshift permutation once: scatter natural-order rows into sorted Doppler order
-        fftshift_perm = plan.fftshift_perm
-        @inbounds for col_idx in 1:plan.samples_per_code
-            for doppler_bin in 1:num_doppler_bins
-                noncoherent_integration_matrix[fftshift_perm[doppler_bin], col_idx] += noncoherent_integration_buf[doppler_bin, col_idx]
-            end
-        end
+        _scatter_fftshift_accumulate!(noncoherent_integration_matrix, noncoherent_integration_buf, plan.fftshift_perm, plan.samples_per_code)
     else
         # Data channel or sub-bit with bit edge search: iterate over bit_edge_search_steps candidate
         # alignments. For sub-bit (num_data_bits==1), only one bit sign pattern exists so
@@ -181,13 +201,7 @@ function _accumulate_noncoherent_integration_step!(
             _apply_code_drift!(noncoherent_integration_buf, plan, scratch, accumulation_step_index)
             @. noncoherent_integration_max_buf = max(noncoherent_integration_max_buf, noncoherent_integration_buf)
         end
-        # Apply fftshift permutation once: scatter natural-order rows into sorted Doppler order
-        fftshift_perm = plan.fftshift_perm
-        @inbounds for col_idx in 1:plan.samples_per_code
-            for doppler_bin in 1:num_doppler_bins
-                noncoherent_integration_matrix[fftshift_perm[doppler_bin], col_idx] += noncoherent_integration_max_buf[doppler_bin, col_idx]
-            end
-        end
+        _scatter_fftshift_accumulate!(noncoherent_integration_matrix, noncoherent_integration_max_buf, plan.fftshift_perm, plan.samples_per_code)
     end
 end
 # Convenience wrapper for tests and single-threaded callers (scratch = plan itself)

@@ -9,22 +9,32 @@
 # Returns: (signal_power, noise_power, code_phase_bin, doppler_bin)
 
 function _findmax_and_colsums!(col_sums::Vector{T}, power_bins::AbstractMatrix{T}) where {T<:AbstractFloat}
+    # Two-pass, SIMD-friendly variant. The inner loop computes a column sum
+    # and column-wise max (both associative reductions, so @simd auto-vectorises),
+    # then we recover the peak row by scanning the single peak column.
     num_doppler_bins, num_code_phase_bins = size(power_bins)
-    peak_power           = power_bins[1, 1]
-    peak_doppler_bin     = 1
-    peak_code_phase_bin  = 1
+    peak_power          = power_bins[1, 1]
+    peak_code_phase_bin = 1
     @inbounds for c in 1:num_code_phase_bins
         col_sum = zero(T)
-        for r in 1:num_doppler_bins
+        col_max = power_bins[1, c]
+        @simd for r in 1:num_doppler_bins
             v = power_bins[r, c]
             col_sum += v
-            if v > peak_power
-                peak_power          = v
-                peak_doppler_bin    = r
-                peak_code_phase_bin = c
-            end
+            col_max = max(col_max, v)
         end
         col_sums[c] = col_sum
+        if col_max > peak_power
+            peak_power          = col_max
+            peak_code_phase_bin = c
+        end
+    end
+    peak_doppler_bin = 1
+    @inbounds for r in 1:num_doppler_bins
+        if power_bins[r, peak_code_phase_bin] == peak_power
+            peak_doppler_bin = r
+            break
+        end
     end
     peak_power, peak_doppler_bin, peak_code_phase_bin
 end

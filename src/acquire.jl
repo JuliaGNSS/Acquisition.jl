@@ -137,26 +137,30 @@ function acquire!(
     # Build results into pre-allocated buffer (concrete-typed to avoid boxing).
     # resize! to the requested PRN count is non-allocating when shrinking.
     results = resize!(plan.acq_results_buf, length(prns))
-    for (result_idx, prn) in enumerate(prns)
+    code_freq_hz = ustrip(Hz, get_code_frequency(plan.system))
+    code_length = get_code_length(plan.system)
+    code_period = code_length / get_code_frequency(plan.system)
+    num_doppler_bins = length(plan.doppler_freqs)
+    doppler_step = step(plan.doppler_freqs)
+    @batch per=core for result_idx in eachindex(prns)
+        prn = @inbounds prns[result_idx]
         prn_idx = findfirst(==(prn), plan.avail_prns)
         power_bins = plan.noncoherent_integration_matrices[prn_idx]
+        col_sums_buf = plan.thread_scratch[Threads.threadid()].col_sums_buf
 
         signal_power, noise_power, code_bin_idx, doppler_bin_idx = est_signal_noise_power(
             power_bins,
             sampling_freq_hz,
-            ustrip(Hz, get_code_frequency(plan.system)),
-            plan.col_sums_buf,
+            code_freq_hz,
+            col_sums_buf,
         )
 
         peak_to_noise = (signal_power + noise_power) / noise_power
-        code_period = get_code_length(plan.system) / get_code_frequency(plan.system)
         CN0 = 10 * log10(signal_power / noise_power / code_period / 1.0Hz)
 
         # Decode code phase from column index (0-indexed column → delay in samples)
         scrambled_col = code_bin_idx - 1  # convert to 0-indexed
         delay_samples = _fmdbzp_column_to_tau(scrambled_col, plan.num_blocks, plan.block_size)
-        code_freq_hz = ustrip(Hz, get_code_frequency(plan.system))
-        code_length = get_code_length(plan.system)
         code_phase = mod(-delay_samples * code_freq_hz / sampling_freq_hz, code_length)
 
         if subsample_interpolation
@@ -175,13 +179,12 @@ function acquire!(
 
         doppler = plan.doppler_freqs[doppler_bin_idx]
         if subsample_interpolation
-            num_doppler_bins = length(plan.doppler_freqs)
             dop_left  = power_bins[doppler_bin_idx == 1 ? num_doppler_bins : doppler_bin_idx - 1, code_bin_idx]
             dop_peak  = power_bins[doppler_bin_idx, code_bin_idx]
             dop_right = power_bins[doppler_bin_idx == num_doppler_bins ? 1 : doppler_bin_idx + 1, code_bin_idx]
             if max(dop_left, dop_right) > sqrt(noise_power)
                 fractional_doppler_offset = _parabolic_interp(dop_left, dop_peak, dop_right)
-                doppler = doppler + fractional_doppler_offset * step(plan.doppler_freqs)
+                doppler = doppler + fractional_doppler_offset * doppler_step
             end
         end
 

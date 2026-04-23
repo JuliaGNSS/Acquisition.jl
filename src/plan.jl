@@ -17,6 +17,7 @@ struct AcquisitionScratch
     noncoherent_integration_max_buf::Matrix{Float32}         # (num_doppler_bins, samples_per_code)
     noncoherent_integration_buf::Matrix{Float32}             # (num_doppler_bins, samples_per_code)
     sub_block_ffts::Matrix{ComplexF32}              # (num_doppler_bins, num_data_bits)
+    col_sums_buf::Vector{Float32}                   # length samples_per_code — scratch for est_signal_noise_power
 end
 
 """
@@ -60,7 +61,6 @@ struct AcquisitionPlan{S<:AbstractGNSS,DS,P1,P2,P3,P4,R}
     sub_block_ffts::Matrix{ComplexF32}    # (num_doppler_bins, num_data_bits) — scratch for _accumulate_noncoherent_integration_data_bits!
     noncoherent_integration_matrices::Vector{Matrix{Float32}}  # per PRN, (num_doppler_bins, samples_per_code); index i corresponds to avail_prns[i]
     fftshift_perm::Vector{Int}               # length num_doppler_bins — pre-computed fftshift row permutation
-    col_sums_buf::Vector{Float32}            # length samples_per_code — scratch for est_signal_noise_power
     result_buffers::Vector{Matrix{Float32}}  # per PRN, pre-allocated copy of power_bins for AcquisitionResults
     avail_prns::Vector{Int}
     # Per-thread scratch, indexed by Threads.threadid() (length = nthreads at plan_acquire time)
@@ -263,7 +263,6 @@ function plan_acquire(
     sub_block_ffts = zeros(ComplexF32, num_doppler_bins, num_data_bits)
     noncoherent_integration_matrices = [zeros(Float32, num_doppler_bins, samples_per_code) for _ in prns]
     fftshift_perm = [mod(r - 1 + num_doppler_bins ÷ 2, num_doppler_bins) + 1 for r in 1:num_doppler_bins]
-    col_sums_buf = zeros(Float32, samples_per_code)
     result_buffers = [zeros(Float32, num_doppler_bins, samples_per_code) for _ in prns]
 
     # Per-thread scratch: one entry per thread, indexed by Threads.threadid().
@@ -281,6 +280,7 @@ function plan_acquire(
             zeros(Float32, num_doppler_bins, samples_per_code),
             zeros(Float32, num_doppler_bins, samples_per_code),
             zeros(ComplexF32, num_doppler_bins, num_data_bits),
+            zeros(Float32, samples_per_code),
         )
         for _ in 1:nthreads
     ]
@@ -301,7 +301,7 @@ function plan_acquire(
         doppler_freqs,
         double_block_buf, corr_buf, sig_buf, col_buf, col_fftshift_buf, row_buf, row_shift_buf,
         coherent_integration_matrix, noncoherent_integration_max_buf, noncoherent_integration_buf, sub_block_ffts,
-        noncoherent_integration_matrices, fftshift_perm, col_sums_buf,
+        noncoherent_integration_matrices, fftshift_perm,
         result_buffers,
         avail_prns_vec,
         thread_scratch,
