@@ -161,3 +161,84 @@ end
     @test_throws ArgumentError acquire!(plan, signal, [3])
     @test_throws ArgumentError acquire!(plan, signal, [1, 5])
 end
+
+@testset "acquire! — single-PRN Integer convenience overload" begin
+    system = GPSL1()
+    sampling_freq = 2.048e6Hz
+    prn = 1
+
+    plan = plan_acquire(system, sampling_freq, [prn]; fft_flag = FFTW.ESTIMATE)
+    (; signal) = generate_test_signal(system, prn;
+        num_samples = plan.samples_per_code, sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
+
+    # Integer (not vector) argument hits the single-PRN acquire! overload
+    result = acquire!(plan, ComplexF32.(signal), prn; interm_freq = 0.0Hz)
+    @test result isa AcquisitionResults
+    @test result.prn == prn
+end
+
+@testset "AcquisitionResults show methods" begin
+    system = GPSL1()
+    sampling_freq = 2.048e6Hz
+
+    plan = plan_acquire(system, sampling_freq, [1, 2]; fft_flag = FFTW.ESTIMATE)
+    (; signal) = generate_test_signal(system, 1;
+        num_samples = plan.samples_per_code, sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
+    results = acquire!(plan, ComplexF32.(signal), [1, 2]; interm_freq = 0.0Hz)
+
+    # Single-result show: uses the (io, MIME"text/plain", AcquisitionResults) method
+    io = IOBuffer()
+    show(io, MIME"text/plain"(), results[1])
+    text = String(take!(io))
+    @test occursin("PRN 1", text)
+    @test occursin("CN0", text)
+    @test occursin("chips", text)
+
+    # Vector-of-results show: uses pretty_table path with color highlighter
+    io_color = IOContext(IOBuffer(), :color => true)
+    show(io_color, MIME"text/plain"(), results)
+    color_text = String(take!(io_color.io))
+    @test occursin("PRN", color_text)
+    @test occursin("CN0", color_text)
+
+    # Same path without color — hits the empty-highlighter branch
+    io_plain = IOContext(IOBuffer(), :color => false)
+    show(io_plain, MIME"text/plain"(), results)
+    plain_text = String(take!(io_plain.io))
+    @test occursin("PRN", plain_text)
+end
+
+@testset "acquire! — non-batched pilot path (num_doppler_bins > 320)" begin
+    system = GPSL1()
+    sampling_freq = 2.048e6Hz
+    prn = 1
+
+    # 40 ms coherent × min_doppler=10kHz forces num_blocks=16, num_doppler_bins=640,
+    # which takes the individual-column-FFT branch in _accumulate_noncoherent_integration_step!.
+    plan = plan_acquire(system, sampling_freq, [prn];
+        min_doppler_coverage = 10_000Hz,
+        num_coherently_integrated_code_periods = 40,
+        bit_edge_search_steps = 1,
+        fft_flag = FFTW.ESTIMATE)
+    @test plan.num_coherently_integrated_code_periods * plan.num_blocks > 320
+
+    (; signal) = generate_test_signal(system, prn;
+        num_samples = 40 * plan.samples_per_code,
+        sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
+
+    result = only(acquire!(plan, ComplexF32.(signal), [prn]; interm_freq = 0.0Hz))
+    @test result isa AcquisitionResults
+    @test is_detected(result)
+end
+
+@testset "generate_test_signal — unit_noise_power=true scales noise to ≈1" begin
+    system = GPSL1()
+
+    out = generate_test_signal(system, 1;
+        num_samples = 4096, sampling_freq = 4e6Hz,
+        unit_noise_power = true, CN0 = 45)
+    @test out.signal isa Vector{ComplexF64}
+    @test length(out.signal) == 4096
+    # Sanity: signal-plus-noise is finite and non-zero
+    @test all(isfinite, out.signal)
+end
