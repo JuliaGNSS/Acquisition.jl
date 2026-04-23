@@ -35,6 +35,7 @@ requirejs_pat = r"let plotlyloader = window\.document\.createElement\(\"script\"
 cdn_wrap_hits = cdn_after_hits = requirejs_hits = 0
 for (root, _, files) in walkdir(joinpath(@__DIR__, "build"))
     for file in filter(endswith(".html"), files)
+        global cdn_wrap_hits, cdn_after_hits, requirejs_hits
         path = joinpath(root, file)
         content = read(path, String)
         cdn_wrap_hits  += count(cdn_wrap_pat,  content)
