@@ -28,6 +28,13 @@ plan = plan_acquire(system, sampling_freq, 1:32)
 results = acquire!(plan, signal, 1:32; interm_freq)
 ```
 
+!!! tip "Pick a fast sampling frequency"
+    Acquisition performance depends strongly on the **prime factorization** of
+    `samples_per_code`. The commonly-cited 16.368 MHz GPS L1 rate is ~3× slower
+    than the nearby 16.384 MHz because of a radix-31 inner FFT.  See
+    [Sampling Frequency and FFT Performance](@ref) for the rule of thumb and a
+    table of measured timings.
+
 ## Algorithm Overview
 
 This library implements the **FM-DBZP** algorithm from Heckler & Garrison (2009), which performs simultaneous correlation across all code phases and Doppler bins using a two-dimensional FFT structure.
