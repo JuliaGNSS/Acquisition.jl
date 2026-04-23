@@ -167,7 +167,7 @@ function _accumulate_noncoherent_integration_step!(
     if plan.num_data_bits == 1 && plan.bit_edge_search_steps == 1
         # Pilot channel or no bit edge search requested: fast path
         fill!(noncoherent_integration_buf, 0.0f0)
-        if num_doppler_bins <= 320
+        if num_doppler_bins <= BATCH_FFT_THRESHOLD
             # Batched column FFT: FFT all columns at once along dim 1 (in-place on CIM).
             # Faster than individual column FFTs when num_doppler_bins is small because
             # it amortises FFTW plan-dispatch overhead across all columns.

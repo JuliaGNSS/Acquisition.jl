@@ -2,7 +2,7 @@ using Test, FFTW, Acquisition, GNSSSignals, Random, Aqua, Unitful, RecipesBase
 import Unitful: Hz
 
 @testset "Aqua" begin
-    Aqua.test_all(Acquisition; ambiguities=false)
+    Aqua.test_all(Acquisition)
 end
 
 include("est_signal_noise_power.jl")
