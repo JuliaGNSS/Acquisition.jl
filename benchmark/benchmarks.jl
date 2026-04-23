@@ -96,7 +96,7 @@ end
 
 SUITE["Acquire"] = BenchmarkGroup()
 
-for (fs, fs_label) in [(2.048e6Hz, "2.048MHz"), (16.368e6Hz, "16.368MHz")]
+for (fs, fs_label) in [(2.048e6Hz, "2.048MHz"), (5.0e6Hz, "5MHz")]
     SUITE["Acquire"][fs_label] = BenchmarkGroup()
 
     for N_ms in [1, 5, 10, 20]
