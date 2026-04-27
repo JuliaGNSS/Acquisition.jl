@@ -1,5 +1,114 @@
 # Changelog
 
+# [2.0.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v1.7.1...v2.0.0) (2026-04-27)
+
+
+* feat!: replace acquisition backend with FM-DBZP algorithm ([36f5717](https://github.com/JuliaGNSS/Acquisition.jl/commit/36f571763f94641a7bea5cf8cc949e181f6ae540))
+
+
+### Bug Fixes
+
+* **docs:** declare Plotly-hit counters global inside for loop ([9c176af](https://github.com/JuliaGNSS/Acquisition.jl/commit/9c176af0eb88aaef183a0d73aa8647f78cb59cf1))
+
+
+### Performance Improvements
+
+* batched column FFT for pilot path + enable CI multi-threading ([9f05f2c](https://github.com/JuliaGNSS/Acquisition.jl/commit/9f05f2c26cc3d3514242aa7e6be75bae84aab715))
+* chunk PRNs across threads to reduce scheduling overhead ([7f4136d](https://github.com/JuliaGNSS/Acquisition.jl/commit/7f4136dd2cbdf0fb7ef91b14e197af4adb19df7b))
+* eliminate all allocations in acquire! ([820ffdc](https://github.com/JuliaGNSS/Acquisition.jl/commit/820ffdcd1a150e2a63cf9f6ed1d17a34e0b984b4))
+* SIMD-vectorize est_signal_noise_power, fftshift scatter, parallelize results build ([b31d617](https://github.com/JuliaGNSS/Acquisition.jl/commit/b31d617902fd7603234e4645e00587ab326e20a0))
+* use Polyester.[@batch](https://github.com/batch) for zero-overhead multi-PRN threading ([42935a6](https://github.com/JuliaGNSS/Acquisition.jl/commit/42935a68df8d9a01d93cee73ad4dbdfb95e82570))
+
+
+### BREAKING CHANGES
+
+* The public API has been redesigned around the FM-DBZP
+(Frequency-domain Modified Double Block Zero Padding) algorithm by
+Heckler & Garrison (2009). The old serial Doppler search functions
+(AcquisitionPlan, CoarseFineAcquisitionPlan, coarse_fine_acquire) are
+removed. Users should migrate to plan_acquire / acquire! / acquire.
+
+## New API
+
+```julia
+# Simple one-shot acquisition
+results = acquire(system, signal, sampling_freq, 1:32; interm_freq)
+
+# Pre-planned acquisition (reuses FFT plans and allocations)
+plan = plan_acquire(system, sampling_freq, collect(1:32))
+results = acquire!(plan, signal, 1:32; interm_freq)
+```
+
+## Algorithm
+
+FM-DBZP performs a joint 2D search over code phase and Doppler in the
+frequency domain. The signal is divided into num_blocks sub-blocks;
+a 2D correlation matrix is built via double-block FFTs, then a
+column-wise FFT yields the Doppler dimension. This eliminates the
+explicit per-Doppler-bin loop of the classical approach.
+
+Key constraints (documented in the guide):
+- Doppler bin spacing = 1 / T_coh (finer resolution requires longer
+  coherent integration, unlike classical search)
+- num_blocks must divide samples_per_code exactly; plan_acquire finds
+  the smallest valid divisor automatically
+- Data bit handling for GPS L1 C/A: bit_edge_search_steps for sub-bit
+  integration, automatic sign-flip search for multi-bit integration
+- Pilot channels (GPS L5, Galileo E1): no data bit constraints
+
+## Features
+
+**Multi-threaded PRN loop**: acquire! uses Threads.@threads over PRNs
+automatically. Per-thread scratch buffers are allocated at plan_acquire
+time (sized by Threads.maxthreadid()). No code changes required — just
+start Julia with -t N.
+
+Benchmarks at 1 ms / 4 MHz / 32 PRNs:
+- 1 thread:  ~40 ms (same as old implementation)
+- 4 threads: ~13 ms (6.6× speedup over 1 thread)
+- 8 threads: ~8.5 ms (9.8× speedup over 1 thread)
+
+Old implementation showed no threading benefit (no parallel PRN loop).
+
+**Non-coherent integration**: accumulate power across multiple signal
+segments for sensitivity at low CN0:
+
+```julia
+plan = plan_acquire(system, sampling_freq, prns;
+    num_coherently_integrated_code_periods = 10,
+    num_noncoherent_accumulations = 8)
+```
+
+**Parabolic sub-sample interpolation** for code phase and Doppler,
+with a noise guard that skips interpolation when neighbouring bins are
+below sqrt(noise_power) — preventing the estimator from chasing noise:
+
+```julia
+results = acquire!(plan, signal, prns; subsample_interpolation = true)
+```
+
+**Interactive PlotlyJS surface plots** via Plots.jl recipe:
+
+```julia
+result = acquire!(plan, signal, prns; store_power_bins = true)
+plot(result[1])          # linear scale
+plot(result[1], true)    # dB scale
+```
+
+## Performance vs old implementation (same Doppler grid, 1 thread)
+
+| Integration | Speedup |
+|-------------|---------|
+| 1 ms        | ~1×     |
+| 5 ms        | ~10-20× |
+| 10 ms       | ~20-37× |
+| 20-40 ms    | ~37-52× |
+
+FM-DBZP's advantage grows with integration length because the 2D FFT
+cost scales much better than the classical per-Doppler-bin IFFT loop.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
 ## [1.7.1](https://github.com/JuliaGNSS/Acquisition.jl/compare/v1.7.0...v1.7.1) (2026-04-01)
 
 
