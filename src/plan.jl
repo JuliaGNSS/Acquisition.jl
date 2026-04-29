@@ -129,8 +129,10 @@ start Julia with `-t N` before calling `plan_acquire` to enable multi-threaded a
 
 # Keyword Arguments
 
-- `min_doppler_coverage`: Minimum one-sided Doppler coverage (default: `7000Hz`).
-  Controls `num_blocks` — see [Algorithm Constraints and Trade-offs](@ref) for details.
+- `min_doppler_coverage`: Minimum guaranteed one-sided Doppler reach
+  (default: `7000Hz`). Both ends of the searched grid will be at least
+  `±min_doppler_coverage`. Controls `num_blocks` — see
+  [Algorithm Constraints and Trade-offs](@ref) for details.
 - `num_coherently_integrated_code_periods`: Number of code periods per coherent
   integration block (default: `1`). Determines Doppler resolution:
   `bin_spacing = 1 / (num_coherently_integrated_code_periods × T_code)`.
@@ -177,15 +179,25 @@ function plan_acquire(
         num_coherently_integrated_code_periods  # no constraint for pilot channels
     end
 
-    # Blocks per code period: smallest divisor of samples_per_code that covers the
-    # requested Doppler range.  The column FFT produces num_blocks bins spanning
-    # [-doppler_coverage_hz/2, doppler_coverage_hz/2) where doppler_coverage_hz = num_blocks * bin_width.
-    # We need num_blocks >= doppler_span / bin_width, and num_blocks must divide
-    # samples_per_code exactly so that block_size = samples_per_code / num_blocks is integer.
+    # Blocks per code period: smallest divisor of samples_per_code such that the
+    # final Doppler grid `range(-cov/2, step=spacing, length=num_doppler_bins)`
+    # covers `[-min_doppler_coverage, +min_doppler_coverage]` at *both* ends.
+    #
+    # Geometry:
+    #   coverage = num_blocks * bin_width                         (bin_width = fs / samples_per_code)
+    #   num_doppler_bins = num_coherently_integrated_code_periods * num_blocks
+    #   spacing = coverage / num_doppler_bins = bin_width / num_coherently_integrated_code_periods
+    #   highest searched value = +coverage/2 - spacing            (last bin of the half-open range)
+    #
+    # Requiring `+coverage/2 - spacing >= min_doppler_coverage` gives
+    #   num_blocks >= 2*(min_doppler_coverage + spacing) / bin_width
+    #            >= (2*min_doppler_coverage / bin_width) + 2/num_coherently_integrated_code_periods
+    # so we add `2/N_coh` (rounded up) to the naive bin count to guarantee the upper edge.
     sampling_freq_hz = ustrip(Hz, sampling_freq)
     bin_width = sampling_freq_hz / samples_per_code
-    doppler_span = 2 * ustrip(Hz, min_doppler_coverage)
-    min_num_blocks = ceil(Int, doppler_span / bin_width)
+    min_doppler_coverage_hz = ustrip(Hz, min_doppler_coverage)
+    min_num_blocks = ceil(Int, 2 * min_doppler_coverage_hz / bin_width
+                              + 2 / num_coherently_integrated_code_periods)
     num_blocks = let found = nothing
         for candidate in min_num_blocks:samples_per_code
             if samples_per_code % candidate == 0

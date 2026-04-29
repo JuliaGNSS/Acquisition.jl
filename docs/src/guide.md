@@ -230,6 +230,42 @@ on each side (default ±7000 Hz). You can widen the search with:
 plan = plan_acquire(system, sampling_freq, prns; min_doppler_coverage = 10_000Hz)
 ```
 
+#### What `min_doppler_coverage` actually guarantees
+
+The Doppler grid stored in `plan.doppler_freqs` is
+
+```
+range(-coverage/2, step = bin_spacing, length = num_doppler_bins)
+```
+
+where `coverage = num_blocks × (sampling_freq / samples_per_code)` and
+`num_doppler_bins = num_coherently_integrated_code_periods × num_blocks`.
+This is a half-open interval — the grid spans `[-coverage/2, +coverage/2)`,
+so the **highest searched bin is `+coverage/2 - bin_spacing`**, not `+coverage/2`.
+
+`min_doppler_coverage` is the *minimum guaranteed reach on both ends*:
+`plan_acquire` chooses `num_blocks` such that
+
+```
+last(plan.doppler_freqs)  ≥ +min_doppler_coverage
+first(plan.doppler_freqs) ≤ -min_doppler_coverage
+```
+
+Concretely, with the default `min_doppler_coverage = 7000Hz`:
+
+| `sampling_freq` | `T_coh` | `num_blocks` | `bin_spacing` | `plan.doppler_freqs` |
+|---|---|---|---|---|
+| 2.048 MHz | 1 ms | 16 | 1000 Hz | `-8000 : 1000 : +7000 Hz` |
+| 4 MHz | 1 ms | 16 | 1000 Hz | `-8000 : 1000 : +7000 Hz` |
+| 4 MHz | 10 ms | 16 | 100 Hz | `-8000 : 100 : +7900 Hz` |
+| 5 MHz | 1 ms | 20 | 1000 Hz | `-10000 : 1000 : +9000 Hz` |
+| 36 MHz | 1 ms | 16 | 1000 Hz | `-8000 : 1000 : +7000 Hz` |
+
+The asymmetry is a consequence of the FFT bin layout: a length-N DFT covers
+exactly N bins worth of bandwidth, and centering those N bins on 0 leaves the
+upper edge open. It is *not* a bug — the highest *searched* Doppler is the
+last bin, and that bin is guaranteed to be ≥ `+min_doppler_coverage`.
+
 ### The `num_blocks` Divisibility Constraint
 
 `num_blocks` must divide `samples_per_code` exactly so that each block has an

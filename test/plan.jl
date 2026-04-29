@@ -8,7 +8,7 @@
         min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 1, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
 
     @test plan.samples_per_code == 2048      # ceil(1023/1.023e6 * 2.048e6)
-    @test plan.num_blocks == 32              # smallest divisor of 2048 >= ceil(20000/1000)=20 → 32
+    @test plan.num_blocks == 32              # smallest divisor of 2048 >= ceil(20000/1000 + 2/1)=22 → 32
     @test plan.block_size == 64              # 2048÷32
     @test plan.num_coherently_integrated_code_periods == 1
     @test plan.num_data_bits == 1            # pilot/short: no data bit search
@@ -17,6 +17,9 @@
     @test length(plan.doppler_freqs) == 32   # num_doppler_bins = 1*32
     @test step(plan.doppler_freqs) ≈ 1000Hz  # doppler_bin_spacing_hz = 32000/32
     @test first(plan.doppler_freqs) ≈ -16000Hz  # -doppler_coverage_hz/2
+    # Both ends of the grid must reach the requested coverage
+    @test last(plan.doppler_freqs)  >= 10_000Hz
+    @test first(plan.doppler_freqs) <= -10_000Hz
 end
 
 @testset "plan_acquire parameters — GPS L1 multi-ms" begin
@@ -27,7 +30,7 @@ end
         min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4, num_noncoherent_accumulations = 5)
 
     @test plan.samples_per_code == 2048
-    @test plan.num_blocks == 32              # smallest divisor of 2048 >= ceil(20000/1000)=20 → 32
+    @test plan.num_blocks == 32              # smallest divisor of 2048 >= ceil(20000/1000 + 2/40)=21 → 32
     @test plan.num_coherently_integrated_code_periods == 40
     @test plan.num_data_bits == 2            # 40 code periods / 20 code periods per GPS bit
     @test plan.bit_edge_search_steps == 4
@@ -88,12 +91,13 @@ end
     # Previously failing frequencies where nextpow(2, min_blocks) did not divide samples_per_code.
     # Verifies that plan_acquire picks a valid num_blocks and that acquire
     # detects the signal with correct code phase at each sampling frequency.
+    # min_num_blocks = ceil(2*5000/1000 + 2/5) = 11 (with N_coh=5, min_doppler_coverage=5000Hz).
     cases = [
-        (2.048e6Hz, 16, 128),   # power-of-2 samples_per_code=2048, num_blocks=16
-        (5e6Hz,     10, 500),   # samples_per_code=5000, smallest divisor >= 10 is 10
-        (10e6Hz,    10, 1000),  # samples_per_code=10000
-        (16.368e6Hz, 11, 1488), # samples_per_code=16368, non-power-of-2 divisor
-        (25e6Hz,    10, 2500),  # samples_per_code=25000
+        (2.048e6Hz, 16, 128),    # smallest divisor of 2048 >= 11
+        (5e6Hz,     20, 250),    # divisors of 5000: …,10,20,…; smallest >= 11 is 20
+        (10e6Hz,    16, 625),    # divisors of 10000: …,10,16,20,…; smallest >= 11 is 16
+        (16.368e6Hz, 11, 1488),  # 11 itself is a divisor (16368 = 2⁴·3·11·31)
+        (25e6Hz,    20, 1250),   # divisors of 25000: …,10,20,25,…; smallest >= 11 is 20
     ]
     system      = GPSL1()
     prn         = 1
