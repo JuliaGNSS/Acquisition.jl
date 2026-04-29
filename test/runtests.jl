@@ -15,3 +15,5 @@ include("cfar.jl")
     include("acquire.jl")
     include("plot.jl")
 end
+
+include("recommend_sampling_freq.jl")
