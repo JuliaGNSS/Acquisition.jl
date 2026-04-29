@@ -283,6 +283,53 @@ If `plan_acquire` cannot find a valid `num_blocks` for your sampling frequency a
 `min_doppler_coverage`, it throws an `ArgumentError`. Try a slightly different
 sampling frequency or reduce `min_doppler_coverage`.
 
+#### Why the *smallest* valid divisor?
+
+Once `min_doppler_coverage` fixes a lower bound, several divisors of
+`samples_per_code` are usually admissible (e.g. at 5 MHz with ±9 kHz requested,
+both `num_blocks = 20` and `num_blocks = 25` are valid). It is tempting to pick
+a larger divisor: that shrinks `block_size` and thus the inner double-block
+FFT of size `2 × block_size`. In practice the opposite is the right default —
+`plan_acquire` picks the *smallest* valid divisor, which corresponds to the
+narrowest Doppler coverage that still meets your request.
+
+The reason is that acquisition has two FFT stages with opposite scaling in
+`num_blocks`:
+
+- **Inner double-block stage.** `num_blocks` forward + inverse FFTs of size
+  `2 × block_size = 2 × samples_per_code / num_blocks`. Total work scales as
+  `2 × samples_per_code × log₂(2 × samples_per_code / num_blocks)` — it
+  shrinks *logarithmically* as `num_blocks` grows.
+- **Column FFT stage.** `samples_per_code` FFTs of size
+  `num_doppler_bins = num_coherently_integrated_code_periods × num_blocks`.
+  Total work scales as
+  `samples_per_code × num_doppler_bins × log₂(num_doppler_bins)` — it grows
+  roughly *linearly* (× log) in `num_blocks`. The non-coherent accumulation
+  matrix is `num_doppler_bins × samples_per_code`, so its memory traffic
+  scales with `num_blocks` as well.
+
+A concrete comparison at 4 MHz, `num_coherently_integrated_code_periods = 1`:
+
+| `num_blocks` | inner FFT cost | column FFT cost | total |
+|---|---|---|---|
+| 16 (≈±8 kHz) | 8000 · log₂(500) ≈ 71.7 k | 4000 · 16 · log₂(16) = 256 k | **≈ 328 k** |
+| 20 (±10 kHz) | 8000 · log₂(400) ≈ 69.1 k | 4000 · 20 · log₂(20) ≈ 346 k | **≈ 415 k** |
+
+The inner stage barely changes; the column stage grows ~35 %, and overall cost
+rises by ~26 %. The gap widens with longer coherent integration, because
+`num_doppler_bins` then equals `num_coherently_integrated_code_periods × num_blocks`,
+so every extra divisor unit costs `num_coherently_integrated_code_periods` extra
+column-FFT bins.
+
+There is one second-order effect that can invert this trade-off: the inner FFT
+size is `2 × samples_per_code / num_blocks`, so a smaller divisor can land on a
+`block_size` with a large prime factor (11, 31, 257, …) and a slow FFTW kernel
+(see [Sampling Frequency and FFT Performance](#Sampling-Frequency-and-FFT-Performance)).
+In that situation a slightly larger divisor with a smoother `block_size` may
+win — but this is sampling-frequency-specific and rare in practice. If you
+suspect you have hit such a case, benchmark both `min_doppler_coverage`
+settings explicitly.
+
 ### Sampling Frequency and FFT Performance
 
 Acquisition runs many in-place FFTs at size `2 × block_size`, where
@@ -332,6 +379,69 @@ Notice the near-identical-rate pairs:
 **16.384 MHz** runs at 112 ms vs. **16.368 MHz** at 167 ms (1.5× faster).
 If you control the RF front-end clock, picking a smooth rate is usually the
 single biggest performance lever available.
+
+### Picking a Good Sampling Frequency
+
+When you have flexibility in the front-end clock,
+[`recommend_sampling_freqs`](@ref) sweeps a frequency range and returns the
+candidates with the smoothest FFT factorizations and lowest estimated cost.
+It accounts for the [`num_blocks` divisibility constraint](#The-num_blocks-Divisibility-Constraint)
+and both FFT stages of the algorithm (inner double-block + column FFT).
+
+```@example guide
+using Acquisition, GNSSSignals
+import Unitful: Hz
+
+recommend_sampling_freqs(GPSL1();
+    fs_min = 2e6Hz,
+    fs_max = 5e6Hz,
+    min_doppler_coverage = 7000Hz,
+    num_coherently_integrated_code_periods = 1,
+    num_alternatives = 5,
+)
+```
+
+For a custom code geometry (e.g. a non-standard system) pass `code_length` and
+`code_freq` directly:
+
+```@example guide
+recommend_sampling_freqs(10_000, 36e6Hz;
+    fs_min = 36e6Hz,
+    fs_max = 40e6Hz,
+    min_doppler_coverage = 10_000Hz,
+    num_coherently_integrated_code_periods = 36,
+    num_alternatives = 5,
+)
+```
+
+By default candidates are ranked by estimated FFT cost; pass
+`sort_by = :smoothness` to rank by largest prime factor of the inner FFT size
+instead. Use `max_prime` to tighten or relax the smoothness budget (default
+`7`, FFTW's "fast" regime).
+
+#### Filtering against an SDR's hardware constraints
+
+Most SDRs can only reach a discrete subset of sampling frequencies — the
+output of a master clock, divider tree, and PLL. Pass an
+[`AbstractSDRClockPlan`](@ref) via `sdr_clock_plan` to skip rates the
+hardware can't produce:
+
+```@example guide
+recommend_sampling_freqs(GPSL1();
+    fs_min = 2e6Hz,
+    fs_max = 8e6Hz,
+    min_doppler_coverage = 7000Hz,
+    num_alternatives = 5,
+    sdr_clock_plan = AD9361ClockPlan(),
+)
+```
+
+[`AD9361ClockPlan`](@ref) reproduces the validation done by the AD9361 driver
+shipped with `litex_m2sdr` (550 kHz – 61.44 MSPS, divider search through
+`{12, 8, 6, 4, 3, 2, 1}` against an ADC clock window of 25–640 MHz, and a
+reachable BBPLL). Other SDRs can be supported by subtyping
+[`AbstractSDRClockPlan`](@ref) and implementing
+[`is_valid_sample_rate`](@ref) (and optionally [`sample_rate_range`](@ref)).
 
 ### Coherent Integration with Data Bits (GPS L1 C/A)
 
