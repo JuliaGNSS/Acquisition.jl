@@ -1,5 +1,17 @@
 # Changelog
 
+# [2.1.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.0.0...v2.1.0) (2026-04-30)
+
+
+### Bug Fixes
+
+* min_doppler_coverage now guarantees both grid ends ([cc10032](https://github.com/JuliaGNSS/Acquisition.jl/commit/cc1003282febd63762c152b4b9c62cbbfc781d7b))
+
+
+### Features
+
+* add recommend_sampling_freqs with SDR-aware filtering ([dd1219b](https://github.com/JuliaGNSS/Acquisition.jl/commit/dd1219bf20f3b3411a221ad98ef99260d793da3c))
+
 # [2.0.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v1.7.1...v2.0.0) (2026-04-27)
 
 
