@@ -16,17 +16,17 @@ function _acquire_prn!(plan::AcquisitionPlan, scratch, prn::Int, accumulation_st
     prn_idx = findfirst(==(prn), plan.avail_prns)
     prn_fft_matrix = plan.prn_conj_ffts[prn]
 
+    # plan.signal_block_ffts is filled by _precompute_signal_block_ffts! in acquire!
+    # before this loop fires; we read from it here.
     _build_coherent_integration_matrix!(
         scratch.coherent_integration_matrix,
-        plan.sig_buf,
+        plan.signal_block_ffts,
         prn_fft_matrix,
         plan.samples_per_code,
         plan.num_blocks,
         plan.block_size,
         plan.num_coherently_integrated_code_periods,
-        scratch.double_block_buf,
         scratch.corr_buf,
-        plan.double_block_fft_plan,
         plan.double_block_bfft_plan,
     )
 
@@ -133,6 +133,20 @@ function acquire!(
                 plan.sig_buf[sample_idx] = ComplexF32(signal[seg_start + sample_idx - 1]) * Complex(c, s)
             end
         end
+
+        # Precompute signal-block FFTs once per dwell. They do not depend on
+        # PRN, so the per-PRN inner loop reads from `plan.signal_block_ffts`
+        # instead of redoing this O(num_coh*num_blocks) FFT batch per PRN.
+        _precompute_signal_block_ffts!(
+            plan.signal_block_ffts,
+            plan.sig_buf,
+            plan.samples_per_code,
+            plan.num_blocks,
+            plan.block_size,
+            plan.num_coherently_integrated_code_periods,
+            plan.double_block_buf,
+            plan.double_block_fft_plan,
+        )
 
         _acquire_step!(plan, prns, step_idx - 1)
     end

@@ -144,6 +144,10 @@ end
     for prn_idx in eachindex(plan.avail_prns)
         fill!(plan.noncoherent_integration_matrices[prn_idx], 0f0)
     end
+    Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, plan.sig_buf,
+        plan.samples_per_code, plan.num_blocks, plan.block_size,
+        plan.num_coherently_integrated_code_periods, plan.double_block_buf,
+        plan.double_block_fft_plan)
     Acquisition._acquire_step_threaded!(plan, collect(plan.avail_prns), 0)
     # PRN 1 should have a peak; just verify noncoherent matrix was filled
     @test maximum(plan.noncoherent_integration_matrices[1]) > 0
