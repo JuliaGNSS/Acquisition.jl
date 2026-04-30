@@ -51,6 +51,69 @@ end
     @test num_false_alarms <= 3
 end
 
+@testset "CFAR detection with non-coherent integration (M > 1)" begin
+    # End-to-end check that the CFAR threshold's nominal false-alarm rate is
+    # honoured by the actual `peak_to_noise_ratio` distribution when
+    # num_noncoherent_accumulations > 1. This covers the gap left by the
+    # single-dwell synthetic test above: the analytic derivation in
+    # `cfar_threshold` assumes per-cell χ²(2M) distribution, and we want the
+    # end-to-end `acquire!` pipeline to reproduce that on synthetic AWGN.
+    system = GPSL1()
+    sampling_freq = 2.048e6Hz
+    samples_per_code = 2048
+    pfa = 0.01
+    n_trials = 50
+
+    for (M, num_code_cycles) in [(2, 1), (4, 1), (8, 1), (4, 4)]
+        # All-noise input: no satellite signal injected.
+        seg_len = num_code_cycles * samples_per_code * M
+        false_alarms = 0
+        Random.seed!(0xC0FFEE + M * 1000)
+        plan = plan_acquire(system, float(sampling_freq), collect(1:32);
+            num_coherently_integrated_code_periods = num_code_cycles,
+            num_noncoherent_accumulations = M)
+        num_cells = length(plan.doppler_freqs) * plan.num_blocks * plan.block_size
+        threshold = cfar_threshold(pfa, num_cells; num_noncoherent_integrations = M)
+        for _ in 1:n_trials
+            noise = randn(ComplexF64, seg_len)
+            results = acquire!(plan, noise, collect(1:32); interm_freq = 0.0Hz)
+            false_alarms += count(r -> r.peak_to_noise_ratio > threshold, results)
+        end
+        # Across n_trials × 32 PRNs we expect ≈ n_trials * 32 * pfa false alarms.
+        # Allow a generous Poisson-style margin (3× expected) — the test should
+        # only fire when the empirical rate is materially higher than nominal.
+        expected = n_trials * 32 * pfa
+        @test false_alarms ≤ ceil(Int, 3 * expected)
+        @info "CFAR FP rate vs nominal" M expected false_alarms threshold
+    end
+end
+
+@testset "CFAR detection with non-coherent integration: signal still passes threshold" begin
+    # Counterpart to the FP-rate test above: verify a real signal is still
+    # detected when num_noncoherent_accumulations > 1. This guards against a
+    # threshold that's so loose it admits false alarms but also against one
+    # that's so tight it rejects real signals.
+    system = GPSL1()
+    sampling_freq = 2.048e6Hz
+    samples_per_code = 2048
+    pfa = 0.01
+
+    for (M, num_code_cycles, CN0) in [(2, 4, 40), (4, 4, 38), (8, 1, 42)]
+        seg_len = num_code_cycles * samples_per_code * M
+        prn = 7
+        (; signal, interm_freq) = generate_test_signal(system, prn;
+            num_samples = seg_len,
+            sampling_freq, interm_freq = 0.0Hz,
+            CN0, doppler = 500Hz, code_phase = 100.0,
+            seed = 9999 + M)
+        plan = plan_acquire(system, float(sampling_freq), collect(1:32);
+            num_coherently_integrated_code_periods = num_code_cycles,
+            num_noncoherent_accumulations = M)
+        result = only(acquire!(plan, signal, [prn]; interm_freq))
+        @test is_detected(result; pfa)
+    end
+end
+
 @testset "peak_to_noise_ratio is consistent with CN0" begin
     system = GPSL1()
 
