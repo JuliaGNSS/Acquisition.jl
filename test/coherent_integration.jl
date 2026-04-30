@@ -22,10 +22,13 @@
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 100)
 
     signal_f32 = ComplexF32.(signal)
-    fill!(plan.coherent_integration_matrix, zero(ComplexF32))
-    Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, signal_f32, plan.prn_conj_ffts[prn],
+    Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, signal_f32,
+        plan.samples_per_code, plan.num_blocks, plan.block_size,
+        plan.num_coherently_integrated_code_periods, plan.double_block_buf,
+        plan.double_block_fft_plan)
+    Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
         plan.samples_per_code, plan.num_blocks, plan.block_size, plan.num_coherently_integrated_code_periods,
-        plan.double_block_buf, plan.corr_buf, plan.double_block_fft_plan, plan.double_block_bfft_plan)
+        plan.corr_buf, plan.double_block_bfft_plan)
 
     # In the full coherent integration matrix structure ALL rows peak at the same column:
     #   pc (0-indexed) = mod(num_blocks - tau÷block_size, num_blocks) * block_size + (tau%block_size)
@@ -49,10 +52,13 @@
         doppler = 0Hz, code_phase = code_phase_2,
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 100)
     signal_f32_2 = ComplexF32.(result_2.signal)
-    fill!(plan.coherent_integration_matrix, zero(ComplexF32))
-    Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, signal_f32_2, plan.prn_conj_ffts[prn],
+    Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, signal_f32_2,
+        plan.samples_per_code, plan.num_blocks, plan.block_size,
+        plan.num_coherently_integrated_code_periods, plan.double_block_buf,
+        plan.double_block_fft_plan)
+    Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
         plan.samples_per_code, plan.num_blocks, plan.block_size, plan.num_coherently_integrated_code_periods,
-        plan.double_block_buf, plan.corr_buf, plan.double_block_fft_plan, plan.double_block_bfft_plan)
+        plan.corr_buf, plan.double_block_bfft_plan)
     block_row_2 = tau_samples_2 ÷ plan.block_size
     @test block_row_2 == 1  # Verify we're testing block_row > 0 (non-trivial column block)
     scrambled_block_2    = mod(plan.num_blocks - block_row_2, plan.num_blocks)  # = 15

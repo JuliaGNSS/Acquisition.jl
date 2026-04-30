@@ -21,10 +21,13 @@
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
 
     signal_f32 = ComplexF32.(signal)
-    fill!(plan.coherent_integration_matrix, zero(ComplexF32))
-    Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, signal_f32, plan.prn_conj_ffts[prn],
+    Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, signal_f32,
+        plan.samples_per_code, plan.num_blocks, plan.block_size,
+        plan.num_coherently_integrated_code_periods, plan.double_block_buf,
+        plan.double_block_fft_plan)
+    Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
         plan.samples_per_code, plan.num_blocks, plan.block_size, plan.num_coherently_integrated_code_periods,
-        plan.double_block_buf, plan.corr_buf, plan.double_block_fft_plan, plan.double_block_bfft_plan)
+        plan.corr_buf, plan.double_block_bfft_plan)
 
     noncoherent_integration_matrix = zeros(Float32, plan.num_coherently_integrated_code_periods * plan.num_blocks, plan.samples_per_code)
     Acquisition._accumulate_noncoherent_integration_pilot!(noncoherent_integration_matrix, plan.coherent_integration_matrix, plan.col_buf,
@@ -79,10 +82,13 @@ end
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 60)
 
     signal_f32 = ComplexF32.(signal)
-    fill!(plan.coherent_integration_matrix, zero(ComplexF32))
-    Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, signal_f32, plan.prn_conj_ffts[prn],
+    Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, signal_f32,
+        plan.samples_per_code, plan.num_blocks, plan.block_size,
+        plan.num_coherently_integrated_code_periods, plan.double_block_buf,
+        plan.double_block_fft_plan)
+    Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
         plan.samples_per_code, plan.num_blocks, plan.block_size, plan.num_coherently_integrated_code_periods,
-        plan.double_block_buf, plan.corr_buf, plan.double_block_fft_plan, plan.double_block_bfft_plan)
+        plan.corr_buf, plan.double_block_bfft_plan)
 
     noncoherent_integration_matrix = zeros(Float32, num_doppler_bins, plan.samples_per_code)
     noncoherent_integration_buf = zeros(Float32, num_doppler_bins, plan.samples_per_code)
@@ -132,10 +138,13 @@ end
     half = (plan.num_coherently_integrated_code_periods ÷ plan.num_data_bits) * plan.samples_per_code  # = 20 * 2048 = 40960
     signal_flipped[half+1:end] .*= -1
 
-    fill!(plan.coherent_integration_matrix, zero(ComplexF32))
-    Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, signal_flipped, plan.prn_conj_ffts[prn],
+    Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, signal_flipped,
+        plan.samples_per_code, plan.num_blocks, plan.block_size,
+        plan.num_coherently_integrated_code_periods, plan.double_block_buf,
+        plan.double_block_fft_plan)
+    Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
         plan.samples_per_code, plan.num_blocks, plan.block_size, plan.num_coherently_integrated_code_periods,
-        plan.double_block_buf, plan.corr_buf, plan.double_block_fft_plan, plan.double_block_bfft_plan)
+        plan.corr_buf, plan.double_block_bfft_plan)
 
     noncoherent_integration_data = zeros(Float32, num_doppler_bins, plan.samples_per_code)
     sub_block_ffts = zeros(ComplexF32, num_doppler_bins, plan.num_data_bits)
@@ -182,10 +191,13 @@ end
 
     for plan in (plan_no_search, plan_with_search)
         num_doppler_bins = plan.num_coherently_integrated_code_periods * plan.num_blocks
-        fill!(plan.coherent_integration_matrix, zero(ComplexF32))
-        Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, signal_f32, plan.prn_conj_ffts[prn],
+        Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, signal_f32,
+            plan.samples_per_code, plan.num_blocks, plan.block_size,
+            plan.num_coherently_integrated_code_periods, plan.double_block_buf,
+            plan.double_block_fft_plan)
+        Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
             plan.samples_per_code, plan.num_blocks, plan.block_size, plan.num_coherently_integrated_code_periods,
-            plan.double_block_buf, plan.corr_buf, plan.double_block_fft_plan, plan.double_block_bfft_plan)
+            plan.corr_buf, plan.double_block_bfft_plan)
         noncoherent_integration_matrix = zeros(Float32, num_doppler_bins, plan.samples_per_code)
         Acquisition._accumulate_noncoherent_integration_step!(noncoherent_integration_matrix, plan.coherent_integration_matrix, plan, 0)
 
@@ -320,21 +332,27 @@ end
 
     sub_block_ffts = zeros(ComplexF32, num_doppler_bins, plan.num_data_bits)
 
-    fill!(plan.coherent_integration_matrix, zero(ComplexF32))
-    Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, ComplexF32.(signal_no_transition),
+    Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, ComplexF32.(signal_no_transition),
+        plan.samples_per_code, plan.num_blocks, plan.block_size,
+        plan.num_coherently_integrated_code_periods, plan.double_block_buf,
+        plan.double_block_fft_plan)
+    Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, plan.signal_block_ffts,
         plan.prn_conj_ffts[prn], plan.samples_per_code, plan.num_blocks, plan.block_size,
-        plan.num_coherently_integrated_code_periods, plan.double_block_buf, plan.corr_buf,
-        plan.double_block_fft_plan, plan.double_block_bfft_plan)
+        plan.num_coherently_integrated_code_periods, plan.corr_buf,
+        plan.double_block_bfft_plan)
     noncoherent_integration_no_transition = zeros(Float32, num_doppler_bins, plan.samples_per_code)
     Acquisition._accumulate_noncoherent_integration_pilot!(noncoherent_integration_no_transition, plan.coherent_integration_matrix, plan.col_buf,
         plan.col_fft_plan, plan.samples_per_code)
     peak_no_transition = maximum(noncoherent_integration_no_transition)
 
-    fill!(plan.coherent_integration_matrix, zero(ComplexF32))
-    Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, ComplexF32.(signal_with_transition),
+    Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, ComplexF32.(signal_with_transition),
+        plan.samples_per_code, plan.num_blocks, plan.block_size,
+        plan.num_coherently_integrated_code_periods, plan.double_block_buf,
+        plan.double_block_fft_plan)
+    Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, plan.signal_block_ffts,
         plan.prn_conj_ffts[prn], plan.samples_per_code, plan.num_blocks, plan.block_size,
-        plan.num_coherently_integrated_code_periods, plan.double_block_buf, plan.corr_buf,
-        plan.double_block_fft_plan, plan.double_block_bfft_plan)
+        plan.num_coherently_integrated_code_periods, plan.corr_buf,
+        plan.double_block_bfft_plan)
     noncoherent_integration_with_transition = zeros(Float32, num_doppler_bins, plan.samples_per_code)
     Acquisition._accumulate_noncoherent_integration_data_bits!(noncoherent_integration_with_transition, plan.coherent_integration_matrix, plan.col_buf,
         plan.col_fftshift_buf, plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
@@ -362,21 +380,27 @@ end
 
     sub_block_ffts = zeros(ComplexF32, num_doppler_bins, plan.num_data_bits)
 
-    fill!(plan.coherent_integration_matrix, zero(ComplexF32))
-    Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, ComplexF32.(signal_no_transition),
+    Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, ComplexF32.(signal_no_transition),
+        plan.samples_per_code, plan.num_blocks, plan.block_size,
+        plan.num_coherently_integrated_code_periods, plan.double_block_buf,
+        plan.double_block_fft_plan)
+    Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, plan.signal_block_ffts,
         plan.prn_conj_ffts[prn], plan.samples_per_code, plan.num_blocks, plan.block_size,
-        plan.num_coherently_integrated_code_periods, plan.double_block_buf, plan.corr_buf,
-        plan.double_block_fft_plan, plan.double_block_bfft_plan)
+        plan.num_coherently_integrated_code_periods, plan.corr_buf,
+        plan.double_block_bfft_plan)
     noncoherent_integration_no_transition = zeros(Float32, num_doppler_bins, plan.samples_per_code)
     Acquisition._accumulate_noncoherent_integration_pilot!(noncoherent_integration_no_transition, plan.coherent_integration_matrix, plan.col_buf,
         plan.col_fft_plan, plan.samples_per_code)
     peak_no_transition = maximum(noncoherent_integration_no_transition)
 
-    fill!(plan.coherent_integration_matrix, zero(ComplexF32))
-    Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, ComplexF32.(signal_with_transition),
+    Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, ComplexF32.(signal_with_transition),
+        plan.samples_per_code, plan.num_blocks, plan.block_size,
+        plan.num_coherently_integrated_code_periods, plan.double_block_buf,
+        plan.double_block_fft_plan)
+    Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, plan.signal_block_ffts,
         plan.prn_conj_ffts[prn], plan.samples_per_code, plan.num_blocks, plan.block_size,
-        plan.num_coherently_integrated_code_periods, plan.double_block_buf, plan.corr_buf,
-        plan.double_block_fft_plan, plan.double_block_bfft_plan)
+        plan.num_coherently_integrated_code_periods, plan.corr_buf,
+        plan.double_block_bfft_plan)
     noncoherent_integration_with_transition = zeros(Float32, num_doppler_bins, plan.samples_per_code)
     Acquisition._accumulate_noncoherent_integration_data_bits!(noncoherent_integration_with_transition, plan.coherent_integration_matrix, plan.col_buf,
         plan.col_fftshift_buf, plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
