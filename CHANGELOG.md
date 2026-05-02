@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.1](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.1.0...v2.1.1) (2026-05-02)
+
+
+### Performance Improvements
+
+* hoist signal-block FFTs out of per-PRN loop and drop dead fill! ([a90e9af](https://github.com/JuliaGNSS/Acquisition.jl/commit/a90e9af5383d7e511ee387c206c8047ffb6b8911))
+
 # [2.1.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.0.0...v2.1.0) (2026-04-30)
 
 
