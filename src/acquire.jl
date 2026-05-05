@@ -170,6 +170,7 @@ function acquire!(
             sampling_freq_hz,
             code_freq_hz,
             col_sums_buf,
+            plan.noise_estimator,
         )
 
         peak_to_noise = (signal_power + noise_power) / noise_power

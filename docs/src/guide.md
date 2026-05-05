@@ -84,6 +84,60 @@ Choosing `pfa`:
 - Only the *ratio* matters: the threshold is independent of the absolute noise
   power, so it works unchanged at any CN0 and any sampling frequency.
 
+### Noise Power Estimation
+
+The denominator of `peak_to_noise_ratio` — the noise power — is estimated
+from the Doppler × code-phase search grid itself. The CFAR formula assumes
+the per-cell noise power is independent and identically distributed across
+the grid: under that assumption the sample mean over the grid is the
+lowest-variance unbiased estimate, and the threshold derived from it
+controls the false-alarm rate exactly.
+
+That assumption fails on real-world IF recordings. Hardware artefacts —
+DC offset, IF spurs, narrowband interferers, ADC nonlinearity — inflate
+*specific Doppler rows* of the grid. A global-mean estimator then folds the
+hot rows into the noise floor: the threshold rises with them, and any peak
+whose Doppler bin happens to land in a quiet row passes the inflated
+threshold. False alarms cluster at predictable Doppler offsets — typically
+near 0 Hz (DC offset) or at clock-comb harmonics.
+
+Acquisition.jl ships two estimators, dispatched on a singleton type stored
+on the [`AcquisitionPlan`](@ref):
+
+- [`OppositeRowNoiseEstimator`](@ref) **(default)** — averages a single
+  Doppler row, the one exactly half the search grid away from the peak.
+  The estimate is conditioned on Doppler instead of pooled across it, so a
+  hot Doppler row no longer biases the threshold for peaks elsewhere. The
+  opposite row is also a safe choice signal-wise: it is far enough from any
+  real signal's mainlobe that sidelobes cannot contaminate the estimate.
+  This mirrors the behaviour of GNSS-SDR's
+  `pcps_acquisition::max_to_input_power_statistic`.
+
+- [`GlobalMeanNoiseEstimator`](@ref) — averages all cells of the grid except
+  a `±samples_per_chip` exclusion zone around the peak column. Lowest
+  variance when the noise really is independent and identically distributed
+  across the grid. Useful for synthetic AWGN test signals; not recommended
+  for real signals.
+
+Pick the estimator at plan-construction time:
+
+```julia
+# Default — robust to Doppler-conditional noise variation
+plan = plan_acquire(system, sampling_freq, prns)
+
+# Explicit form
+plan = plan_acquire(system, sampling_freq, prns;
+    noise_estimator = OppositeRowNoiseEstimator())
+
+# AWGN test path
+plan = plan_acquire(system, sampling_freq, prns;
+    noise_estimator = GlobalMeanNoiseEstimator())
+```
+
+The choice flows through `acquire!` and `is_detected`; no other code needs
+to change. The CFAR threshold formula is unchanged either way — only the
+noise-power estimate fed to it differs.
+
 ## Using Acquisition Plans
 
 For repeated acquisitions — e.g. tracking many epochs or processing a file — pre-compute

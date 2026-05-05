@@ -25,6 +25,14 @@ AbstractSDRClockPlan
 AD9361ClockPlan
 ```
 
+## Noise Estimators
+
+```@docs
+AbstractNoiseEstimator
+OppositeRowNoiseEstimator
+GlobalMeanNoiseEstimator
+```
+
 ## Index
 
 ```@index
