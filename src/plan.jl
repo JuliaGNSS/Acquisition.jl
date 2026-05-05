@@ -30,7 +30,7 @@ Pre-computed acquisition plan for FM-DBZP (Heckler & Garrison 2009).
 
 See [`plan_acquire`](@ref) and [`acquire`](@ref).
 """
-struct AcquisitionPlan{S<:AbstractGNSS,DS,P1,P2,P3,P4,R}
+struct AcquisitionPlan{S<:AbstractGNSS,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEstimator}
     system::S
     sampling_freq::typeof(1.0Hz)
     samples_per_code::Int       # paper N_τ  — samples per code period
@@ -71,6 +71,8 @@ struct AcquisitionPlan{S<:AbstractGNSS,DS,P1,P2,P3,P4,R}
     thread_scratch::Vector{AcquisitionScratch}
     # Pre-allocated results buffer, concrete-typed to avoid boxing allocations
     acq_results_buf::Vector{R}
+    # Singleton selecting the noise-power estimator used by `est_signal_noise_power`.
+    noise_estimator::E
 end
 
 """
@@ -143,6 +145,14 @@ start Julia with `-t N` before calling `plan_acquire` to enable multi-threaded a
 - `num_noncoherent_accumulations`: Number of successive incoherent integration
   steps (default: `1`). Signal passed to `acquire!` must contain at least
   `num_noncoherent_accumulations` full segments.
+- `noise_estimator`: how `acquire!` estimates noise power for the CFAR
+  test statistic. Defaults to [`OppositeRowNoiseEstimator`](@ref) (averages
+  one Doppler row, robust to Doppler-conditional banding from DC offset/IF
+  spurs/narrowband interferers — recommended for real-world IF signals).
+  Pass [`GlobalMeanNoiseEstimator`](@ref) for synthetic-AWGN tests where
+  the noise floor is independent and identically distributed across the
+  grid and the lower variance of the global mean is preferred. See the
+  [Detecting Satellites](@ref) section of the guide for the rationale.
 - `fft_flag`: FFTW planning flag (default: `FFTW.MEASURE`).
 
 # See also
@@ -157,6 +167,7 @@ function plan_acquire(
     num_coherently_integrated_code_periods::Int = 1,
     bit_edge_search_steps::Int = 1,
     num_noncoherent_accumulations::Int = 1,
+    noise_estimator::AbstractNoiseEstimator = OppositeRowNoiseEstimator(),
     fft_flag = FFTW.MEASURE,
 )
     num_noncoherent_accumulations >= 1 || throw(ArgumentError("num_noncoherent_accumulations must be >= 1, got $num_noncoherent_accumulations"))
@@ -328,5 +339,6 @@ function plan_acquire(
         avail_prns_vec,
         thread_scratch,
         acq_results_buf,
+        noise_estimator,
     )
 end
