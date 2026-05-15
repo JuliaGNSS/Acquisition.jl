@@ -24,7 +24,9 @@ using Random
 
 const SUITE = BenchmarkGroup()
 
-system = GPSL1()
+# GNSSSignals v2 renamed GPSL1 -> GPSL1CA. Pick whichever exists so the same
+# benchmark script runs on both master (v1) and this branch (v2).
+system = isdefined(GNSSSignals, :GPSL1CA) ? GNSSSignals.GPSL1CA() : GNSSSignals.GPSL1()
 
 # ============================================================================
 # API detection

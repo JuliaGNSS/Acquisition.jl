@@ -1,7 +1,7 @@
 # test/acquire.jl — public API tests for FM-DBZP acquire / acquire!
 
 @testset "Tier 3: acquire — GPS L1 strong signal detects at correct code phase and Doppler alias" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
 
@@ -21,7 +21,7 @@
 end
 
 @testset "Tier 4: acquire — long integration detects weak signal" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 3
 
@@ -46,7 +46,7 @@ end
 end
 
 @testset "subsample_interpolation — triangle interpolation reduces code phase error vs grid" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 2
     true_code_phase = 300.7   # deliberately between grid points
@@ -71,7 +71,7 @@ end
 end
 
 @testset "acquire! — non-zero intermediate frequency" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 5
     interm_freq = 1000Hz
@@ -99,7 +99,7 @@ end
 end
 
 @testset "acquire! — multiple PRNs in one call" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
 
     gen1 = generate_test_signal(system, 1;
@@ -135,7 +135,7 @@ end
 end
 
 @testset "_acquire_step_threaded! — threaded path runs correctly" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     plan = plan_acquire(system, sampling_freq, [1, 2]; fft_flag = FFTW.ESTIMATE)
     (; signal, code_phase) = generate_test_signal(system, 1;
@@ -155,7 +155,7 @@ end
 end
 
 @testset "acquire! — PRN not in plan throws ArgumentError" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
 
     plan = plan_acquire(system, sampling_freq, [1, 2];
@@ -167,7 +167,7 @@ end
 end
 
 @testset "acquire! — single-PRN Integer convenience overload" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
 
@@ -182,7 +182,7 @@ end
 end
 
 @testset "AcquisitionResults show methods" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
 
     plan = plan_acquire(system, sampling_freq, [1, 2]; fft_flag = FFTW.ESTIMATE)
@@ -213,7 +213,7 @@ end
 end
 
 @testset "acquire! — non-batched pilot path (num_doppler_bins > 320)" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
 
@@ -236,7 +236,7 @@ end
 end
 
 @testset "generate_test_signal — unit_noise_power=true scales noise to ≈1" begin
-    system = GPSL1()
+    system = GPSL1CA()
 
     out = generate_test_signal(system, 1;
         num_samples = 4096, sampling_freq = 4e6Hz,

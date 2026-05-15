@@ -31,7 +31,7 @@ Threshold value to compare against `result.peak_to_noise_ratio`.
 ```julia
 using Acquisition, GNSSSignals
 
-system = GPSL1()
+system = GPSL1CA()
 (; signal, sampling_freq, interm_freq) = generate_test_signal(system, 1)
 results = acquire(system, signal, sampling_freq, 1:32; interm_freq)
 detected = filter(is_detected, results)

@@ -64,7 +64,7 @@ plot(result, true)  # Use log scale (dB)
 
 [`acquire`](@ref), [`plan_acquire`](@ref)
 """
-struct AcquisitionResults{S<:AbstractGNSS,T,D<:AbstractRange}
+struct AcquisitionResults{S<:AbstractGNSSSignal,T,D<:AbstractRange}
     system::S
     prn::Int
     sampling_frequency::typeof(1.0Hz)

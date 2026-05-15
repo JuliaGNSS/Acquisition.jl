@@ -33,7 +33,7 @@ Pkg.add("Acquisition")
 using Acquisition, GNSSSignals
 import Unitful: Hz
 
-system = GPSL1()
+system = GPSL1CA()
 
 # Generate a synthetic GPS L1 signal for PRN 1
 (; signal, sampling_freq, interm_freq) = generate_test_signal(system, 1)

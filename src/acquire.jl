@@ -253,7 +253,7 @@ Convenience wrapper: calls [`plan_acquire`](@ref) then [`acquire!`](@ref).
 
 # Arguments
 
-  - `system`: GNSS system (e.g. `GPSL1()`)
+  - `system`: GNSS system (e.g. `GPSL1CA()`)
   - `signal`: Complex baseband signal samples
   - `sampling_freq`: Sampling frequency
   - `prns`: PRN numbers to search
@@ -282,7 +282,7 @@ Convenience wrapper: calls [`plan_acquire`](@ref) then [`acquire!`](@ref).
 [`plan_acquire`](@ref), [`acquire!`](@ref)
 """
 function acquire(
-    system::AbstractGNSS,
+    system::AbstractGNSSSignal,
     signal,
     sampling_freq,
     prns::AbstractVector{<:Integer};
@@ -314,7 +314,7 @@ end
 Single-PRN convenience method. Returns a single [`AcquisitionResults`](@ref).
 """
 function acquire(
-    system::AbstractGNSS,
+    system::AbstractGNSSSignal,
     signal,
     sampling_freq,
     prn::Integer;

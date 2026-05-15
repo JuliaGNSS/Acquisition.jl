@@ -8,7 +8,7 @@ The simplest way to acquire GNSS signals is with the [`acquire`](@ref) function:
 using Acquisition, GNSSSignals
 import Unitful: Hz
 
-system = GPSL1()
+system = GPSL1CA()
 
 # Generate a synthetic GPS L1 signal for PRN 1 (1 ms, 4 MHz)
 (; signal, sampling_freq, interm_freq) = generate_test_signal(system, 1;
@@ -446,7 +446,7 @@ and both FFT stages of the algorithm (inner double-block + column FFT).
 using Acquisition, GNSSSignals
 import Unitful: Hz
 
-recommend_sampling_freqs(GPSL1();
+recommend_sampling_freqs(GPSL1CA();
     fs_min = 2e6Hz,
     fs_max = 5e6Hz,
     min_doppler_coverage = 7000Hz,
@@ -481,7 +481,7 @@ output of a master clock, divider tree, and PLL. Pass an
 hardware can't produce:
 
 ```@example guide
-recommend_sampling_freqs(GPSL1();
+recommend_sampling_freqs(GPSL1CA();
     fs_min = 2e6Hz,
     fs_max = 8e6Hz,
     min_doppler_coverage = 7000Hz,

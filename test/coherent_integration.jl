@@ -2,7 +2,7 @@
 # Tests for _build_coherent_integration_matrix!
 
 @testset "Coherent integration matrix assembly — Tier 1: peak at known code delay" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
 

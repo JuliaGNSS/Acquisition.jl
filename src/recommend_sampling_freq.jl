@@ -180,7 +180,7 @@ This mirrors the per-PRN per coherent-step work, ignoring constant factors.
 
 # See also
 
-[`recommend_sampling_freqs(::AbstractGNSS)`](@ref), [`plan_acquire`](@ref)
+[`recommend_sampling_freqs(::AbstractGNSSSignal)`](@ref), [`plan_acquire`](@ref)
 """
 function recommend_sampling_freqs(
     code_length::Integer,
@@ -275,7 +275,7 @@ function recommend_sampling_freqs(
 end
 
 """
-    recommend_sampling_freqs(system::AbstractGNSS; kwargs...) -> Vector{SamplingFreqRecommendation}
+    recommend_sampling_freqs(system::AbstractGNSSSignal; kwargs...) -> Vector{SamplingFreqRecommendation}
 
 Convenience method that derives `code_length` and `code_freq` from `system` via
 `get_code_length(system)` and `get_code_frequency(system)`.
@@ -283,7 +283,7 @@ Convenience method that derives `code_length` and `code_freq` from `system` via
 All keyword arguments are forwarded to
 [`recommend_sampling_freqs(::Integer, ::Any)`](@ref).
 """
-function recommend_sampling_freqs(system::AbstractGNSS; kwargs...)
+function recommend_sampling_freqs(system::AbstractGNSSSignal; kwargs...)
     recommend_sampling_freqs(
         get_code_length(system),
         get_code_frequency(system);

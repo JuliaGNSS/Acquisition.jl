@@ -30,7 +30,7 @@ Pre-computed acquisition plan for FM-DBZP (Heckler & Garrison 2009).
 
 See [`plan_acquire`](@ref) and [`acquire`](@ref).
 """
-struct AcquisitionPlan{S<:AbstractGNSS,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEstimator}
+struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEstimator}
     system::S
     sampling_freq::typeof(1.0Hz)
     samples_per_code::Int       # paper N_τ  — samples per code period
@@ -126,7 +126,7 @@ start Julia with `-t N` before calling `plan_acquire` to enable multi-threaded a
 
 # Arguments
 
-- `system`: GNSS system (e.g. `GPSL1()`)
+- `system`: GNSS system (e.g. `GPSL1CA()`)
 - `sampling_freq`: Sampling frequency
 - `prns`: PRN numbers to pre-compute (e.g. `1:32`)
 
@@ -160,7 +160,7 @@ start Julia with `-t N` before calling `plan_acquire` to enable multi-threaded a
 [`acquire!`](@ref), [`acquire`](@ref)
 """
 function plan_acquire(
-    system::AbstractGNSS,
+    system::AbstractGNSSSignal,
     sampling_freq,
     prns::AbstractVector{<:Integer};
     min_doppler_coverage = 7000Hz,

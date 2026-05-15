@@ -2,7 +2,7 @@
 # Tests for noncoherent integration: column FFT accumulation, data bit search, code drift correction
 
 @testset "Column FFT accumulation — Tier 2: code delay and Doppler alias check" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
     # 1050 Hz: f_D*samples_per_code/sampling_freq = 1.05 (non-integer → non-degenerate), 1050 mod 1000 = 50 Hz
@@ -63,7 +63,7 @@
 end
 
 @testset "Data bit combination search — num_data_bits=2, no bit transitions in test signal" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
     true_doppler = 1500Hz
@@ -117,7 +117,7 @@ end
 end
 
 @testset "Data bit combination search — bit transition recovery" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
     true_doppler = 1050Hz  # 1050 mod 1000 = 50 Hz: non-degenerate
@@ -170,7 +170,7 @@ end
 end
 
 @testset "Bit edge search — bit_edge_search_steps=4 does not degrade strong signal" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
     # 3050 Hz: 3050/1000 = 3.05 (non-degenerate alias), 3050 mod 1000 = 50 Hz
@@ -212,7 +212,7 @@ end
 end
 
 @testset "Code drift correction — _apply_code_drift! shifts row by expected amount" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     plan = plan_acquire(system, sampling_freq, [1];
         min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 200)
@@ -253,7 +253,7 @@ end
     # (below) are reproducible. Signal generation already takes explicit `seed=`
     # arguments; the noise calls use randn() which reads the global RNG.
     Random.seed!(20260423)
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
     false_alarm_rate = 0.01
@@ -315,7 +315,7 @@ end
 end
 
 @testset "Bit transition at 0 Hz Doppler — data bit search recovers same peak as no-transition signal" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn    = 1
 
@@ -363,7 +363,7 @@ end
 end
 
 @testset "Multiple bit transitions at 0 Hz Doppler — 3 bits with pattern +1 −1 +1" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn    = 1
 
