@@ -1,5 +1,12 @@
 # Changelog
 
+# [2.3.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.2.0...v2.3.0) (2026-05-15)
+
+
+### Features
+
+* **deps:** bump to GNSSSignals v2 and update for renamed API ([2cae67b](https://github.com/JuliaGNSS/Acquisition.jl/commit/2cae67bf8f4e4e7d24d00b0483ae2c453248c6bd))
+
 # [2.2.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.1.1...v2.2.0) (2026-05-15)
 
 
