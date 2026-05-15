@@ -24,8 +24,8 @@ Returns a NamedTuple with fields: `signal`, `code`, `carrier`, `num_samples`,
 ```julia
 using Acquisition, GNSSSignals
 
-(; signal, prn, sampling_freq, interm_freq) = generate_test_signal(GPSL1(), 1)
-result = acquire(GPSL1(), signal, sampling_freq, prn; interm_freq)
+(; signal, prn, sampling_freq, interm_freq) = generate_test_signal(GPSL1CA(), 1)
+result = acquire(GPSL1CA(), signal, sampling_freq, prn; interm_freq)
 is_detected(result)  # true
 ```
 """

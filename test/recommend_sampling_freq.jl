@@ -57,7 +57,7 @@ end
 @testset "recommend_sampling_freqs — system convenience method" begin
     # GPS L1 C/A: code_length=1023, code_freq=1.023 MHz, T_code=1 ms
     rs = recommend_sampling_freqs(
-        GPSL1();
+        GPSL1CA();
         fs_min = 2e6Hz,
         fs_max = 5e6Hz,
         min_doppler_coverage = 7000Hz,
@@ -74,7 +74,7 @@ end
 
 @testset "recommend_sampling_freqs — num_alternatives clamps result length" begin
     rs = recommend_sampling_freqs(
-        GPSL1();
+        GPSL1CA();
         fs_min = 2e6Hz,
         fs_max = 10e6Hz,
         num_alternatives = 2,
@@ -127,12 +127,12 @@ end
 @testset "recommend_sampling_freqs — sdr_clock_plan filters out unreachable" begin
     plan = AD9361ClockPlan()
     rs_unconstrained = recommend_sampling_freqs(
-        GPSL1();
+        GPSL1CA();
         fs_min = 2e6Hz, fs_max = 5e6Hz,
         num_alternatives = 5,
     )
     rs_constrained = recommend_sampling_freqs(
-        GPSL1();
+        GPSL1CA();
         fs_min = 2e6Hz, fs_max = 5e6Hz,
         num_alternatives = 5,
         sdr_clock_plan = plan,
@@ -149,7 +149,7 @@ end
     plan = AD9361ClockPlan()
     # Ask for fs_max above hardware max — sweep should clamp to plan.fs_max
     rs = recommend_sampling_freqs(
-        GPSL1();
+        GPSL1CA();
         fs_min = 60e6Hz, fs_max = 80e6Hz,  # plan caps at 61.44 MHz
         num_alternatives = 5,
         sdr_clock_plan = plan,
@@ -178,7 +178,7 @@ end
 end
 
 @testset "recommend_sampling_freqs — show methods" begin
-    rs = recommend_sampling_freqs(GPSL1(); fs_min = 2e6Hz, fs_max = 5e6Hz, num_alternatives = 2)
+    rs = recommend_sampling_freqs(GPSL1CA(); fs_min = 2e6Hz, fs_max = 5e6Hz, num_alternatives = 2)
     # Force a wide IO so pretty_table doesn't truncate columns we want to test.
     io = IOContext(IOBuffer(), :displaysize => (24, 200))
     show(io, MIME"text/plain"(), rs)

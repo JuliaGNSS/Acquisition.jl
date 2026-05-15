@@ -29,7 +29,7 @@
 end
 
 @testset "CFAR detection with synthetic signal" begin
-    system = GPSL1()
+    system = GPSL1CA()
     prn = 1
 
     # Generate signal with known satellite
@@ -58,7 +58,7 @@ end
     # single-dwell synthetic test above: the analytic derivation in
     # `cfar_threshold` assumes per-cell χ²(2M) distribution, and we want the
     # end-to-end `acquire!` pipeline to reproduce that on synthetic AWGN.
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     samples_per_code = 2048
     pfa = 0.01
@@ -93,7 +93,7 @@ end
     # detected when num_noncoherent_accumulations > 1. This guards against a
     # threshold that's so loose it admits false alarms but also against one
     # that's so tight it rejects real signals.
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     samples_per_code = 2048
     pfa = 0.01
@@ -115,7 +115,7 @@ end
 end
 
 @testset "peak_to_noise_ratio is consistent with CN0" begin
-    system = GPSL1()
+    system = GPSL1CA()
 
     # Strong signal
     (; signal, prn, sampling_freq, interm_freq) =

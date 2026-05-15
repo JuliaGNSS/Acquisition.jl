@@ -2,7 +2,7 @@
 # Tests for plan_acquire and PRN FFT precomputation
 
 @testset "plan_acquire parameters — GPS L1 at 2.048 MHz" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     plan = plan_acquire(system, sampling_freq, [1];
         min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 1, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
@@ -23,7 +23,7 @@
 end
 
 @testset "plan_acquire parameters — GPS L1 multi-ms" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     # num_coherently_integrated_code_periods=40 → num_data_bits = 40÷20 = 2 data bits
     plan = plan_acquire(system, sampling_freq, [1];
@@ -40,7 +40,7 @@ end
 end
 
 @testset "plan_acquire validation errors" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     # num_coherently_integrated_code_periods >= bit_period_codes (20) but not divisible by it
     @test_throws ArgumentError plan_acquire(system, sampling_freq, [1];
@@ -64,7 +64,7 @@ end
 end
 
 @testset "PRN FFT precomputation" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     plan = plan_acquire(system, sampling_freq, [1, 2];
         min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 1)
@@ -99,7 +99,7 @@ end
         (16.368e6Hz, 11, 1488),  # 11 itself is a divisor (16368 = 2⁴·3·11·31)
         (25e6Hz,    20, 1250),   # divisors of 25000: …,10,20,25,…; smallest >= 11 is 20
     ]
-    system      = GPSL1()
+    system      = GPSL1CA()
     prn         = 1
     code_phase  = 110.613261
     doppler_hz  = 1000Hz

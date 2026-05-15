@@ -2,7 +2,7 @@
 # Tests for src/plot.jl: _fmdbzp_column_to_tau, _fmdbzp_sort_by_chip, and the @recipe
 
 @testset "plot recipe — throws when power_bins is nothing" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
     plan = plan_acquire(system, sampling_freq, [prn]; fft_flag = FFTW.ESTIMATE)
@@ -41,7 +41,7 @@ end
 end
 
 @testset "_fmdbzp_sort_by_chip — chip-ordered columns" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     plan = plan_acquire(system, sampling_freq, [1];
         min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = 1,
@@ -72,7 +72,7 @@ end
 end
 
 @testset "plot recipe — axes and data shape via RecipesBase" begin
-    system = GPSL1()
+    system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
 
