@@ -1,5 +1,12 @@
 # Changelog
 
+# [2.2.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.1.1...v2.2.0) (2026-05-15)
+
+
+### Features
+
+* opposite-row noise estimator as CFAR default ([5deabfc](https://github.com/JuliaGNSS/Acquisition.jl/commit/5deabfc84c29528a2bd2e385c6bf8f87418d9978))
+
 ## [2.1.1](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.1.0...v2.1.1) (2026-05-02)
 
 
