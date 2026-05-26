@@ -229,14 +229,15 @@ end
 
 # ============================================================================
 # Signal sweep — `plan_acquire` and `acquire!` across the GNSS signals this
-# package supports, at 10 PRNs each. Captures both runtime and RAM footprint
+# package supports, at 4 PRNs each. Captures both runtime and RAM footprint
 # (BenchmarkTools' `memory` field). Together these track Issue #60, which
 # targets the `plan_acquire` RAM footprint.
 #
-# 10 PRNs (not 32) keeps the suite fast — per-PRN buffers scale linearly so
-# the trend is the same. Sampling frequencies match each signal's practical
-# minimum: L1CA/E1B at 5/15 MHz (CBOC needs >= 12.276 MHz), L5I at 25 MHz,
-# L1C-P at 16 MHz (the heavy case from Issue #60).
+# 4 PRNs (not 32) keeps the suite within the GitHub Actions 7 GB runner —
+# per-PRN buffers scale linearly so the trend is preserved. Sampling
+# frequencies match each signal's practical minimum: L1CA/E1B at 5/15 MHz
+# (CBOC needs >= 12.276 MHz), L5I at 25 MHz, L1C-P at 16 MHz (the heavy
+# case from Issue #60).
 #
 # `plan_acquire` sizes its per-thread scratch by `Threads.maxthreadid()` at
 # the time of the call, so the PlanAcquire memory grows with the launched
@@ -257,7 +258,7 @@ if _is_fmdbzp
         (GNSSSignals.GPSL5I,     25.0e6Hz,  "L5I_25MHz"),
         (GNSSSignals.GPSL1C_P,   16.0e6Hz,  "L1CP_16MHz"),
     ]
-    bench_prns = collect(1:10)
+    bench_prns = collect(1:4)
 
     for (sys_ctor, fs, label) in signal_cases
         SUITE["PlanAcquire"][label] =
