@@ -1,6 +1,149 @@
 # test/noncoherent_integration.jl
 # Tests for noncoherent integration: column FFT accumulation, data bit search, code drift correction
 
+@testset "Fused FFT+|x|²+code-drift+fftshift kernel matches unfused pipeline" begin
+    # Issue #62: extends the slice-5 fusion to the multistep simple path by
+    # folding `_apply_code_drift!` into the per-column accumulator loop. Each
+    # row r writes its (c) cell into nim[fftshift_perm[r], (c + shift_r) mod spc]
+    # where shift_r is the existing _apply_code_drift! formula (which reads
+    # plan.doppler_freqs[r] — we mirror that exact behaviour, including the
+    # raw-FFT-bin vs sorted-doppler indexing convention, for bitwise parity).
+    Random.seed!(20260526)
+    sampling_freq_hz_test = 5.0e6
+    carrier_freq_hz_test = 1.57542e9  # GPS L1
+    for (num_doppler_bins, samples_per_code, accumulation_step) in [
+        (64, 256, 5),       # batched-path size, non-zero step
+        (321, 128, 3),      # per-column-path size (one above the threshold)
+        (8, 5000, 7),       # L1CA 5MHz / N_coh=1 / N_nc=8 (the canonical issue-62 case)
+        (32, 2048, 0),      # step 0: drift must be a no-op
+    ]
+        cim_template = randn(ComplexF32, num_doppler_bins, samples_per_code)
+        col_proto = zeros(ComplexF32, num_doppler_bins)
+        col_fft_plan = plan_fft!(col_proto)
+        col_batch_fft_plan = if num_doppler_bins <= Acquisition.BATCH_FFT_THRESHOLD
+            batch_proto = zeros(ComplexF32, num_doppler_bins, samples_per_code)
+            plan_fft!(batch_proto, 1)
+        else
+            nothing
+        end
+        fftshift_perm = [mod(r - 1 + num_doppler_bins ÷ 2, num_doppler_bins) + 1
+                         for r in 1:num_doppler_bins]
+
+        # Synthetic doppler grid in sorted order (matches plan.doppler_freqs).
+        doppler_coverage_hz = 32_000.0
+        doppler_freqs = range(-doppler_coverage_hz / 2,
+                              step = doppler_coverage_hz / num_doppler_bins,
+                              length = num_doppler_bins)
+        coherent_duration_s = samples_per_code / sampling_freq_hz_test
+        # Raw shifts for the reference circshift (any integer is fine).
+        raw_shifts = [round(Int, doppler_freqs[r] * accumulation_step *
+                       coherent_duration_s * sampling_freq_hz_test / carrier_freq_hz_test)
+                      for r in 1:num_doppler_bins]
+        # Fused kernels expect shifts normalised to [0, samples_per_code) so
+        # they can replace `mod` with a single conditional subtract — matches
+        # the convention `_fill_code_drift_shifts!` writes.
+        norm_shifts = [mod(s, samples_per_code) for s in raw_shifts]
+
+        # Reference: unfused pipeline (pilot accumulator → row-wise circshift → fftshift scatter)
+        ref_acc = zeros(Float32, num_doppler_bins, samples_per_code)
+        ref_buf = zeros(Float32, num_doppler_bins, samples_per_code)
+        col_buf = zeros(ComplexF32, num_doppler_bins)
+        Acquisition._accumulate_noncoherent_integration_pilot!(ref_buf, copy(cim_template),
+            col_buf, col_fft_plan, samples_per_code)
+        # Apply the row-wise circular shift (mirrors _apply_code_drift! body exactly).
+        if accumulation_step != 0
+            row_buf = zeros(Float32, samples_per_code)
+            row_shift_buf = zeros(Float32, samples_per_code)
+            for r in 1:num_doppler_bins
+                raw_shifts[r] == 0 && continue
+                row_buf .= view(ref_buf, r, :)
+                circshift!(row_shift_buf, row_buf, raw_shifts[r])
+                ref_buf[r, :] .= row_shift_buf
+            end
+        end
+        Acquisition._scatter_fftshift_accumulate!(ref_acc, ref_buf, fftshift_perm, samples_per_code)
+
+        # Fused: per-column path
+        fused_acc = zeros(Float32, num_doppler_bins, samples_per_code)
+        Acquisition._accumulate_fftshifted_power_drift_pilot!(fused_acc, copy(cim_template),
+            zeros(ComplexF32, num_doppler_bins), col_fft_plan,
+            samples_per_code, num_doppler_bins, fftshift_perm, norm_shifts)
+        @test fused_acc ≈ ref_acc
+
+        # Fused: batched path (only valid below the threshold)
+        if col_batch_fft_plan !== nothing
+            fused_acc_batched = zeros(Float32, num_doppler_bins, samples_per_code)
+            Acquisition._accumulate_fftshifted_power_drift_pilot_batched!(fused_acc_batched,
+                copy(cim_template), col_batch_fft_plan, samples_per_code, num_doppler_bins,
+                fftshift_perm, norm_shifts)
+            @test fused_acc_batched ≈ ref_acc
+        end
+    end
+end
+
+@testset "_fill_code_drift_shifts! has_drift flag and non-drift dispatch" begin
+    # Validate the early-exit that lets the multistep simple path skip the
+    # fused-drift kernel and run the SIMD-friendly slice-5 kernel when every
+    # row's rounded drift is zero. Two scenarios:
+    #   (a) L1CA / 5 MHz / N_coh=1: doppler×step×T_coh×fs/fc rounds to 0 for
+    #       every row up to N_nc≈8. has_drift must stay false → dispatcher
+    #       must produce the same output as the non-drift kernel run direct.
+    #   (b) L1CA / 2.048 MHz / N_coh=20: drift is large enough that some
+    #       rows are non-zero at step=7. has_drift must flip to true and
+    #       shifts must be normalised to [0, samples_per_code).
+    Random.seed!(20260526)
+
+    # (a) all-zero drift on the simple/batched path
+    plan_a = plan_acquire(GPSL1CA(), 5.0e6Hz, [1];
+        min_doppler_coverage = 2000Hz, num_noncoherent_accumulations = 8)
+    n_dop_a = length(plan_a.doppler_freqs)
+    shifts_a = zeros(Int, n_dop_a)
+
+    # step 0: definitionally has_drift=false, shifts all 0
+    @test Acquisition._fill_code_drift_shifts!(shifts_a, plan_a, 0) == false
+    @test all(iszero, shifts_a)
+
+    # step 7: doppler×step×T_coh×fs/fc < 0.5 for every row at this grid →
+    # rounds to 0. has_drift must STILL be false.
+    @test Acquisition._fill_code_drift_shifts!(shifts_a, plan_a, 7) == false
+    @test all(iszero, shifts_a)
+
+    # End-to-end: dispatcher at step 7 must produce the same nim as a direct
+    # call to the non-drift slice-5 kernel on the same CIM.
+    cim_a = randn(ComplexF32, n_dop_a, plan_a.samples_per_code)
+    nim_via_dispatch = zeros(Float32, n_dop_a, plan_a.samples_per_code)
+    Acquisition._accumulate_noncoherent_integration_step!(nim_via_dispatch, copy(cim_a), plan_a, 7)
+
+    nim_direct = zeros(Float32, n_dop_a, plan_a.samples_per_code)
+    if n_dop_a <= Acquisition.BATCH_FFT_THRESHOLD
+        Acquisition._accumulate_fftshifted_power_pilot_batched!(
+            nim_direct, copy(cim_a), plan_a.col_batch_fft_plan,
+            plan_a.samples_per_code, n_dop_a)
+    else
+        Acquisition._accumulate_fftshifted_power_pilot!(
+            nim_direct, copy(cim_a), Acquisition._default_scratch(plan_a).col_buf,
+            plan_a.col_fft_plan, plan_a.samples_per_code, n_dop_a)
+    end
+    @test nim_via_dispatch ≈ nim_direct
+
+    # (b) non-zero drift on the per-column path
+    plan_b = plan_acquire(GPSL1CA(), 2.048e6Hz, [1];
+        min_doppler_coverage = 12_000Hz,
+        num_coherently_integrated_code_periods = 20,
+        num_noncoherent_accumulations = 8)
+    n_dop_b = length(plan_b.doppler_freqs)
+    shifts_b = zeros(Int, n_dop_b)
+
+    # step 0 is still has_drift=false even on the larger grid.
+    @test Acquisition._fill_code_drift_shifts!(shifts_b, plan_b, 0) == false
+    @test all(iszero, shifts_b)
+
+    # step 7 must flip has_drift to true and normalise shifts to [0, spc).
+    @test Acquisition._fill_code_drift_shifts!(shifts_b, plan_b, 7) == true
+    @test any(!iszero, shifts_b)
+    @test all(s -> 0 <= s < plan_b.samples_per_code, shifts_b)
+end
+
 @testset "Fused FFT+|x|²+fftshift kernel matches unfused pipeline" begin
     # The slice-5 fused kernel must produce bit-identical output to the
     # unfused `column FFT -> |x|² -> _scatter_fftshift_accumulate!` chain it
