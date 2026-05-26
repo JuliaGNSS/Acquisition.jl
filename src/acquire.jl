@@ -217,6 +217,11 @@ function _acquire_sequential!(plan, signal, prns, segment_length, interm_freq_hz
     num_doppler_bins = length(plan.doppler_freqs)
     doppler_step = step(plan.doppler_freqs)
 
+    # When the simple/pilot routing applies, fuse the column FFT + |x|² + fftshift
+    # row permutation into one pass directly into the accumulator — see
+    # `_accumulate_fftshifted_power_pilot!`. Otherwise (bit edge / data bit
+    # search) fall back to the unfused `_accumulate_noncoherent_integration_step!`.
+    simple_path = plan.num_data_bits == 1 && plan.bit_edge_search_steps == 1
     @batch per=core for result_idx in eachindex(prns)
         prn = @inbounds prns[result_idx]
         prn_idx = findfirst(==(prn), plan.avail_prns)
@@ -235,8 +240,21 @@ function _acquire_sequential!(plan, signal, prns, segment_length, interm_freq_hz
             scratch.corr_buf,
             plan.double_block_bfft_plan,
         )
-        _accumulate_noncoherent_integration_step!(accumulator, scratch.coherent_integration_matrix,
-            plan, scratch, 0)
+        if simple_path
+            if num_doppler_bins <= BATCH_FFT_THRESHOLD
+                _accumulate_fftshifted_power_pilot_batched!(
+                    accumulator, scratch.coherent_integration_matrix,
+                    plan.col_batch_fft_plan, plan.samples_per_code, num_doppler_bins)
+            else
+                _accumulate_fftshifted_power_pilot!(
+                    accumulator, scratch.coherent_integration_matrix,
+                    scratch.col_buf, plan.col_fft_plan,
+                    plan.samples_per_code, num_doppler_bins)
+            end
+        else
+            _accumulate_noncoherent_integration_step!(accumulator, scratch.coherent_integration_matrix,
+                plan, scratch, 0)
+        end
 
         results[result_idx] = _extract_result!(plan, scratch, prn, prn_idx, accumulator,
             sampling_freq_hz, code_freq_hz, code_length, code_period,

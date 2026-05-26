@@ -192,21 +192,13 @@ end
 
     alias_period = plan_no_search.sampling_freq / plan_no_search.samples_per_code  # 1000 Hz
 
+    # Drive each plan end-to-end through acquire! and verify the detected
+    # Doppler is a valid alias of the true Doppler. The simple-path N_nc=1
+    # plan now goes through the fused FFT+|x|²+fftshift kernel, so we can't
+    # poke at the unfused noncoherent matrix directly the way we used to.
     for plan in (plan_no_search, plan_with_search)
-        scratch = Acquisition._default_scratch(plan)
-        num_doppler_bins = plan.num_coherently_integrated_code_periods * plan.num_blocks
-        Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, signal_f32,
-            plan.samples_per_code, plan.num_blocks, plan.block_size,
-            plan.num_coherently_integrated_code_periods, scratch.double_block_buf,
-            plan.double_block_fft_plan)
-        Acquisition._build_coherent_integration_matrix!(scratch.coherent_integration_matrix, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
-            plan.samples_per_code, plan.num_blocks, plan.block_size, plan.num_coherently_integrated_code_periods,
-            scratch.corr_buf, plan.double_block_bfft_plan)
-        noncoherent_integration_matrix = zeros(Float32, num_doppler_bins, plan.samples_per_code)
-        Acquisition._accumulate_noncoherent_integration_step!(noncoherent_integration_matrix, scratch.coherent_integration_matrix, plan, 0)
-
-        peak_row, _ = Tuple(argmax(noncoherent_integration_matrix))
-        detected_doppler = plan.doppler_freqs[peak_row]
+        result = only(acquire!(plan, signal_f32, [prn]; interm_freq = 0.0Hz))
+        detected_doppler = result.carrier_doppler
         doppler_bin_spacing = step(plan.doppler_freqs)
         # FM-DBZP alias ambiguity: check detected Doppler is a valid alias
         diff = mod((detected_doppler - true_doppler) / (1Hz), alias_period / (1Hz))
