@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.3.1](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.3.0...v2.3.1) (2026-05-26)
+
+
+### Performance Improvements
+
+* allocate result_buffers lazily when store_power_bins is set ([9d8d9b2](https://github.com/JuliaGNSS/Acquisition.jl/commit/9d8d9b22dfe1d8a6af90922b12a292e19fc49fc4))
+* fuse |x|² + fftshift into accumulator on the N_nc=1 simple path ([2b53632](https://github.com/JuliaGNSS/Acquisition.jl/commit/2b536321fe87150841b51f52ae8aa36bc12203c0)), closes [#60](https://github.com/JuliaGNSS/Acquisition.jl/issues/60)
+* process PRNs sequentially when num_noncoherent_accumulations == 1 ([7f15f84](https://github.com/JuliaGNSS/Acquisition.jl/commit/7f15f8487c919ee1bd30785ffca40dfab233cc8b))
+* skip per-thread sign-search buffers when the simple path is taken ([eaa2b58](https://github.com/JuliaGNSS/Acquisition.jl/commit/eaa2b585082736ff253aed05274064f786636f3c))
+
 # [2.3.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.2.0...v2.3.0) (2026-05-15)
 
 
