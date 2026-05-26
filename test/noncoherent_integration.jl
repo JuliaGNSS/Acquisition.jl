@@ -1,6 +1,58 @@
 # test/noncoherent_integration.jl
 # Tests for noncoherent integration: column FFT accumulation, data bit search, code drift correction
 
+@testset "Fused FFT+|x|²+fftshift kernel matches unfused pipeline" begin
+    # The slice-5 fused kernel must produce bit-identical output to the
+    # unfused `column FFT -> |x|² -> _scatter_fftshift_accumulate!` chain it
+    # replaces. Run both on the same synthetic CIM and assert equality. The
+    # `_accumulate_fftshifted_power_pilot!` (per-column) path is otherwise
+    # unreachable from the test suite because it only fires at
+    # num_doppler_bins > BATCH_FFT_THRESHOLD with simple-path + N_nc=1,
+    # which no acquire! test currently spans.
+    Random.seed!(20260526)
+    for (num_doppler_bins, samples_per_code) in [
+        (64, 256),      # batched-path size
+        (321, 128),     # per-column-path size (one above the threshold)
+        (55, 64),       # odd num_doppler_bins (16.368 MHz / N_coh=5 maps here)
+    ]
+        cim_template = randn(ComplexF32, num_doppler_bins, samples_per_code)
+        # Pre-build an FFTW plan matching how plan_acquire would
+        col_proto = zeros(ComplexF32, num_doppler_bins)
+        col_fft_plan = plan_fft!(col_proto)
+        col_batch_fft_plan = if num_doppler_bins <= Acquisition.BATCH_FFT_THRESHOLD
+            batch_proto = zeros(ComplexF32, num_doppler_bins, samples_per_code)
+            plan_fft!(batch_proto, 1)
+        else
+            nothing
+        end
+        fftshift_perm = [mod(r - 1 + num_doppler_bins ÷ 2, num_doppler_bins) + 1
+                         for r in 1:num_doppler_bins]
+
+        # Reference: unfused pipeline on a copy of the CIM.
+        ref_acc = zeros(Float32, num_doppler_bins, samples_per_code)
+        ref_buf = zeros(Float32, num_doppler_bins, samples_per_code)
+        col_buf = zeros(ComplexF32, num_doppler_bins)
+        Acquisition._accumulate_noncoherent_integration_pilot!(ref_buf, copy(cim_template),
+            col_buf, col_fft_plan, samples_per_code)
+        Acquisition._scatter_fftshift_accumulate!(ref_acc, ref_buf, fftshift_perm, samples_per_code)
+
+        # Fused: per-column path.
+        fused_acc = zeros(Float32, num_doppler_bins, samples_per_code)
+        Acquisition._accumulate_fftshifted_power_pilot!(fused_acc, copy(cim_template),
+            zeros(ComplexF32, num_doppler_bins), col_fft_plan,
+            samples_per_code, num_doppler_bins)
+        @test fused_acc ≈ ref_acc
+
+        # Fused: batched path (only valid below the threshold).
+        if col_batch_fft_plan !== nothing
+            fused_acc_batched = zeros(Float32, num_doppler_bins, samples_per_code)
+            Acquisition._accumulate_fftshifted_power_pilot_batched!(fused_acc_batched,
+                copy(cim_template), col_batch_fft_plan, samples_per_code, num_doppler_bins)
+            @test fused_acc_batched ≈ ref_acc
+        end
+    end
+end
+
 @testset "Column FFT accumulation — Tier 2: code delay and Doppler alias check" begin
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
