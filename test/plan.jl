@@ -166,3 +166,32 @@ end
         @test hasfield(typeof(scratch), f)
     end
 end
+
+@testset "result_buffers are lazy — nothing unless store_power_bins=true" begin
+    # Default acquire! (store_power_bins=false) must not allocate any per-PRN
+    # result matrix. Only when the caller opts in does the slot fill in, and once
+    # filled it stays cached for the next call (reuse contract).
+    system = GPSL1CA()
+    sampling_freq = 2.048e6Hz
+    plan = plan_acquire(system, sampling_freq, [1, 2]; fft_flag = FFTW.ESTIMATE)
+    @test all(b -> b === nothing, plan.result_buffers)
+
+    (; signal) = generate_test_signal(system, 1;
+        num_samples = plan.samples_per_code, sampling_freq = sampling_freq,
+        interm_freq = 0.0Hz, CN0 = 45)
+    sig = ComplexF32.(signal)
+
+    # store_power_bins=false leaves the slots empty.
+    acquire!(plan, sig, [1, 2]; interm_freq = 0.0Hz, store_power_bins = false)
+    @test all(b -> b === nothing, plan.result_buffers)
+
+    # First store_power_bins=true call allocates and caches.
+    results = acquire!(plan, sig, [1, 2]; interm_freq = 0.0Hz, store_power_bins = true)
+    @test all(b -> b isa Matrix{Float32}, plan.result_buffers)
+    @test results[1].power_bins === plan.result_buffers[1]
+
+    # Reuse contract: the second call must reuse the same buffer object.
+    cached = plan.result_buffers[1]
+    acquire!(plan, sig, [1, 2]; interm_freq = 0.0Hz, store_power_bins = true)
+    @test plan.result_buffers[1] === cached
+end

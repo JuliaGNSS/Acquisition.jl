@@ -54,7 +54,10 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     signal_block_ffts::Matrix{ComplexF32} # (double_block_size, num_coh*num_blocks) — precomputed once per acquire!, shared across PRNs
     noncoherent_integration_matrices::Vector{Matrix{Float32}}  # per PRN, (num_doppler_bins, samples_per_code); index i corresponds to avail_prns[i]
     fftshift_perm::Vector{Int}               # length num_doppler_bins — pre-computed fftshift row permutation
-    result_buffers::Vector{Matrix{Float32}}  # per PRN, pre-allocated copy of power_bins for AcquisitionResults
+    # Per PRN: holds a copy of power_bins when the caller of `acquire!` passes
+    # store_power_bins=true. Initialised to `nothing` and allocated on the first
+    # opt-in call per PRN; subsequent calls reuse the same matrix in-place.
+    result_buffers::Vector{Union{Nothing,Matrix{Float32}}}
     avail_prns::Vector{Int}
     # Per-thread scratch, indexed by Threads.threadid() (length = nthreads at plan_acquire time).
     # Thread 1's entry doubles as the ambient single-threaded scratch — see `_default_scratch`.
@@ -280,7 +283,7 @@ function plan_acquire(
     signal_block_ffts = zeros(ComplexF32, double_block_size, num_coherently_integrated_code_periods * num_blocks)
     noncoherent_integration_matrices = [zeros(Float32, num_doppler_bins, samples_per_code) for _ in prns]
     fftshift_perm = [mod(r - 1 + num_doppler_bins ÷ 2, num_doppler_bins) + 1 for r in 1:num_doppler_bins]
-    result_buffers = [zeros(Float32, num_doppler_bins, samples_per_code) for _ in prns]
+    result_buffers = Union{Nothing,Matrix{Float32}}[nothing for _ in prns]
 
     # Per-thread scratch: one entry per thread, indexed by Threads.threadid().
     # Use maxthreadid() to cover Julia's internal task-switching threads (always >= nthreads()).
