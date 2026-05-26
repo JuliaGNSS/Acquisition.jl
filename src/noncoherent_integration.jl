@@ -167,6 +167,90 @@ function _accumulate_fftshifted_power_pilot_batched!(
     end
 end
 
+# Per-column FFT followed by `|x|²` accumulation with per-row code-drift column
+# shift AND fftshift row permutation, folded into one pass. Extends the slice-5
+# fusion (`_accumulate_fftshifted_power_pilot!`) to the multistep simple path
+# (Issue #62): drops the `noncoherent_integration_buf` intermediate that the
+# unfused pipeline (`pilot! → _apply_code_drift! → _scatter_fftshift_accumulate!`)
+# materialises and traverses twice per step.
+#
+# `code_drift_shifts[r]` is the row-r column shift, pre-normalised to
+# `[0, samples_per_code)` by `_fill_code_drift_shifts!`. That lets the inner
+# loop replace `mod(c-1+shift_r, spc)+1` with a single conditional subtract.
+# The caller must dispatch to the non-drift slice-5 kernel when every row's
+# drift rounds to 0 (step 0, or any step whose rounded drift is zero — at the
+# L1CA / 5 MHz / N_coh=1 grid that's true for every step up to N_nc≈8, so the
+# early-exit covers the dominant simple-path case).
+function _accumulate_fftshifted_power_drift_pilot!(
+    accumulator::Matrix{Float32},
+    coherent_integration_matrix::Matrix{ComplexF32},
+    col_buf::Vector{ComplexF32},
+    col_fft_plan,
+    samples_per_code::Int,
+    num_doppler_bins::Int,
+    fftshift_perm::Vector{Int},
+    code_drift_shifts::Vector{Int},
+)
+    @inbounds for col_idx in 1:samples_per_code
+        copyto!(col_buf, 1, coherent_integration_matrix, (col_idx - 1) * num_doppler_bins + 1, num_doppler_bins)
+        mul!(col_buf, col_fft_plan, col_buf)
+        c_minus_1 = col_idx - 1
+        for r in 1:num_doppler_bins
+            sum = c_minus_1 + code_drift_shifts[r]
+            dst_col = (sum >= samples_per_code ? sum - samples_per_code : sum) + 1
+            accumulator[fftshift_perm[r], dst_col] += abs2(col_buf[r])
+        end
+    end
+end
+
+# Batched-FFT counterpart of `_accumulate_fftshifted_power_drift_pilot!`.
+function _accumulate_fftshifted_power_drift_pilot_batched!(
+    accumulator::Matrix{Float32},
+    coherent_integration_matrix::Matrix{ComplexF32},
+    col_batch_fft_plan,
+    samples_per_code::Int,
+    num_doppler_bins::Int,
+    fftshift_perm::Vector{Int},
+    code_drift_shifts::Vector{Int},
+)
+    mul!(coherent_integration_matrix, col_batch_fft_plan, coherent_integration_matrix)
+    @inbounds for col_idx in 1:samples_per_code
+        c_minus_1 = col_idx - 1
+        for r in 1:num_doppler_bins
+            sum = c_minus_1 + code_drift_shifts[r]
+            dst_col = (sum >= samples_per_code ? sum - samples_per_code : sum) + 1
+            accumulator[fftshift_perm[r], dst_col] += abs2(coherent_integration_matrix[r, col_idx])
+        end
+    end
+end
+
+# Fill `shifts[r]` with the row-r column shift from `_apply_code_drift!`,
+# normalised to `[0, samples_per_code)` so the hot loop in the fused kernel
+# can drop `mod` for a single conditional subtract. Returns `true` if any
+# shift rounded to non-zero (caller dispatches to the fused-drift kernel) or
+# `false` if every row's drift rounds to 0 (caller uses the cheaper non-drift
+# slice-5 kernel — the typical case at low-fs / short-T_coh grids).
+function _fill_code_drift_shifts!(shifts::Vector{Int}, plan::AcquisitionPlan, accumulation_step_index::Int)
+    if accumulation_step_index == 0
+        fill!(shifts, 0)
+        return false
+    end
+    sampling_freq_hz = ustrip(Hz, plan.sampling_freq)
+    carrier_freq_hz = ustrip(Hz, get_center_frequency(plan.system))
+    coherent_duration_s = plan.num_coherently_integrated_code_periods * plan.samples_per_code / sampling_freq_hz
+    samples_per_code = plan.samples_per_code
+    has_drift = false
+    @inbounds for r in 1:length(shifts)
+        doppler_hz = ustrip(Hz, plan.doppler_freqs[r])
+        raw = round(Int, doppler_hz * accumulation_step_index * coherent_duration_s * sampling_freq_hz / carrier_freq_hz)
+        if raw != 0
+            has_drift = true
+        end
+        shifts[r] = mod(raw, samples_per_code)
+    end
+    return has_drift
+end
+
 # Scatter `src` into `dst` applying fftshift row permutation (accumulating).
 # For even num_doppler_bins — the only case in practice — this is a top/bottom
 # half swap, which SIMDs. For odd N, fall back to the indexed scatter (the
@@ -217,30 +301,43 @@ function _accumulate_noncoherent_integration_step!(
     accumulation_step_index::Int,
 )
     num_doppler_bins = plan.num_coherently_integrated_code_periods * plan.num_blocks
-    noncoherent_integration_max_buf = scratch.noncoherent_integration_max_buf
-    noncoherent_integration_buf = scratch.noncoherent_integration_buf
 
     if plan.num_data_bits == 1 && plan.bit_edge_search_steps == 1
-        # Pilot channel or no bit edge search requested: fast path
-        fill!(noncoherent_integration_buf, 0.0f0)
-        if num_doppler_bins <= BATCH_FFT_THRESHOLD
-            # Batched column FFT: FFT all columns at once along dim 1 (in-place on CIM).
-            # Faster than individual column FFTs when num_doppler_bins is small because
-            # it amortises FFTW plan-dispatch overhead across all columns.
-            mul!(coherent_integration_matrix, plan.col_batch_fft_plan, coherent_integration_matrix)
-            @inbounds for col_idx in 1:plan.samples_per_code
-                for doppler_bin in 1:num_doppler_bins
-                    noncoherent_integration_buf[doppler_bin, col_idx] += abs2(coherent_integration_matrix[doppler_bin, col_idx])
-                end
+        # Simple/pilot path: fused FFT+|x|²+(code-drift)+fftshift kernel writes
+        # straight into `noncoherent_integration_matrix`. The drift kernel is
+        # taken only when at least one row's rounded drift is non-zero — at
+        # step 0, and at every step where the rounded drift is 0 for all rows
+        # (typical for short coherent durations / small doppler grids), the
+        # cheaper SIMD-friendly slice-5 non-drift kernel runs instead.
+        has_drift = _fill_code_drift_shifts!(scratch.code_drift_shifts, plan, accumulation_step_index)
+        if !has_drift
+            if num_doppler_bins <= BATCH_FFT_THRESHOLD
+                _accumulate_fftshifted_power_pilot_batched!(
+                    noncoherent_integration_matrix, coherent_integration_matrix,
+                    plan.col_batch_fft_plan, plan.samples_per_code, num_doppler_bins)
+            else
+                _accumulate_fftshifted_power_pilot!(
+                    noncoherent_integration_matrix, coherent_integration_matrix,
+                    scratch.col_buf, plan.col_fft_plan,
+                    plan.samples_per_code, num_doppler_bins)
             end
         else
-            # Individual column FFTs: better cache utilisation for large num_doppler_bins.
-            _accumulate_noncoherent_integration_pilot!(noncoherent_integration_buf, coherent_integration_matrix, scratch.col_buf,
-                plan.col_fft_plan, plan.samples_per_code)
+            if num_doppler_bins <= BATCH_FFT_THRESHOLD
+                _accumulate_fftshifted_power_drift_pilot_batched!(
+                    noncoherent_integration_matrix, coherent_integration_matrix,
+                    plan.col_batch_fft_plan, plan.samples_per_code, num_doppler_bins,
+                    plan.fftshift_perm, scratch.code_drift_shifts)
+            else
+                _accumulate_fftshifted_power_drift_pilot!(
+                    noncoherent_integration_matrix, coherent_integration_matrix,
+                    scratch.col_buf, plan.col_fft_plan,
+                    plan.samples_per_code, num_doppler_bins,
+                    plan.fftshift_perm, scratch.code_drift_shifts)
+            end
         end
-        _apply_code_drift!(noncoherent_integration_buf, plan, scratch, accumulation_step_index)
-        _scatter_fftshift_accumulate!(noncoherent_integration_matrix, noncoherent_integration_buf, plan.fftshift_perm, plan.samples_per_code)
     else
+        noncoherent_integration_max_buf = scratch.noncoherent_integration_max_buf
+        noncoherent_integration_buf = scratch.noncoherent_integration_buf
         # Data channel or sub-bit with bit edge search: iterate over bit_edge_search_steps candidate
         # alignments. For sub-bit (num_data_bits==1), only one bit sign pattern exists so
         # _accumulate_noncoherent_integration_data_bits! just picks the best-aligned window. For multi-bit

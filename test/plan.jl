@@ -229,11 +229,11 @@ end
         (length(search_plan.doppler_freqs), search_plan.num_data_bits)
 end
 
-@testset "noncoherent_integration_buf is 0x0 when fused FFT+abs2+fftshift kernel runs" begin
-    # At N_nc==1 with the simple/pilot path, the fused kernel writes |FFT|²
-    # straight into the accumulator with fftshift permutation and never touches
-    # `noncoherent_integration_buf`. The buf can be dropped per-thread; sign-search
-    # path and multistep (N_nc>1) still need it full-sized.
+@testset "noncoherent_integration_buf is 0x0 whenever the simple path runs" begin
+    # The fused FFT+|x|²+(code-drift)+fftshift kernel writes straight into the
+    # destination, so the simple/pilot path never touches `noncoherent_integration_buf`.
+    # That's true at N_nc==1 (slice 5) AND at N_nc>1 (Issue #62). Sign-search is
+    # the only remaining consumer of the buf.
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
 
@@ -246,6 +246,19 @@ end
         @test size(t_scratch.noncoherent_integration_buf) == (0, 0)
     end
 
+    # Multistep (N_nc>1) simple path: the fused kernel handles code drift, so
+    # the buf is dropped here too. This is the Issue #62 regression-lock.
+    multi_simple_plan = plan_acquire(system, sampling_freq, [1];
+        num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 2)
+    multi_simple_scratch = Acquisition._default_scratch(multi_simple_plan)
+    @test multi_simple_plan.num_data_bits == 1
+    @test multi_simple_plan.bit_edge_search_steps == 1
+    @test multi_simple_plan.num_noncoherent_accumulations == 2
+    @test size(multi_simple_scratch.noncoherent_integration_buf) == (0, 0)
+    for t_scratch in multi_simple_plan.thread_scratch
+        @test size(t_scratch.noncoherent_integration_buf) == (0, 0)
+    end
+
     # Sign-search at N_nc=1 still needs the buf.
     sign_search_plan = plan_acquire(system, sampling_freq, [1];
         min_doppler_coverage = 10_000Hz,
@@ -253,11 +266,13 @@ end
     @test size(Acquisition._default_scratch(sign_search_plan).noncoherent_integration_buf) ==
         (length(sign_search_plan.doppler_freqs), sign_search_plan.samples_per_code)
 
-    # Multistep (N_nc>1) needs the buf too, even on the simple path.
-    multi_plan = plan_acquire(system, sampling_freq, [1];
-        num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 2)
-    @test size(Acquisition._default_scratch(multi_plan).noncoherent_integration_buf) ==
-        (length(multi_plan.doppler_freqs), multi_plan.samples_per_code)
+    # Multistep sign-search needs the buf too.
+    multi_sign_plan = plan_acquire(system, sampling_freq, [1];
+        min_doppler_coverage = 10_000Hz,
+        num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4,
+        num_noncoherent_accumulations = 2)
+    @test size(Acquisition._default_scratch(multi_sign_plan).noncoherent_integration_buf) ==
+        (length(multi_sign_plan.doppler_freqs), multi_sign_plan.samples_per_code)
 end
 
 @testset "sequential N_nc=1 layout: empty per-PRN matrices, full per-thread accumulator" begin

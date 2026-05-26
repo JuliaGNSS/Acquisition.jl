@@ -27,6 +27,10 @@ struct AcquisitionScratch
     noncoherent_integration_accumulator::Matrix{Float32}
     sub_block_ffts::Matrix{ComplexF32}              # (num_doppler_bins, num_data_bits) — 0x0 when simple path is taken (see plan_acquire)
     col_sums_buf::Vector{Float32}                   # length samples_per_code — scratch for est_signal_noise_power
+    # Row-wise code-drift shifts pre-filled per accumulation step on the
+    # multistep simple path. length num_doppler_bins when that path is active;
+    # 0 otherwise (sequential N_nc=1 path and sign-search path don't use it).
+    code_drift_shifts::Vector{Int}
 end
 
 """
@@ -310,13 +314,21 @@ function plan_acquire(
     sign_search_max_cols = sign_search_path_active ? samples_per_code  : 0
     sub_block_cols       = sign_search_path_active ? num_data_bits     : 0
 
-    # `noncoherent_integration_buf` (the |x|² intermediate) is bypassed when the
-    # fused FFT+|x|²+fftshift kernel runs (sequential N_nc==1 + simple path).
-    # Sign-search-at-N_nc==1 and any multistep path still consume the buf, so
-    # we only allocate it when at least one of those routes can fire.
-    integration_buf_needed = sign_search_path_active || !sequential_prn_mode
+    # `noncoherent_integration_buf` (the |x|² intermediate) is bypassed by the
+    # fused FFT+|x|²+(code-drift)+fftshift kernel on every simple-path route:
+    # sequential N_nc==1 (slice 5) and multistep N_nc>1 (Issue #62). Only the
+    # sign-search path still consumes the buf — it reuses the buf across
+    # bit-edge-search alignments to take the cell-wise max.
+    integration_buf_needed = sign_search_path_active
     integration_buf_rows = integration_buf_needed ? num_doppler_bins : 0
     integration_buf_cols = integration_buf_needed ? samples_per_code : 0
+
+    # Multistep simple path uses `code_drift_shifts` (length num_doppler_bins)
+    # to precompute the per-row column shift once per accumulation step before
+    # the per-PRN parallel loop. Sequential N_nc=1 doesn't drift; sign-search
+    # uses the unfused `_apply_code_drift!` on the buf directly.
+    multistep_simple_path_active = !sequential_prn_mode && !sign_search_path_active
+    code_drift_shifts_len = multistep_simple_path_active ? num_doppler_bins : 0
 
     # Per-thread scratch: one entry per thread, indexed by Threads.threadid().
     # Use maxthreadid() to cover Julia's internal task-switching threads (always >= nthreads()).
@@ -340,6 +352,7 @@ function plan_acquire(
             zeros(Float32, accumulator_rows, accumulator_cols),
             zeros(ComplexF32, sign_search_max_rows, sub_block_cols),
             zeros(Float32, samples_per_code),
+            zeros(Int, code_drift_shifts_len),
         )
         for _ in 1:nthreads
     ]

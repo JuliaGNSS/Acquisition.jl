@@ -279,4 +279,25 @@ if _is_fmdbzp
         SUITE["AcquireSignals"][label] =
             @benchmarkable acquire!($plan, $signal, $bench_prns; interm_freq = 0.0Hz)
     end
+
+    # Multistep simple path — exercises the fused FFT+|x|²+code-drift+fftshift
+    # kernel (Issue #62) over N_nc accumulation steps. L1CA at 5 MHz with
+    # N_coh=1, N_nc=8 is the canonical simple-path noncoherent workload; the
+    # entry is here so RAM/runtime diffs around the multistep fusion land in a
+    # stable AirSpeedVelocity series.
+    let
+        fs = 5.0e6Hz
+        label = "L1CA_5MHz_Nnc8"
+        N_nc = 8
+        plan = plan_acquire(GNSSSignals.GPSL1CA(), fs, bench_prns;
+            min_doppler_coverage = bench_min_doppler,
+            num_noncoherent_accumulations = N_nc)
+        signal = _make_signal(plan, N_nc)
+        SUITE["AcquireSignals"][label] =
+            @benchmarkable acquire!($plan, $signal, $bench_prns; interm_freq = 0.0Hz)
+        SUITE["PlanAcquire"][label] =
+            @benchmarkable plan_acquire(GNSSSignals.GPSL1CA(), $fs, $bench_prns;
+                min_doppler_coverage = $bench_min_doppler,
+                num_noncoherent_accumulations = $N_nc)
+    end
 end
