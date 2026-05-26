@@ -111,6 +111,62 @@ end
 _apply_code_drift!(buf::Matrix{Float32}, plan::AcquisitionPlan, accumulation_step_index::Int) =
     _apply_code_drift!(buf, plan, _default_scratch(plan), accumulation_step_index)
 
+# Per-column FFT followed by `|x|²` accumulation into `accumulator`, with the
+# row written at its fftshift-permuted position. Folds two passes
+# (`_accumulate_noncoherent_integration_pilot!` + `_scatter_fftshift_accumulate!`)
+# into one, dropping the full-matrix-size `noncoherent_integration_buf`
+# intermediate. Valid only at num_noncoherent_accumulations == 1 simple/pilot
+# path: code-drift correction is a no-op at step 0 and there is no bit-edge max
+# search to reuse the buf across alignments.
+#
+# The fftshift permutation is a fixed rotation by `shift = N ÷ 2` rows:
+#   src rows 1..N-shift    → dst rows 1+shift..N      (advance)
+#   src rows N-shift+1..N  → dst rows 1..shift        (wrap)
+# Two contiguous loops express both halves so the compiler can SIMD.
+function _accumulate_fftshifted_power_pilot!(
+    accumulator::Matrix{Float32},
+    coherent_integration_matrix::Matrix{ComplexF32},
+    col_buf::Vector{ComplexF32},
+    col_fft_plan,
+    samples_per_code::Int,
+    num_doppler_bins::Int,
+)
+    shift = num_doppler_bins ÷ 2
+    front = num_doppler_bins - shift
+    @inbounds for col_idx in 1:samples_per_code
+        copyto!(col_buf, 1, coherent_integration_matrix, (col_idx - 1) * num_doppler_bins + 1, num_doppler_bins)
+        mul!(col_buf, col_fft_plan, col_buf)
+        @simd for doppler_bin in 1:front
+            accumulator[doppler_bin + shift, col_idx] += abs2(col_buf[doppler_bin])
+        end
+        @simd for doppler_bin in 1:shift
+            accumulator[doppler_bin, col_idx] += abs2(col_buf[doppler_bin + front])
+        end
+    end
+end
+
+# Batched-FFT counterpart: FFT all columns at once in-place on the CIM, then
+# accumulate `|x|²` into `accumulator` with the fftshift row permutation.
+function _accumulate_fftshifted_power_pilot_batched!(
+    accumulator::Matrix{Float32},
+    coherent_integration_matrix::Matrix{ComplexF32},
+    col_batch_fft_plan,
+    samples_per_code::Int,
+    num_doppler_bins::Int,
+)
+    mul!(coherent_integration_matrix, col_batch_fft_plan, coherent_integration_matrix)
+    shift = num_doppler_bins ÷ 2
+    front = num_doppler_bins - shift
+    @inbounds for col_idx in 1:samples_per_code
+        @simd for doppler_bin in 1:front
+            accumulator[doppler_bin + shift, col_idx] += abs2(coherent_integration_matrix[doppler_bin, col_idx])
+        end
+        @simd for doppler_bin in 1:shift
+            accumulator[doppler_bin, col_idx] += abs2(coherent_integration_matrix[doppler_bin + front, col_idx])
+        end
+    end
+end
+
 # Scatter `src` into `dst` applying fftshift row permutation (accumulating).
 # For even num_doppler_bins — the only case in practice — this is a top/bottom
 # half swap, which SIMDs. For odd N, fall back to the indexed scatter (the

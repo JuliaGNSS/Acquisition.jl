@@ -229,6 +229,37 @@ end
         (length(search_plan.doppler_freqs), search_plan.num_data_bits)
 end
 
+@testset "noncoherent_integration_buf is 0x0 when fused FFT+abs2+fftshift kernel runs" begin
+    # At N_nc==1 with the simple/pilot path, the fused kernel writes |FFT|²
+    # straight into the accumulator with fftshift permutation and never touches
+    # `noncoherent_integration_buf`. The buf can be dropped per-thread; sign-search
+    # path and multistep (N_nc>1) still need it full-sized.
+    system = GPSL1CA()
+    sampling_freq = 2.048e6Hz
+
+    fused_plan = plan_acquire(system, sampling_freq, [1];
+        num_coherently_integrated_code_periods = 1, bit_edge_search_steps = 1,
+        num_noncoherent_accumulations = 1)
+    fused_scratch = Acquisition._default_scratch(fused_plan)
+    @test size(fused_scratch.noncoherent_integration_buf) == (0, 0)
+    for t_scratch in fused_plan.thread_scratch
+        @test size(t_scratch.noncoherent_integration_buf) == (0, 0)
+    end
+
+    # Sign-search at N_nc=1 still needs the buf.
+    sign_search_plan = plan_acquire(system, sampling_freq, [1];
+        min_doppler_coverage = 10_000Hz,
+        num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4)
+    @test size(Acquisition._default_scratch(sign_search_plan).noncoherent_integration_buf) ==
+        (length(sign_search_plan.doppler_freqs), sign_search_plan.samples_per_code)
+
+    # Multistep (N_nc>1) needs the buf too, even on the simple path.
+    multi_plan = plan_acquire(system, sampling_freq, [1];
+        num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 2)
+    @test size(Acquisition._default_scratch(multi_plan).noncoherent_integration_buf) ==
+        (length(multi_plan.doppler_freqs), multi_plan.samples_per_code)
+end
+
 @testset "sequential N_nc=1 layout: empty per-PRN matrices, full per-thread accumulator" begin
     # When num_noncoherent_accumulations == 1 the per-PRN noncoherent matrices
     # collapse into a single per-thread accumulator reused across PRNs. Layout

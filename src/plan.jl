@@ -310,6 +310,14 @@ function plan_acquire(
     sign_search_max_cols = sign_search_path_active ? samples_per_code  : 0
     sub_block_cols       = sign_search_path_active ? num_data_bits     : 0
 
+    # `noncoherent_integration_buf` (the |x|² intermediate) is bypassed when the
+    # fused FFT+|x|²+fftshift kernel runs (sequential N_nc==1 + simple path).
+    # Sign-search-at-N_nc==1 and any multistep path still consume the buf, so
+    # we only allocate it when at least one of those routes can fire.
+    integration_buf_needed = sign_search_path_active || !sequential_prn_mode
+    integration_buf_rows = integration_buf_needed ? num_doppler_bins : 0
+    integration_buf_cols = integration_buf_needed ? samples_per_code : 0
+
     # Per-thread scratch: one entry per thread, indexed by Threads.threadid().
     # Use maxthreadid() to cover Julia's internal task-switching threads (always >= nthreads()).
     # `sig_buf` lives here so that thread 1's scratch — the ambient single-threaded
@@ -328,7 +336,7 @@ function plan_acquire(
             zeros(Float32, samples_per_code),
             zeros(ComplexF32, num_doppler_bins, samples_per_code),
             zeros(Float32, sign_search_max_rows, sign_search_max_cols),
-            zeros(Float32, num_doppler_bins, samples_per_code),
+            zeros(Float32, integration_buf_rows, integration_buf_cols),
             zeros(Float32, accumulator_rows, accumulator_cols),
             zeros(ComplexF32, sign_search_max_rows, sub_block_cols),
             zeros(Float32, samples_per_code),
