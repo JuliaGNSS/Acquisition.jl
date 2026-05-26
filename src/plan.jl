@@ -18,9 +18,9 @@ struct AcquisitionScratch
     row_buf::Vector{Float32}                        # length samples_per_code
     row_shift_buf::Vector{Float32}                  # length samples_per_code
     coherent_integration_matrix::Matrix{ComplexF32}         # (num_doppler_bins, samples_per_code)
-    noncoherent_integration_max_buf::Matrix{Float32}         # (num_doppler_bins, samples_per_code)
+    noncoherent_integration_max_buf::Matrix{Float32}         # (num_doppler_bins, samples_per_code) — 0x0 when simple path is taken (see plan_acquire)
     noncoherent_integration_buf::Matrix{Float32}             # (num_doppler_bins, samples_per_code)
-    sub_block_ffts::Matrix{ComplexF32}              # (num_doppler_bins, num_data_bits)
+    sub_block_ffts::Matrix{ComplexF32}              # (num_doppler_bins, num_data_bits) — 0x0 when simple path is taken (see plan_acquire)
     col_sums_buf::Vector{Float32}                   # length samples_per_code — scratch for est_signal_noise_power
 end
 
@@ -285,6 +285,16 @@ function plan_acquire(
     fftshift_perm = [mod(r - 1 + num_doppler_bins ÷ 2, num_doppler_bins) + 1 for r in 1:num_doppler_bins]
     result_buffers = Union{Nothing,Matrix{Float32}}[nothing for _ in prns]
 
+    # The sign-search path in `_accumulate_noncoherent_integration_step!` runs only
+    # when num_data_bits > 1 OR bit_edge_search_steps > 1. Otherwise the simple
+    # (pilot) path is taken, which never reads `noncoherent_integration_max_buf` or
+    # `sub_block_ffts`. Decide here at plan time so each thread can skip those
+    # buffers when they will provably never be read.
+    sign_search_path_active = num_data_bits > 1 || bit_edge_search_steps > 1
+    sign_search_max_rows = sign_search_path_active ? num_doppler_bins  : 0
+    sign_search_max_cols = sign_search_path_active ? samples_per_code  : 0
+    sub_block_cols       = sign_search_path_active ? num_data_bits     : 0
+
     # Per-thread scratch: one entry per thread, indexed by Threads.threadid().
     # Use maxthreadid() to cover Julia's internal task-switching threads (always >= nthreads()).
     # `sig_buf` lives here so that thread 1's scratch — the ambient single-threaded
@@ -302,9 +312,9 @@ function plan_acquire(
             zeros(Float32, samples_per_code),
             zeros(Float32, samples_per_code),
             zeros(ComplexF32, num_doppler_bins, samples_per_code),
+            zeros(Float32, sign_search_max_rows, sign_search_max_cols),
             zeros(Float32, num_doppler_bins, samples_per_code),
-            zeros(Float32, num_doppler_bins, samples_per_code),
-            zeros(ComplexF32, num_doppler_bins, num_data_bits),
+            zeros(ComplexF32, sign_search_max_rows, sub_block_cols),
             zeros(Float32, samples_per_code),
         )
         for _ in 1:nthreads
