@@ -212,7 +212,10 @@ function acquire!(
         end
 
         result_buf = if store_power_bins
-            copyto!(plan.result_buffers[prn_idx], power_bins)
+            cached = plan.result_buffers[prn_idx]
+            buf = cached === nothing ? similar(power_bins) : cached
+            plan.result_buffers[prn_idx] = buf
+            copyto!(buf, power_bins)
         else
             nothing
         end
