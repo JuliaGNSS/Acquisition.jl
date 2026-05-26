@@ -233,11 +233,17 @@ end
 # (BenchmarkTools' `memory` field). Together these track Issue #60, which
 # targets the `plan_acquire` RAM footprint.
 #
-# 4 PRNs (not 32) keeps the suite within the GitHub Actions 7 GB runner —
-# per-PRN buffers scale linearly so the trend is preserved. Sampling
-# frequencies match each signal's practical minimum: L1CA/E1B at 5/15 MHz
-# (CBOC needs >= 12.276 MHz), L5I at 25 MHz, L1C-P at 16 MHz (the heavy
-# case from Issue #60).
+# Parameters are sized so the suite fits inside the GitHub Actions free-tier
+# runner under `--threads=auto`:
+#   - 4 PRNs (vs 32 default) — per-PRN buffers scale linearly, trend preserved
+#   - `min_doppler_coverage = 2000Hz` — shrinks `num_doppler_bins`, the
+#     dominant size driver at `num_coh=1`. Smaller than the default 7000Hz
+#     but the relative before/after RAM trend the issue cares about is the
+#     same; raise to default locally if you want headline numbers.
+#
+# Sampling frequencies match each signal's practical minimum: L1CA/E1B at
+# 5/15 MHz (CBOC needs >= 12.276 MHz), L5I at 25 MHz, L1C-P at 16 MHz (the
+# heavy case from Issue #60).
 #
 # `plan_acquire` sizes its per-thread scratch by `Threads.maxthreadid()` at
 # the time of the call, so the PlanAcquire memory grows with the launched
@@ -260,11 +266,15 @@ if _is_fmdbzp
     ]
     bench_prns = collect(1:4)
 
+    bench_min_doppler = 2000Hz
+
     for (sys_ctor, fs, label) in signal_cases
         SUITE["PlanAcquire"][label] =
-            @benchmarkable plan_acquire($(sys_ctor)(), $fs, $bench_prns)
+            @benchmarkable plan_acquire($(sys_ctor)(), $fs, $bench_prns;
+                min_doppler_coverage = $bench_min_doppler)
 
-        plan = plan_acquire(sys_ctor(), fs, bench_prns)
+        plan = plan_acquire(sys_ctor(), fs, bench_prns;
+            min_doppler_coverage = bench_min_doppler)
         signal = _make_signal(plan, 1)
         SUITE["AcquireSignals"][label] =
             @benchmarkable acquire!($plan, $signal, $bench_prns; interm_freq = 0.0Hz)
