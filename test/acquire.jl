@@ -279,6 +279,36 @@ end
     @test is_detected(result)
 end
 
+@testset "acquire! — fused simple-path kernel above batch threshold (num_doppler_bins > 320)" begin
+    # Forces the per-column fused kernel `_accumulate_fftshifted_power_pilot!`
+    # (the only fused-kernel path no other test hits): simple/pilot routing +
+    # num_doppler_bins > BATCH_FFT_THRESHOLD. N_coh=10 keeps num_data_bits=1
+    # (GPS L1CA bit_period_codes=20), bit_edge_search_steps=1 keeps the simple
+    # path, and a 20 kHz doppler request inflates num_blocks past 32 →
+    # num_doppler_bins = 10 × num_blocks > 320.
+    system = GPSL1CA()
+    sampling_freq = 2.048e6Hz
+    prn = 1
+
+    plan = plan_acquire(system, sampling_freq, [prn];
+        min_doppler_coverage = 20_000Hz,
+        num_coherently_integrated_code_periods = 10,
+        bit_edge_search_steps = 1,
+        fft_flag = FFTW.ESTIMATE)
+    @test plan.num_data_bits == 1
+    @test plan.bit_edge_search_steps == 1
+    @test length(plan.doppler_freqs) > Acquisition.BATCH_FFT_THRESHOLD
+
+    (; signal) = generate_test_signal(system, prn;
+        num_samples = 10 * plan.samples_per_code,
+        doppler = 1500Hz, code_phase = 100.0,
+        sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
+
+    result = only(acquire!(plan, ComplexF32.(signal), [prn]; interm_freq = 0.0Hz))
+    @test is_detected(result)
+    @test abs(result.code_phase - 100.0) < 1.0
+end
+
 @testset "generate_test_signal — unit_noise_power=true scales noise to ≈1" begin
     system = GPSL1CA()
 
