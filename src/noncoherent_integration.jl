@@ -109,7 +109,7 @@ function _apply_code_drift!(noncoherent_integration_buf::Matrix{Float32}, plan::
 end
 # Single-argument scratch convenience: used by tests and code-drift testset directly
 _apply_code_drift!(buf::Matrix{Float32}, plan::AcquisitionPlan, accumulation_step_index::Int) =
-    _apply_code_drift!(buf, plan, plan, accumulation_step_index)
+    _apply_code_drift!(buf, plan, _default_scratch(plan), accumulation_step_index)
 
 # Scatter `src` into `dst` applying fftshift row permutation (accumulating).
 # For even num_doppler_bins — the only case in practice — this is a top/bottom
@@ -204,6 +204,7 @@ function _accumulate_noncoherent_integration_step!(
         _scatter_fftshift_accumulate!(noncoherent_integration_matrix, noncoherent_integration_max_buf, plan.fftshift_perm, plan.samples_per_code)
     end
 end
-# Convenience wrapper for tests and single-threaded callers (scratch = plan itself)
+# Convenience wrapper for tests and single-threaded callers — routes through
+# thread 1's scratch (see `_default_scratch`).
 _accumulate_noncoherent_integration_step!(nim, cim, plan::AcquisitionPlan, accumulation_step_index::Int) =
-    _accumulate_noncoherent_integration_step!(nim, cim, plan, plan, accumulation_step_index)
+    _accumulate_noncoherent_integration_step!(nim, cim, plan, _default_scratch(plan), accumulation_step_index)

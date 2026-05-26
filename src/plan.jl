@@ -12,6 +12,7 @@ const BATCH_FFT_THRESHOLD = 320
 struct AcquisitionScratch
     double_block_buf::Vector{ComplexF32}            # length double_block_size
     corr_buf::Vector{ComplexF32}                    # length double_block_size
+    sig_buf::Vector{ComplexF32}                     # length segment_length — downconverted signal segment (thread 1 only)
     col_buf::Vector{ComplexF32}                     # length num_doppler_bins
     col_fftshift_buf::Vector{ComplexF32}            # length num_doppler_bins
     row_buf::Vector{Float32}                        # length samples_per_code
@@ -50,30 +51,26 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     col_batch_fft_plan::P4      # in-place forward FFT along dim 1 of (num_doppler_bins, samples_per_code) matrix; `nothing` when num_doppler_bins > BATCH_FFT_THRESHOLD
     # doppler_freqs: StepRangeLen of num_doppler_bins Hz values, sorted from -doppler_coverage_hz/2 to doppler_coverage_hz/2-doppler_bin_spacing_hz
     doppler_freqs::DS
-    # Pre-allocated buffers for thread 1 / single-threaded use (reused across calls)
-    double_block_buf::Vector{ComplexF32}            # length double_block_size
-    corr_buf::Vector{ComplexF32}          # length double_block_size — scratch for bfft in _build_coherent_integration_matrix!
-    sig_buf::Vector{ComplexF32}           # length segment_length — downconverted signal segment
-    col_buf::Vector{ComplexF32}           # length num_doppler_bins
-    col_fftshift_buf::Vector{ComplexF32}  # length num_doppler_bins
-    row_buf::Vector{Float32}              # length samples_per_code — source buffer for _apply_code_drift!
-    row_shift_buf::Vector{Float32}        # length samples_per_code — destination buffer for circshift! in _apply_code_drift!
-    coherent_integration_matrix::Matrix{ComplexF32}         # (num_doppler_bins, samples_per_code), filled per PRN per step
-    noncoherent_integration_max_buf::Matrix{Float32}              # (num_doppler_bins, samples_per_code) — running max over bit edges per step
-    noncoherent_integration_buf::Matrix{Float32}          # (num_doppler_bins, samples_per_code) — per-edge accumulator
-    sub_block_ffts::Matrix{ComplexF32}    # (num_doppler_bins, num_data_bits) — scratch for _accumulate_noncoherent_integration_data_bits!
     signal_block_ffts::Matrix{ComplexF32} # (double_block_size, num_coh*num_blocks) — precomputed once per acquire!, shared across PRNs
     noncoherent_integration_matrices::Vector{Matrix{Float32}}  # per PRN, (num_doppler_bins, samples_per_code); index i corresponds to avail_prns[i]
     fftshift_perm::Vector{Int}               # length num_doppler_bins — pre-computed fftshift row permutation
     result_buffers::Vector{Matrix{Float32}}  # per PRN, pre-allocated copy of power_bins for AcquisitionResults
     avail_prns::Vector{Int}
-    # Per-thread scratch, indexed by Threads.threadid() (length = nthreads at plan_acquire time)
+    # Per-thread scratch, indexed by Threads.threadid() (length = nthreads at plan_acquire time).
+    # Thread 1's entry doubles as the ambient single-threaded scratch — see `_default_scratch`.
     thread_scratch::Vector{AcquisitionScratch}
     # Pre-allocated results buffer, concrete-typed to avoid boxing allocations
     acq_results_buf::Vector{R}
     # Singleton selecting the noise-power estimator used by `est_signal_noise_power`.
     noise_estimator::E
 end
+
+# Thread 1's scratch is the ambient single-threaded scratch reused by `acquire!`
+# (downconversion + signal-block FFT precompute happen before the per-PRN parallel
+# loop) and by test/REPL call sites that drive the kernels directly. Naming this
+# convention here keeps it from being re-implemented as `plan.thread_scratch[1]`
+# across the codebase.
+_default_scratch(plan::AcquisitionPlan) = plan.thread_scratch[1]
 
 """
     _precompute_prn_ffts!(prn_ffts, system, prn, sampling_freq, samples_per_code, num_blocks, block_size, double_block_size, fft_plan)
@@ -276,19 +273,7 @@ function plan_acquire(
     doppler_bin_spacing_hz = doppler_coverage_hz / num_doppler_bins
     doppler_freqs = range(-doppler_coverage_hz / 2, step = doppler_bin_spacing_hz, length = num_doppler_bins) .* Hz
 
-    # Pre-allocated buffers (thread 1 / single-threaded use)
     segment_length = num_coherently_integrated_code_periods * samples_per_code
-    double_block_buf = zeros(ComplexF32, double_block_size)
-    corr_buf = zeros(ComplexF32, double_block_size)
-    sig_buf = zeros(ComplexF32, segment_length)
-    col_buf = zeros(ComplexF32, num_doppler_bins)
-    col_fftshift_buf = zeros(ComplexF32, num_doppler_bins)
-    row_buf = zeros(Float32, samples_per_code)
-    row_shift_buf = zeros(Float32, samples_per_code)
-    coherent_integration_matrix = zeros(ComplexF32, num_doppler_bins, samples_per_code)
-    noncoherent_integration_max_buf = zeros(Float32, num_doppler_bins, samples_per_code)
-    noncoherent_integration_buf = zeros(Float32, num_doppler_bins, samples_per_code)
-    sub_block_ffts = zeros(ComplexF32, num_doppler_bins, num_data_bits)
     # Pre-allocated signal-block FFT cache: holds FFT(signal double-block k) for
     # k ∈ 0..num_coh*num_blocks-1. Filled once per acquire! call before the PRN
     # loop and reused across all PRNs.
@@ -299,11 +284,16 @@ function plan_acquire(
 
     # Per-thread scratch: one entry per thread, indexed by Threads.threadid().
     # Use maxthreadid() to cover Julia's internal task-switching threads (always >= nthreads()).
+    # `sig_buf` lives here so that thread 1's scratch — the ambient single-threaded
+    # scratch — owns the downconverted-signal buffer used by `acquire!` before the
+    # per-PRN parallel loop. Other threads' sig_buf entries are unused (a few MB
+    # × nthreads, dwarfed by the matrices already sized per-thread).
     nthreads = Threads.maxthreadid()
     thread_scratch = [
         AcquisitionScratch(
             zeros(ComplexF32, double_block_size),
             zeros(ComplexF32, double_block_size),
+            zeros(ComplexF32, segment_length),
             zeros(ComplexF32, num_doppler_bins),
             zeros(ComplexF32, num_doppler_bins),
             zeros(Float32, samples_per_code),
@@ -331,8 +321,6 @@ function plan_acquire(
         prn_conj_ffts,
         double_block_fft_plan, double_block_bfft_plan, col_fft_plan, col_batch_fft_plan,
         doppler_freqs,
-        double_block_buf, corr_buf, sig_buf, col_buf, col_fftshift_buf, row_buf, row_shift_buf,
-        coherent_integration_matrix, noncoherent_integration_max_buf, noncoherent_integration_buf, sub_block_ffts,
         signal_block_ffts,
         noncoherent_integration_matrices, fftshift_perm,
         result_buffers,
