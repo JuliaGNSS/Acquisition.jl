@@ -37,6 +37,16 @@ system = isdefined(GNSSSignals, :GPSL1CA) ? GNSSSignals.GPSL1CA() : GNSSSignals.
 const _is_fmdbzp = isdefined(Acquisition, :plan_acquire)
 
 # ============================================================================
+# Feature flags — opt-in groups that are noisy/large to run by default.
+# ============================================================================
+
+# `BatchFFTCrossover` exists to justify the `BATCH_FFT_THRESHOLD = 320` constant
+# in src/plan.jl; it's a one-off comparison sweep, not something that needs to
+# run on every commit. Off by default — set ACQUISITION_BENCH_CROSSOVER=1 to
+# re-run the sweep when re-tuning the threshold.
+const INCLUDE_BATCH_FFT_CROSSOVER = get(ENV, "ACQUISITION_BENCH_CROSSOVER", "0") == "1"
+
+# ============================================================================
 # Helpers — unified interface over both APIs
 # ============================================================================
 
@@ -160,7 +170,7 @@ end
 # which exposes `col_batch_fft_plan`.
 # ============================================================================
 
-if _is_fmdbzp
+if _is_fmdbzp && INCLUDE_BATCH_FFT_CROSSOVER
     SUITE["BatchFFTCrossover"] = BenchmarkGroup()
 
     for (fs, fs_label) in [(2.048e6Hz, "2.048MHz"), (5.0e6Hz, "5MHz"), (10.0e6Hz, "10MHz")]
@@ -214,5 +224,48 @@ if _is_fmdbzp
 
         SUITE["BitEdgeSearch"]["N_be=$(N_be)"] =
             @benchmarkable _acquire!($plan, $signal, $([1]))
+    end
+end
+
+# ============================================================================
+# Signal sweep — `plan_acquire` and `acquire!` across the GNSS signals this
+# package supports, at 10 PRNs each. Captures both runtime and RAM footprint
+# (BenchmarkTools' `memory` field). Together these track Issue #60, which
+# targets the `plan_acquire` RAM footprint.
+#
+# 10 PRNs (not 32) keeps the suite fast — per-PRN buffers scale linearly so
+# the trend is the same. Sampling frequencies match each signal's practical
+# minimum: L1CA/E1B at 5/15 MHz (CBOC needs >= 12.276 MHz), L5I at 25 MHz,
+# L1C-P at 16 MHz (the heavy case from Issue #60).
+#
+# `plan_acquire` sizes its per-thread scratch by `Threads.maxthreadid()` at
+# the time of the call, so the PlanAcquire memory grows with the launched
+# thread count. To compare before/after thread-floor changes (Issue #60
+# projects ~5.5 GB → ~0.4 GB at 1 thread, ~10 GB → ~4.9 GB at 16 threads),
+# run with both `julia -t 1` and `julia -t 16` and diff the results.
+#
+# FM-DBZP only — `plan_acquire` does not exist on master.
+# ============================================================================
+
+if _is_fmdbzp
+    SUITE["PlanAcquire"] = BenchmarkGroup()
+    SUITE["AcquireSignals"] = BenchmarkGroup()
+
+    signal_cases = [
+        (GNSSSignals.GPSL1CA,     5.0e6Hz,  "L1CA_5MHz"),
+        (GNSSSignals.GalileoE1B, 15.0e6Hz,  "E1B_15MHz"),
+        (GNSSSignals.GPSL5I,     25.0e6Hz,  "L5I_25MHz"),
+        (GNSSSignals.GPSL1C_P,   16.0e6Hz,  "L1CP_16MHz"),
+    ]
+    bench_prns = collect(1:10)
+
+    for (sys_ctor, fs, label) in signal_cases
+        SUITE["PlanAcquire"][label] =
+            @benchmarkable plan_acquire($(sys_ctor)(), $fs, $bench_prns)
+
+        plan = plan_acquire(sys_ctor(), fs, bench_prns)
+        signal = _make_signal(plan, 1)
+        SUITE["AcquireSignals"][label] =
+            @benchmarkable acquire!($plan, $signal, $bench_prns; interm_freq = 0.0Hz)
     end
 end
