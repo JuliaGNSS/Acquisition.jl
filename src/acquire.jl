@@ -112,7 +112,38 @@ function acquire!(
     interm_freq_hz = ustrip(Hz, interm_freq)
     sampling_freq_hz = ustrip(Hz, plan.sampling_freq)
 
-    # Reset per-PRN noncoherent accumulators for the requested PRNs
+    # The N_nc==1 case fuses build → accumulate → extract per PRN against a
+    # single per-thread accumulator, dropping the 32-PRN-wide noncoherent matrix
+    # vector. The multistep path (N_nc>1) still needs that vector because the
+    # accumulator carries state across signal segments shared between PRNs.
+    if plan.num_noncoherent_accumulations == 1
+        _acquire_sequential!(plan, signal, prns, segment_length, interm_freq_hz,
+            sampling_freq_hz, subsample_interpolation, store_power_bins)
+    else
+        _acquire_multistep!(plan, signal, prns, segment_length, interm_freq_hz,
+            sampling_freq_hz, subsample_interpolation, store_power_bins)
+    end
+end
+
+# Fill `sig_buf` with one downconverted code segment starting at `seg_start`.
+function _downconvert!(sig_buf, signal, seg_start, segment_length, interm_freq_hz, sampling_freq_hz)
+    if iszero(interm_freq_hz)
+        sig_buf .= ComplexF32.(view(signal, seg_start:seg_start + segment_length - 1))
+    else
+        phase_step = Float32(-2π * interm_freq_hz / sampling_freq_hz)
+        phase_offset = Float32((seg_start - 1) * phase_step)
+        @inbounds for sample_idx in 1:segment_length
+            phase = phase_offset + (sample_idx - 1) * phase_step
+            s, c = sincos(phase)
+            sig_buf[sample_idx] = ComplexF32(signal[seg_start + sample_idx - 1]) * Complex(c, s)
+        end
+    end
+end
+
+# Multistep path (current pre-slice-4 behaviour, factored out unchanged).
+function _acquire_multistep!(plan, signal, prns, segment_length, interm_freq_hz,
+                              sampling_freq_hz, subsample_interpolation, store_power_bins)
+    # Reset per-PRN noncoherent accumulators for the requested PRNs.
     for prn in prns
         prn_idx = findfirst(==(prn), plan.avail_prns)
         fill!(plan.noncoherent_integration_matrices[prn_idx], 0f0)
@@ -125,20 +156,7 @@ function acquire!(
 
     for step_idx in 1:plan.num_noncoherent_accumulations
         seg_start = (step_idx - 1) * segment_length + 1
-
-        # Downconvert: apply intermediate frequency rotation into sig_buf
-        if iszero(interm_freq_hz)
-            sig_buf .= ComplexF32.(view(signal, seg_start:seg_start + segment_length - 1))
-        else
-            phase_step = Float32(-2π * interm_freq_hz / sampling_freq_hz)
-            phase_offset = Float32((seg_start - 1) * phase_step)
-            @inbounds for sample_idx in 1:segment_length
-                phase = phase_offset + (sample_idx - 1) * phase_step
-                s, c = sincos(phase)
-                sig_buf[sample_idx] = ComplexF32(signal[seg_start + sample_idx - 1]) * Complex(c, s)
-            end
-        end
-
+        _downconvert!(sig_buf, signal, seg_start, segment_length, interm_freq_hz, sampling_freq_hz)
         # Precompute signal-block FFTs once per dwell. They do not depend on
         # PRN, so the per-PRN inner loop reads from `plan.signal_block_ffts`
         # instead of redoing this O(num_coh*num_blocks) FFT batch per PRN.
@@ -152,12 +170,9 @@ function acquire!(
             main_scratch.double_block_buf,
             plan.double_block_fft_plan,
         )
-
         _acquire_step!(plan, prns, step_idx - 1)
     end
 
-    # Build results into pre-allocated buffer (concrete-typed to avoid boxing).
-    # resize! to the requested PRN count is non-allocating when shrinking.
     results = resize!(plan.acq_results_buf, length(prns))
     code_freq_hz = ustrip(Hz, get_code_frequency(plan.system))
     code_length = get_code_length(plan.system)
@@ -168,74 +183,141 @@ function acquire!(
         prn = @inbounds prns[result_idx]
         prn_idx = findfirst(==(prn), plan.avail_prns)
         power_bins = plan.noncoherent_integration_matrices[prn_idx]
-        col_sums_buf = plan.thread_scratch[Threads.threadid()].col_sums_buf
-
-        signal_power, noise_power, code_bin_idx, doppler_bin_idx = est_signal_noise_power(
-            power_bins,
-            sampling_freq_hz,
-            code_freq_hz,
-            col_sums_buf,
-            plan.noise_estimator,
-        )
-
-        peak_to_noise = (signal_power + noise_power) / noise_power
-        CN0 = 10 * log10(signal_power / noise_power / code_period / 1.0Hz)
-
-        # Decode code phase from column index (0-indexed column → delay in samples)
-        scrambled_col = code_bin_idx - 1  # convert to 0-indexed
-        delay_samples = _fmdbzp_column_to_tau(scrambled_col, plan.num_blocks, plan.block_size)
-        code_phase = mod(-delay_samples * code_freq_hz / sampling_freq_hz, code_length)
-
-        if subsample_interpolation
-            num_code_bins = plan.samples_per_code
-            col_left  = mod(scrambled_col - 1, num_code_bins)
-            col_right = mod(scrambled_col + 1, num_code_bins)
-            power_left  = power_bins[doppler_bin_idx, col_left + 1]
-            power_peak  = power_bins[doppler_bin_idx, scrambled_col + 1]
-            power_right = power_bins[doppler_bin_idx, col_right + 1]
-            if max(power_left, power_right) > sqrt(noise_power)
-                fractional_col_offset = _parabolic_interp(power_left, power_peak, power_right)
-                delay_samples_interp = delay_samples + fractional_col_offset
-                code_phase = mod(-delay_samples_interp * code_freq_hz / sampling_freq_hz, code_length)
-            end
-        end
-
-        doppler = plan.doppler_freqs[doppler_bin_idx]
-        if subsample_interpolation
-            dop_left  = power_bins[doppler_bin_idx == 1 ? num_doppler_bins : doppler_bin_idx - 1, code_bin_idx]
-            dop_peak  = power_bins[doppler_bin_idx, code_bin_idx]
-            dop_right = power_bins[doppler_bin_idx == num_doppler_bins ? 1 : doppler_bin_idx + 1, code_bin_idx]
-            if max(dop_left, dop_right) > sqrt(noise_power)
-                fractional_doppler_offset = _parabolic_interp(dop_left, dop_peak, dop_right)
-                doppler = doppler + fractional_doppler_offset * doppler_step
-            end
-        end
-
-        result_buf = if store_power_bins
-            cached = plan.result_buffers[prn_idx]
-            buf = cached === nothing ? similar(power_bins) : cached
-            plan.result_buffers[prn_idx] = buf
-            copyto!(buf, power_bins)
-        else
-            nothing
-        end
-        results[result_idx] = AcquisitionResults(
-            plan.system,
-            prn,
-            plan.sampling_freq,
-            doppler,
-            code_phase,
-            CN0,
-            Float32(noise_power),
-            Float32(peak_to_noise),
-            plan.num_noncoherent_accumulations,
-            result_buf,
-            plan.doppler_freqs,
-            plan.num_blocks,
-            plan.block_size,
-        )
+        scratch = plan.thread_scratch[Threads.threadid()]
+        results[result_idx] = _extract_result!(plan, scratch, prn, prn_idx, power_bins,
+            sampling_freq_hz, code_freq_hz, code_length, code_period,
+            num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
     end
     return results
+end
+
+# Sequential path used when num_noncoherent_accumulations == 1: one segment,
+# per-PRN fused build → accumulate → extract against a per-thread accumulator.
+function _acquire_sequential!(plan, signal, prns, segment_length, interm_freq_hz,
+                               sampling_freq_hz, subsample_interpolation, store_power_bins)
+    main_scratch = _default_scratch(plan)
+    sig_buf = main_scratch.sig_buf
+
+    _downconvert!(sig_buf, signal, 1, segment_length, interm_freq_hz, sampling_freq_hz)
+    _precompute_signal_block_ffts!(
+        plan.signal_block_ffts,
+        sig_buf,
+        plan.samples_per_code,
+        plan.num_blocks,
+        plan.block_size,
+        plan.num_coherently_integrated_code_periods,
+        main_scratch.double_block_buf,
+        plan.double_block_fft_plan,
+    )
+
+    results = resize!(plan.acq_results_buf, length(prns))
+    code_freq_hz = ustrip(Hz, get_code_frequency(plan.system))
+    code_length = get_code_length(plan.system)
+    code_period = code_length / get_code_frequency(plan.system)
+    num_doppler_bins = length(plan.doppler_freqs)
+    doppler_step = step(plan.doppler_freqs)
+
+    @batch per=core for result_idx in eachindex(prns)
+        prn = @inbounds prns[result_idx]
+        prn_idx = findfirst(==(prn), plan.avail_prns)
+        scratch = plan.thread_scratch[Threads.threadid()]
+        accumulator = scratch.noncoherent_integration_accumulator
+        fill!(accumulator, 0f0)
+
+        _build_coherent_integration_matrix!(
+            scratch.coherent_integration_matrix,
+            plan.signal_block_ffts,
+            plan.prn_conj_ffts[prn],
+            plan.samples_per_code,
+            plan.num_blocks,
+            plan.block_size,
+            plan.num_coherently_integrated_code_periods,
+            scratch.corr_buf,
+            plan.double_block_bfft_plan,
+        )
+        _accumulate_noncoherent_integration_step!(accumulator, scratch.coherent_integration_matrix,
+            plan, scratch, 0)
+
+        results[result_idx] = _extract_result!(plan, scratch, prn, prn_idx, accumulator,
+            sampling_freq_hz, code_freq_hz, code_length, code_period,
+            num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
+    end
+    return results
+end
+
+# Read the peak out of `power_bins` and assemble an AcquisitionResults. Used by
+# both the sequential and multistep paths; in the sequential path `power_bins`
+# is the per-thread accumulator (and is reused by the next PRN), so the
+# store_power_bins copy must happen here before this function returns.
+function _extract_result!(plan, scratch, prn, prn_idx, power_bins,
+                          sampling_freq_hz, code_freq_hz, code_length, code_period,
+                          num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
+    col_sums_buf = scratch.col_sums_buf
+
+    signal_power, noise_power, code_bin_idx, doppler_bin_idx = est_signal_noise_power(
+        power_bins,
+        sampling_freq_hz,
+        code_freq_hz,
+        col_sums_buf,
+        plan.noise_estimator,
+    )
+
+    peak_to_noise = (signal_power + noise_power) / noise_power
+    CN0 = 10 * log10(signal_power / noise_power / code_period / 1.0Hz)
+
+    scrambled_col = code_bin_idx - 1
+    delay_samples = _fmdbzp_column_to_tau(scrambled_col, plan.num_blocks, plan.block_size)
+    code_phase = mod(-delay_samples * code_freq_hz / sampling_freq_hz, code_length)
+
+    if subsample_interpolation
+        num_code_bins = plan.samples_per_code
+        col_left  = mod(scrambled_col - 1, num_code_bins)
+        col_right = mod(scrambled_col + 1, num_code_bins)
+        power_left  = power_bins[doppler_bin_idx, col_left + 1]
+        power_peak  = power_bins[doppler_bin_idx, scrambled_col + 1]
+        power_right = power_bins[doppler_bin_idx, col_right + 1]
+        if max(power_left, power_right) > sqrt(noise_power)
+            fractional_col_offset = _parabolic_interp(power_left, power_peak, power_right)
+            delay_samples_interp = delay_samples + fractional_col_offset
+            code_phase = mod(-delay_samples_interp * code_freq_hz / sampling_freq_hz, code_length)
+        end
+    end
+
+    doppler = plan.doppler_freqs[doppler_bin_idx]
+    if subsample_interpolation
+        dop_left  = power_bins[doppler_bin_idx == 1 ? num_doppler_bins : doppler_bin_idx - 1, code_bin_idx]
+        dop_peak  = power_bins[doppler_bin_idx, code_bin_idx]
+        dop_right = power_bins[doppler_bin_idx == num_doppler_bins ? 1 : doppler_bin_idx + 1, code_bin_idx]
+        if max(dop_left, dop_right) > sqrt(noise_power)
+            fractional_doppler_offset = _parabolic_interp(dop_left, dop_peak, dop_right)
+            doppler = doppler + fractional_doppler_offset * doppler_step
+        end
+    end
+
+    result_buf = if store_power_bins
+        cached = plan.result_buffers[prn_idx]
+        buf = cached === nothing ? similar(power_bins) : cached
+        plan.result_buffers[prn_idx] = buf
+        copyto!(buf, power_bins)
+    else
+        nothing
+    end
+
+    return AcquisitionResults(
+        plan.system,
+        prn,
+        plan.sampling_freq,
+        doppler,
+        code_phase,
+        CN0,
+        Float32(noise_power),
+        Float32(peak_to_noise),
+        plan.num_noncoherent_accumulations,
+        result_buf,
+        plan.doppler_freqs,
+        plan.num_blocks,
+        plan.block_size,
+    )
 end
 
 """
