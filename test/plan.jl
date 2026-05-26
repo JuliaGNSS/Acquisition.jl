@@ -133,3 +133,36 @@ end
         end
     end
 end
+
+@testset "plan_acquire does not hold plan-level scratch duplicates" begin
+    # Regression-lock: AcquisitionScratch owns all per-thread scratch buffers.
+    # Any field re-added to AcquisitionPlan that duplicates an AcquisitionScratch
+    # field re-introduces the per-plan RAM waste #60 removed.
+    plan = plan_acquire(GPSL1CA(), 2.048e6Hz, [1];
+        num_coherently_integrated_code_periods = 1)
+    duplicated_fields = (
+        :coherent_integration_matrix,
+        :noncoherent_integration_max_buf,
+        :noncoherent_integration_buf,
+        :sub_block_ffts,
+        :col_buf,
+        :col_fftshift_buf,
+        :row_buf,
+        :row_shift_buf,
+        :double_block_buf,
+        :corr_buf,
+        :sig_buf,
+        :col_sums_buf,
+    )
+    for f in duplicated_fields
+        @test !hasfield(typeof(plan), f)
+    end
+
+    # _default_scratch names the "thread 1 is the ambient scratch" convention.
+    scratch = Acquisition._default_scratch(plan)
+    @test scratch === plan.thread_scratch[1]
+    @test scratch isa Acquisition.AcquisitionScratch
+    for f in duplicated_fields
+        @test hasfield(typeof(scratch), f)
+    end
+end

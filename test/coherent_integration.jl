@@ -8,6 +8,7 @@
 
     plan = plan_acquire(system, sampling_freq, [prn];
         min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = 1)
+    scratch = Acquisition._default_scratch(plan)
     # min_doppler_coverage=5000 → span 10000 Hz → num_blocks=16, block_size=128
 
     # code_phase=991 chips → tau_samples = round((1023-991)*2048/1023) = 64 samples
@@ -24,11 +25,11 @@
     signal_f32 = ComplexF32.(signal)
     Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, signal_f32,
         plan.samples_per_code, plan.num_blocks, plan.block_size,
-        plan.num_coherently_integrated_code_periods, plan.double_block_buf,
+        plan.num_coherently_integrated_code_periods, scratch.double_block_buf,
         plan.double_block_fft_plan)
-    Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
+    Acquisition._build_coherent_integration_matrix!(scratch.coherent_integration_matrix, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
         plan.samples_per_code, plan.num_blocks, plan.block_size, plan.num_coherently_integrated_code_periods,
-        plan.corr_buf, plan.double_block_bfft_plan)
+        scratch.corr_buf, plan.double_block_bfft_plan)
 
     # In the full coherent integration matrix structure ALL rows peak at the same column:
     #   pc (0-indexed) = mod(num_blocks - tau÷block_size, num_blocks) * block_size + (tau%block_size)
@@ -38,7 +39,7 @@
     expected_peak_col_1 = expected_pc_1 + 1
     for code_period in 0:plan.num_coherently_integrated_code_periods-1
         row = code_period * plan.num_blocks + 1  # check row 1 per code period
-        row_vals = abs.(plan.coherent_integration_matrix[row, :])
+        row_vals = abs.(scratch.coherent_integration_matrix[row, :])
         _, peak_col = findmax(row_vals)
         @test peak_col == expected_peak_col_1
     end
@@ -54,11 +55,11 @@
     signal_f32_2 = ComplexF32.(result_2.signal)
     Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, signal_f32_2,
         plan.samples_per_code, plan.num_blocks, plan.block_size,
-        plan.num_coherently_integrated_code_periods, plan.double_block_buf,
+        plan.num_coherently_integrated_code_periods, scratch.double_block_buf,
         plan.double_block_fft_plan)
-    Acquisition._build_coherent_integration_matrix!(plan.coherent_integration_matrix, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
+    Acquisition._build_coherent_integration_matrix!(scratch.coherent_integration_matrix, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
         plan.samples_per_code, plan.num_blocks, plan.block_size, plan.num_coherently_integrated_code_periods,
-        plan.corr_buf, plan.double_block_bfft_plan)
+        scratch.corr_buf, plan.double_block_bfft_plan)
     block_row_2 = tau_samples_2 ÷ plan.block_size
     @test block_row_2 == 1  # Verify we're testing block_row > 0 (non-trivial column block)
     scrambled_block_2    = mod(plan.num_blocks - block_row_2, plan.num_blocks)  # = 15
@@ -66,7 +67,7 @@
     expected_peak_col_2  = scrambled_col_2 + 1
     for code_period_2 in 0:plan.num_coherently_integrated_code_periods-1
         row_2 = code_period_2 * plan.num_blocks + 1
-        row_vals_2 = abs.(plan.coherent_integration_matrix[row_2, :])
+        row_vals_2 = abs.(scratch.coherent_integration_matrix[row_2, :])
         _, peak_col_2 = findmax(row_vals_2)
         @test peak_col_2 == expected_peak_col_2
     end

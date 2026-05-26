@@ -118,19 +118,24 @@ function acquire!(
         fill!(plan.noncoherent_integration_matrices[prn_idx], 0f0)
     end
 
+    # The dwell-level scratch (downconverted segment + per-FFT temp) lives in
+    # thread 1's slot — `_default_scratch(plan)` names that convention.
+    main_scratch = _default_scratch(plan)
+    sig_buf = main_scratch.sig_buf
+
     for step_idx in 1:plan.num_noncoherent_accumulations
         seg_start = (step_idx - 1) * segment_length + 1
 
         # Downconvert: apply intermediate frequency rotation into sig_buf
         if iszero(interm_freq_hz)
-            plan.sig_buf .= ComplexF32.(view(signal, seg_start:seg_start + segment_length - 1))
+            sig_buf .= ComplexF32.(view(signal, seg_start:seg_start + segment_length - 1))
         else
             phase_step = Float32(-2π * interm_freq_hz / sampling_freq_hz)
             phase_offset = Float32((seg_start - 1) * phase_step)
             @inbounds for sample_idx in 1:segment_length
                 phase = phase_offset + (sample_idx - 1) * phase_step
                 s, c = sincos(phase)
-                plan.sig_buf[sample_idx] = ComplexF32(signal[seg_start + sample_idx - 1]) * Complex(c, s)
+                sig_buf[sample_idx] = ComplexF32(signal[seg_start + sample_idx - 1]) * Complex(c, s)
             end
         end
 
@@ -139,12 +144,12 @@ function acquire!(
         # instead of redoing this O(num_coh*num_blocks) FFT batch per PRN.
         _precompute_signal_block_ffts!(
             plan.signal_block_ffts,
-            plan.sig_buf,
+            sig_buf,
             plan.samples_per_code,
             plan.num_blocks,
             plan.block_size,
             plan.num_coherently_integrated_code_periods,
-            plan.double_block_buf,
+            main_scratch.double_block_buf,
             plan.double_block_fft_plan,
         )
 
