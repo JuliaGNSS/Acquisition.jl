@@ -134,10 +134,14 @@ end
     @test r2.code_phase ≈ gen2.code_phase atol = 2.0
 end
 
-@testset "_acquire_step_threaded! — threaded path runs correctly" begin
+@testset "_acquire_step_threaded! — threaded path runs correctly (multistep)" begin
+    # _acquire_step_threaded! is the per-step fan-out used by the multistep
+    # (N_nc>1) path. Driven directly from the test, with a plan sized so the
+    # per-PRN noncoherent matrices exist.
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
-    plan = plan_acquire(system, sampling_freq, [1, 2]; fft_flag = FFTW.ESTIMATE)
+    plan = plan_acquire(system, sampling_freq, [1, 2];
+        num_noncoherent_accumulations = 2, fft_flag = FFTW.ESTIMATE)
     scratch = Acquisition._default_scratch(plan)
     (; signal, code_phase) = generate_test_signal(system, 1;
         num_samples = plan.samples_per_code, sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
@@ -153,6 +157,45 @@ end
     # PRN 1 should have a peak; just verify noncoherent matrix was filled
     @test maximum(plan.noncoherent_integration_matrices[1]) > 0
     @test maximum(plan.noncoherent_integration_matrices[2]) > 0
+end
+
+@testset "acquire! N_nc=1 sequential vs N_nc=2 multistep parity" begin
+    # Concatenating the same coherent segment twice and running with N_nc=2
+    # should detect the same PRN at the same code phase as a single segment at
+    # N_nc=1. CN0 differs (more integration), but doppler / code_phase / detection
+    # outcome must match — confirms the new sequential path is semantically
+    # equivalent to the multistep path on shared work.
+    system = GPSL1CA()
+    sampling_freq = 2.048e6Hz
+    prn = 1
+    code_phase_true = 100.0
+    doppler_true = 1500Hz
+    CN0_dbhz = 45
+    seed = 123
+
+    (; signal) = generate_test_signal(system, prn;
+        num_samples = 2 * 2048,                  # two full code periods
+        doppler = doppler_true, code_phase = code_phase_true,
+        sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = CN0_dbhz, seed = seed)
+
+    plan_seq = plan_acquire(system, sampling_freq, [prn];
+        num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 1,
+        fft_flag = FFTW.ESTIMATE)
+    plan_multi = plan_acquire(system, sampling_freq, [prn];
+        num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 2,
+        fft_flag = FFTW.ESTIMATE)
+
+    # Sequential path consumes the first segment.
+    res_seq = only(acquire!(plan_seq, ComplexF32.(signal[1:2048]), [prn]; interm_freq = 0.0Hz))
+    # Multistep path consumes both segments.
+    res_multi = only(acquire!(plan_multi, ComplexF32.(signal), [prn]; interm_freq = 0.0Hz))
+
+    @test is_detected(res_seq)
+    @test is_detected(res_multi)
+    @test abs(res_seq.code_phase   - code_phase_true) < 1.0
+    @test abs(res_multi.code_phase - code_phase_true) < 1.0
+    @test abs(res_seq.carrier_doppler   / 1Hz - ustrip(Hz, doppler_true)) < ustrip(Hz, step(plan_seq.doppler_freqs))
+    @test abs(res_multi.carrier_doppler / 1Hz - ustrip(Hz, doppler_true)) < ustrip(Hz, step(plan_multi.doppler_freqs))
 end
 
 @testset "acquire! — PRN not in plan throws ArgumentError" begin

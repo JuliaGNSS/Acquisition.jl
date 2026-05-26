@@ -20,6 +20,11 @@ struct AcquisitionScratch
     coherent_integration_matrix::Matrix{ComplexF32}         # (num_doppler_bins, samples_per_code)
     noncoherent_integration_max_buf::Matrix{Float32}         # (num_doppler_bins, samples_per_code) — 0x0 when simple path is taken (see plan_acquire)
     noncoherent_integration_buf::Matrix{Float32}             # (num_doppler_bins, samples_per_code)
+    # At num_noncoherent_accumulations == 1 this matrix replaces the per-PRN
+    # `noncoherent_integration_matrices` vector: each PRN runs one build+accumulate
+    # into this per-thread buffer, then extracts its result before the next PRN
+    # overwrites it. 0x0 when N_nc > 1 (the per-PRN layout is required there).
+    noncoherent_integration_accumulator::Matrix{Float32}
     sub_block_ffts::Matrix{ComplexF32}              # (num_doppler_bins, num_data_bits) — 0x0 when simple path is taken (see plan_acquire)
     col_sums_buf::Vector{Float32}                   # length samples_per_code — scratch for est_signal_noise_power
 end
@@ -281,7 +286,17 @@ function plan_acquire(
     # k ∈ 0..num_coh*num_blocks-1. Filled once per acquire! call before the PRN
     # loop and reused across all PRNs.
     signal_block_ffts = zeros(ComplexF32, double_block_size, num_coherently_integrated_code_periods * num_blocks)
-    noncoherent_integration_matrices = [zeros(Float32, num_doppler_bins, samples_per_code) for _ in prns]
+    # At N_nc == 1 each PRN's noncoherent matrix is written once and consumed
+    # once for result extraction; we collapse the per-PRN vector into a
+    # per-thread accumulator (see `noncoherent_integration_accumulator` in
+    # AcquisitionScratch). The multistep path (N_nc > 1) still needs the
+    # per-PRN vector because it accumulates across steps.
+    sequential_prn_mode = num_noncoherent_accumulations == 1
+    noncoherent_integration_matrices = sequential_prn_mode ?
+        Matrix{Float32}[] :
+        [zeros(Float32, num_doppler_bins, samples_per_code) for _ in prns]
+    accumulator_rows = sequential_prn_mode ? num_doppler_bins : 0
+    accumulator_cols = sequential_prn_mode ? samples_per_code : 0
     fftshift_perm = [mod(r - 1 + num_doppler_bins ÷ 2, num_doppler_bins) + 1 for r in 1:num_doppler_bins]
     result_buffers = Union{Nothing,Matrix{Float32}}[nothing for _ in prns]
 
@@ -314,6 +329,7 @@ function plan_acquire(
             zeros(ComplexF32, num_doppler_bins, samples_per_code),
             zeros(Float32, sign_search_max_rows, sign_search_max_cols),
             zeros(Float32, num_doppler_bins, samples_per_code),
+            zeros(Float32, accumulator_rows, accumulator_cols),
             zeros(ComplexF32, sign_search_max_rows, sub_block_cols),
             zeros(Float32, samples_per_code),
         )

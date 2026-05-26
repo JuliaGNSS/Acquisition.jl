@@ -228,3 +228,33 @@ end
     @test size(search_scratch.sub_block_ffts) ==
         (length(search_plan.doppler_freqs), search_plan.num_data_bits)
 end
+
+@testset "sequential N_nc=1 layout: empty per-PRN matrices, full per-thread accumulator" begin
+    # When num_noncoherent_accumulations == 1 the per-PRN noncoherent matrices
+    # collapse into a single per-thread accumulator reused across PRNs. Layout
+    # should be: empty Vector{Matrix{Float32}} on the plan, full-sized
+    # accumulator per thread.
+    system = GPSL1CA()
+    sampling_freq = 2.048e6Hz
+    prns = collect(1:4)
+
+    seq_plan = plan_acquire(system, sampling_freq, prns;
+        num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 1)
+    seq_scratch = Acquisition._default_scratch(seq_plan)
+    @test length(seq_plan.noncoherent_integration_matrices) == 0
+    expected = (length(seq_plan.doppler_freqs), seq_plan.samples_per_code)
+    @test size(seq_scratch.noncoherent_integration_accumulator) == expected
+    for t_scratch in seq_plan.thread_scratch
+        @test size(t_scratch.noncoherent_integration_accumulator) == expected
+    end
+
+    # N_nc>1 path keeps the per-PRN matrices and uses no accumulator.
+    multi_plan = plan_acquire(system, sampling_freq, prns;
+        num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 2)
+    multi_scratch = Acquisition._default_scratch(multi_plan)
+    @test length(multi_plan.noncoherent_integration_matrices) == length(prns)
+    for nim in multi_plan.noncoherent_integration_matrices
+        @test size(nim) == (length(multi_plan.doppler_freqs), multi_plan.samples_per_code)
+    end
+    @test size(multi_scratch.noncoherent_integration_accumulator) == (0, 0)
+end
