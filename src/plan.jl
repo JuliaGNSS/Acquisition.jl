@@ -75,6 +75,19 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     acq_results_buf::Vector{R}
     # Singleton selecting the noise-power estimator used by `est_signal_noise_power`.
     noise_estimator::E
+    # Secondary-code rotation search configuration.
+    use_secondary_code::Bool
+    max_secondary_code_rotations::Int
+    # Derived: number of secondary-code rotation phases to enumerate. Equals
+    # get_secondary_code_length(system) when the search is active, else 1.
+    num_secondary_rotations::Int
+    # Pre-computed ±1 sign-pattern matrix per PRN, consumed by `_sign_search_step!`
+    # / `_sign_search_step_with_rotations!`. Built once in `plan_acquire`. Empty
+    # when the sign-search path is inactive (i.e. simple/pilot path with no
+    # rotation search). For PRN-independent patterns (no rotation, or shared
+    # secondary code) the same matrix value is stored under every PRN key — keeps
+    # the lookup uniform without per-call allocation.
+    sign_patterns_by_prn::Dict{Int,Matrix{Float32}}
 end
 
 # Thread 1's scratch is the ambient single-threaded scratch reused by `acquire!`
@@ -177,6 +190,8 @@ function plan_acquire(
     bit_edge_search_steps::Int = 1,
     num_noncoherent_accumulations::Int = 1,
     noise_estimator::AbstractNoiseEstimator = OppositeRowNoiseEstimator(),
+    use_secondary_code::Bool = true,
+    max_secondary_code_rotations::Int = 32,
     fft_flag = FFTW.MEASURE,
 )
     num_noncoherent_accumulations >= 1 || throw(ArgumentError("num_noncoherent_accumulations must be >= 1, got $num_noncoherent_accumulations"))
@@ -184,6 +199,35 @@ function plan_acquire(
     bit_edge_search_steps >= 1 || throw(ArgumentError("bit_edge_search_steps must be >= 1, got $bit_edge_search_steps"))
     if num_coherently_integrated_code_periods == 1 && bit_edge_search_steps > 1
         throw(ArgumentError("bit_edge_search_steps must be 1 when num_coherently_integrated_code_periods == 1 (sub-bit mode; no bit boundary search applies), got $bit_edge_search_steps"))
+    end
+
+    # Secondary-code rotation search cap. Fires before any heavy allocation so a
+    # user who hits the cap on a large-L signal (e.g. GPS L1C-P, L=1800) is not
+    # paying the cost of the plan's buffers just to learn that the search is too big.
+    let L = get_secondary_code_length(system)
+        if use_secondary_code && L > 1 && num_coherently_integrated_code_periods > 1 && L > max_secondary_code_rotations
+            throw(ArgumentError(
+                "Secondary-code rotation search size exceeds the per-plan cap for " *
+                "$(typeof(system).name.name): " *
+                "get_secondary_code_length(system)=$L > max_secondary_code_rotations=$max_secondary_code_rotations " *
+                "at num_coherently_integrated_code_periods=$num_coherently_integrated_code_periods. " *
+                "Remedies (in order): " *
+                "(1) reduce num_coherently_integrated_code_periods; " *
+                "(2) raise max_secondary_code_rotations to at least $L; or " *
+                "(3) set use_secondary_code = false to opt out of the rotation search."))
+        end
+        # Rotation-length divisibility: when the integration window spans more than one
+        # secondary-code period (N > L), the window must cover a whole number of those
+        # periods so the cyclic-rotation semantics are well-defined. For data signals this
+        # collapses into the existing bit_period_codes check (bit_period_codes is a
+        # multiple of L in practice), so this is only meaningful for pilot signals.
+        if use_secondary_code && L > 1 &&
+           num_coherently_integrated_code_periods > L &&
+           num_coherently_integrated_code_periods % L != 0
+            throw(ArgumentError(
+                "secondary-code rotation length L=$L must divide " *
+                "num_coherently_integrated_code_periods=$num_coherently_integrated_code_periods when N > L."))
+        end
     end
 
     # Samples per code period
@@ -304,15 +348,32 @@ function plan_acquire(
     fftshift_perm = [mod(r - 1 + num_doppler_bins ÷ 2, num_doppler_bins) + 1 for r in 1:num_doppler_bins]
     result_buffers = Union{Nothing,Matrix{Float32}}[nothing for _ in prns]
 
-    # The sign-search path in `_accumulate_noncoherent_integration_step!` runs only
-    # when num_data_bits > 1 OR bit_edge_search_steps > 1. Otherwise the simple
-    # (pilot) path is taken, which never reads `sign_search_max_buf` or
-    # `sub_block_ffts`. Decide here at plan time so each thread can skip those
-    # buffers when they will provably never be read.
-    sign_search_path_active = num_data_bits > 1 || bit_edge_search_steps > 1
+    # Derive the secondary-code rotation search size. No-op for signals without a
+    # secondary code (L = 1) or when the user opts out.
+    secondary_code_length = get_secondary_code_length(system)
+    rotation_search_active = use_secondary_code &&
+                             secondary_code_length > 1 &&
+                             num_coherently_integrated_code_periods > 1
+    num_secondary_rotations = rotation_search_active ? secondary_code_length : 1
+
+    # The sign-search path in `_accumulate_noncoherent_integration_step!` runs when
+    # num_data_bits > 1, bit_edge_search_steps > 1, or the secondary-code rotation
+    # search is active. Otherwise the simple/pilot path is taken, which never reads
+    # `sign_search_max_buf` or `sub_block_ffts`. Decide here at plan time so each
+    # thread can skip those buffers when they will provably never be read.
+    sign_search_path_active = num_data_bits > 1 || bit_edge_search_steps > 1 ||
+                              rotation_search_active
     sign_search_max_rows = sign_search_path_active ? num_doppler_bins  : 0
     sign_search_max_cols = sign_search_path_active ? samples_per_code  : 0
-    sub_block_cols       = sign_search_path_active ? num_data_bits     : 0
+    # The data-bit kernel needs one sub-block FFT column per data bit; the
+    # rotation kernel needs one per coherent period. Size to the max so the same
+    # scratch matrix serves both code paths.
+    sub_block_cols = if sign_search_path_active
+        rotation_search_active ? max(num_data_bits, num_coherently_integrated_code_periods) :
+                                 num_data_bits
+    else
+        0
+    end
 
     # `noncoherent_integration_buf` (the |x|² intermediate) is bypassed by the
     # fused FFT+|x|²+(code-drift)+fftshift kernel on every simple-path route:
@@ -365,6 +426,34 @@ function plan_acquire(
         0f0, 0f0, 0, nothing, doppler_freqs, num_blocks, block_size)
     acq_results_buf = Vector{typeof(dummy_result)}(undef, length(prns))
 
+    # Pre-compute the ±1 sign-pattern matrix once per PRN. The dispatcher in
+    # `_accumulate_noncoherent_integration_step!` reads from this dict instead
+    # of recomputing per accumulation step. Patterns that don't depend on PRN
+    # (no rotation, or shared secondary code) still get a per-PRN entry — the
+    # underlying matrix object can be shared to avoid duplicate storage.
+    sign_patterns_by_prn = Dict{Int,Matrix{Float32}}()
+    if sign_search_path_active
+        secondary_code_obj = use_secondary_code ? get_secondary_code(system) : nothing
+        # When patterns are PRN-independent, build once and alias under every key.
+        prn_independent = !rotation_search_active ||
+                          !(secondary_code_obj isa GNSSSignals.PerPRNSecondaryCode)
+        if prn_independent
+            shared = sign_patterns(secondary_code_obj, first(prns), num_data_bits,
+                                   num_secondary_rotations,
+                                   num_coherently_integrated_code_periods,
+                                   use_secondary_code)
+            for prn in prns
+                sign_patterns_by_prn[prn] = shared
+            end
+        else
+            for prn in prns
+                sign_patterns_by_prn[prn] = sign_patterns(secondary_code_obj, prn,
+                    num_data_bits, num_secondary_rotations,
+                    num_coherently_integrated_code_periods, use_secondary_code)
+            end
+        end
+    end
+
     return AcquisitionPlan(
         system, convert(typeof(1.0Hz), sampling_freq),
         samples_per_code, num_blocks, block_size, num_coherently_integrated_code_periods, num_data_bits, bit_edge_search_steps, num_noncoherent_accumulations,
@@ -378,5 +467,9 @@ function plan_acquire(
         thread_scratch,
         acq_results_buf,
         noise_estimator,
+        use_secondary_code,
+        max_secondary_code_rotations,
+        num_secondary_rotations,
+        sign_patterns_by_prn,
     )
 end

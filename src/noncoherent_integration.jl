@@ -94,6 +94,70 @@ function _sign_search_step!(
 end
 
 """
+    _sign_search_step_with_rotations!(noncoherent_integration_buf, coherent_integration_matrix, col_buf, col_fftshift_buf,
+                                      col_fft_plan, samples_per_code, num_doppler_bins, num_coh_periods, num_blocks,
+                                      row_offset, sub_block_ffts, patterns)
+
+Sign-pattern search step for one bit-edge alignment when per-coherent-period signs vary
+(secondary-code rotation search). Splits each column into `num_coh_periods` sub-blocks
+of `num_blocks` rows each (one per coherent code period) and computes one column FFT per
+sub-block. Then, for each pattern column, sums `sign[k] * sub_block_FFT[k]` over the
+`num_coh_periods` sub-blocks and accumulates the cell-wise max of `|result|²` into
+`noncoherent_integration_buf`.
+
+This is the generalisation of [`_sign_search_step!`](@ref) — that kernel groups consecutive
+coherent periods into one sub-block per data bit (`num_data_bits` sub-blocks total) and is
+correct only when the sign is constant within each data bit. When the secondary code varies
+the sign per coherent period, we need one sub-block per period; `patterns` may have
+arbitrary `±1` entries per row.
+
+`sub_block_ffts` must have at least `num_coh_periods` columns.
+"""
+function _sign_search_step_with_rotations!(
+    noncoherent_integration_buf::Matrix{Float32},
+    coherent_integration_matrix::Matrix{ComplexF32},
+    col_buf::Vector{ComplexF32},
+    col_fftshift_buf::Vector{ComplexF32},
+    col_fft_plan,
+    samples_per_code::Int,
+    num_doppler_bins::Int,
+    num_coh_periods::Int,
+    num_blocks::Int,
+    row_offset::Int,
+    sub_block_ffts::Matrix{ComplexF32},
+    patterns::Matrix{Float32},
+)
+    num_sign_patterns = size(patterns, 2)
+    for col_idx in 1:samples_per_code
+        # One sub-block FFT per coherent period (sub-block size = num_blocks).
+        for k in 0:num_coh_periods-1
+            fill!(col_buf, zero(ComplexF32))
+            for sub_row in 0:num_blocks-1
+                src_row = ((row_offset + k * num_blocks + sub_row) % num_doppler_bins) + 1
+                col_buf[sub_row + 1] = coherent_integration_matrix[src_row, col_idx]
+            end
+            mul!(col_buf, col_fft_plan, col_buf)
+            circshift!(col_fftshift_buf, col_buf, num_doppler_bins ÷ 2)
+            sub_block_ffts[:, k + 1] .= col_fftshift_buf
+        end
+
+        for p in 1:num_sign_patterns
+            fill!(col_buf, zero(ComplexF32))
+            for k in 0:num_coh_periods-1
+                sign = patterns[k + 1, p]
+                col_buf .+= sign .* view(sub_block_ffts, :, k + 1)
+            end
+            @inbounds for doppler_row in 1:num_doppler_bins
+                cell_power = abs2(col_buf[doppler_row])
+                if cell_power > noncoherent_integration_buf[doppler_row, col_idx]
+                    noncoherent_integration_buf[doppler_row, col_idx] = cell_power
+                end
+            end
+        end
+    end
+end
+
+"""
     _apply_code_drift!(noncoherent_integration_buf, plan, accumulation_step_index)
 
 Circularly shift each row `w` of `noncoherent_integration_buf` by `S_CD[w]` samples to correct for
@@ -290,31 +354,40 @@ function _scatter_fftshift_accumulate!(dst::Matrix{Float32}, src::Matrix{Float32
 end
 
 """
-    _accumulate_noncoherent_integration_step!(noncoherent_integration_matrix, coherent_integration_matrix, plan, m)
+    _accumulate_noncoherent_integration_step!(noncoherent_integration_matrix, coherent_integration_matrix, plan, scratch, prn, m)
 
-For incoherent step `m` (0-based): run the column FFT (pilot/sub-bit or data), apply
-bit edge search and code drift correction, then accumulate into `noncoherent_integration_matrix`.
+For incoherent step `m` (0-based): run the column FFT (pilot/sub-bit or data/rotation),
+apply bit edge search and code drift correction, then accumulate into
+`noncoherent_integration_matrix`.
 
-For pilot channels and sub-bit integration (num_data_bits == 1, bit_edge_search_steps == 1):
-uses the fast pilot path (_accumulate_noncoherent_integration_pilot!) — one column FFT per column, no bit search.
+For pilot channels and sub-bit integration with no rotation search
+(num_data_bits == 1, bit_edge_search_steps == 1, num_secondary_rotations == 1 or N == 1):
+uses the fast pilot path (_accumulate_noncoherent_integration_pilot!) — one column FFT per
+column, no sign search.
 
-For sub-bit integration with bit edge search (num_data_bits == 1, bit_edge_search_steps > 1):
-uses _sign_search_step! with bit_edge_search_steps candidate alignments to find the one
-that avoids a bit transition within the window.
+When secondary-code rotation search is active (num_secondary_rotations > 1 and N > 1):
+uses [`_sign_search_step_with_rotations!`](@ref), which splits the column into N
+coherent-period sub-blocks (size num_blocks each) and searches across the Cartesian
+product of data-bit polarities and secondary-code rotations.
 
-For multi-bit integration (num_data_bits > 1): uses _sign_search_step! with both
-bit edge search and 2^(num_data_bits-1) bit sign combination search.
+For data-bit / bit-edge search without rotation
+(num_data_bits > 1 or bit_edge_search_steps > 1, num_secondary_rotations == 1):
+uses [`_sign_search_step!`](@ref) with bit_edge_search_steps candidate alignments and
+2^(num_data_bits − 1) data-bit polarity combinations.
 """
 function _accumulate_noncoherent_integration_step!(
     noncoherent_integration_matrix::Matrix{Float32},
     coherent_integration_matrix::Matrix{ComplexF32},
     plan::AcquisitionPlan,
     scratch,
+    prn::Int,
     accumulation_step_index::Int,
 )
     num_doppler_bins = plan.num_coherently_integrated_code_periods * plan.num_blocks
+    rotation_search_active = plan.num_secondary_rotations > 1 &&
+                             plan.num_coherently_integrated_code_periods > 1
 
-    if plan.num_data_bits == 1 && plan.bit_edge_search_steps == 1
+    if plan.num_data_bits == 1 && plan.bit_edge_search_steps == 1 && !rotation_search_active
         # Simple/pilot path: fused FFT+|x|²+(code-drift)+fftshift kernel writes
         # straight into `noncoherent_integration_matrix`. The drift kernel is
         # taken only when at least one row's rounded drift is non-zero — at
@@ -350,23 +423,27 @@ function _accumulate_noncoherent_integration_step!(
     else
         sign_search_max_buf = scratch.sign_search_max_buf
         noncoherent_integration_buf = scratch.noncoherent_integration_buf
-        # Data channel or sub-bit with bit edge search: iterate over bit_edge_search_steps candidate
-        # alignments. For sub-bit (num_data_bits==1), only one bit sign pattern exists so
-        # _sign_search_step! just picks the best-aligned window. For multi-bit
-        # (num_data_bits>1) it also searches 2^(num_data_bits-1) bit sign combinations.
-        # The pattern matrix's shape decides what the kernel searches over; today's
-        # patterns enumerate data-bit polarities only (rotation axis fixed to 1).
-        patterns = sign_patterns(nothing, 0, plan.num_data_bits, 1,
-                                 plan.num_coherently_integrated_code_periods, false)
+        # Sign-pattern search path. The plan pre-computed the pattern matrix per
+        # PRN at `plan_acquire` time; the kernel selection depends only on the
+        # rotation axis. The kernel reads `patterns` to decide what to search.
+        patterns = plan.sign_patterns_by_prn[prn]
         fill!(sign_search_max_buf, 0.0f0)
         bit_period_codes = plan.num_coherently_integrated_code_periods ÷ plan.num_data_bits
         edge_step = bit_period_codes * plan.num_blocks ÷ plan.bit_edge_search_steps
         for bit_edge_search_idx in 0:plan.bit_edge_search_steps-1
             fill!(noncoherent_integration_buf, 0.0f0)
             row_offset = bit_edge_search_idx * edge_step
-            _sign_search_step!(noncoherent_integration_buf, coherent_integration_matrix, scratch.col_buf, scratch.col_fftshift_buf,
-                plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
-                plan.num_data_bits, row_offset, scratch.sub_block_ffts, patterns)
+            if rotation_search_active
+                _sign_search_step_with_rotations!(noncoherent_integration_buf, coherent_integration_matrix,
+                    scratch.col_buf, scratch.col_fftshift_buf, plan.col_fft_plan,
+                    plan.samples_per_code, num_doppler_bins,
+                    plan.num_coherently_integrated_code_periods, plan.num_blocks,
+                    row_offset, scratch.sub_block_ffts, patterns)
+            else
+                _sign_search_step!(noncoherent_integration_buf, coherent_integration_matrix, scratch.col_buf, scratch.col_fftshift_buf,
+                    plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
+                    plan.num_data_bits, row_offset, scratch.sub_block_ffts, patterns)
+            end
             _apply_code_drift!(noncoherent_integration_buf, plan, scratch, accumulation_step_index)
             @. sign_search_max_buf = max(sign_search_max_buf, noncoherent_integration_buf)
         end
@@ -374,6 +451,7 @@ function _accumulate_noncoherent_integration_step!(
     end
 end
 # Convenience wrapper for tests and single-threaded callers — routes through
-# thread 1's scratch (see `_default_scratch`).
+# thread 1's scratch (see `_default_scratch`) and uses the plan's first avail PRN.
 _accumulate_noncoherent_integration_step!(nim, cim, plan::AcquisitionPlan, accumulation_step_index::Int) =
-    _accumulate_noncoherent_integration_step!(nim, cim, plan, _default_scratch(plan), accumulation_step_index)
+    _accumulate_noncoherent_integration_step!(nim, cim, plan, _default_scratch(plan),
+        first(plan.avail_prns), accumulation_step_index)
