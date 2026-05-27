@@ -142,7 +142,7 @@ end
         num_coherently_integrated_code_periods = 1)
     duplicated_fields = (
         :coherent_integration_matrix,
-        :noncoherent_integration_max_buf,
+        :sign_search_max_buf,
         :noncoherent_integration_buf,
         :sub_block_ffts,
         :col_buf,
@@ -199,7 +199,7 @@ end
 @testset "sign-search scratch is 0x0 when the simple path is provably taken" begin
     # The router in _accumulate_noncoherent_integration_step! takes the simple/pilot
     # path when num_data_bits == 1 && bit_edge_search_steps == 1. In that regime
-    # noncoherent_integration_max_buf and sub_block_ffts are never read, so the
+    # sign_search_max_buf and sub_block_ffts are never read, so the
     # plan should allocate them as 0x0 sentinels per thread.
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
@@ -209,11 +209,11 @@ end
     simple_scratch = Acquisition._default_scratch(simple_plan)
     @test simple_plan.num_data_bits == 1
     @test simple_plan.bit_edge_search_steps == 1
-    @test size(simple_scratch.noncoherent_integration_max_buf) == (0, 0)
+    @test size(simple_scratch.sign_search_max_buf) == (0, 0)
     @test size(simple_scratch.sub_block_ffts) == (0, 0)
     # And every thread's slot matches — not just thread 1.
     for t_scratch in simple_plan.thread_scratch
-        @test size(t_scratch.noncoherent_integration_max_buf) == (0, 0)
+        @test size(t_scratch.sign_search_max_buf) == (0, 0)
         @test size(t_scratch.sub_block_ffts) == (0, 0)
     end
 
@@ -224,7 +224,7 @@ end
         num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4)
     search_scratch = Acquisition._default_scratch(search_plan)
     expected = (length(search_plan.doppler_freqs), search_plan.samples_per_code)
-    @test size(search_scratch.noncoherent_integration_max_buf) == expected
+    @test size(search_scratch.sign_search_max_buf) == expected
     @test size(search_scratch.sub_block_ffts) ==
         (length(search_plan.doppler_freqs), search_plan.num_data_bits)
 end
