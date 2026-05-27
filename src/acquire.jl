@@ -35,6 +35,7 @@ function _acquire_prn!(plan::AcquisitionPlan, scratch, prn::Int, accumulation_st
         scratch.coherent_integration_matrix,
         plan,
         scratch,
+        prn,
         accumulation_step_index,
     )
 end
@@ -219,9 +220,13 @@ function _acquire_sequential!(plan, signal, prns, segment_length, interm_freq_hz
 
     # When the simple/pilot routing applies, fuse the column FFT + |x|² + fftshift
     # row permutation into one pass directly into the accumulator — see
-    # `_accumulate_fftshifted_power_pilot!`. Otherwise (bit edge / data bit
-    # search) fall back to the unfused `_accumulate_noncoherent_integration_step!`.
-    simple_path = plan.num_data_bits == 1 && plan.bit_edge_search_steps == 1
+    # `_accumulate_fftshifted_power_pilot!`. Otherwise (bit edge / data bit search
+    # or secondary-code rotation search) fall back to the unfused
+    # `_accumulate_noncoherent_integration_step!`.
+    rotation_search_active = plan.num_secondary_rotations > 1 &&
+                             plan.num_coherently_integrated_code_periods > 1
+    simple_path = plan.num_data_bits == 1 && plan.bit_edge_search_steps == 1 &&
+                  !rotation_search_active
     @batch per=core for result_idx in eachindex(prns)
         prn = @inbounds prns[result_idx]
         prn_idx = findfirst(==(prn), plan.avail_prns)
@@ -253,7 +258,7 @@ function _acquire_sequential!(plan, signal, prns, segment_length, interm_freq_hz
             end
         else
             _accumulate_noncoherent_integration_step!(accumulator, scratch.coherent_integration_matrix,
-                plan, scratch, 0)
+                plan, scratch, prn, 0)
         end
 
         results[result_idx] = _extract_result!(plan, scratch, prn, prn_idx, accumulator,
@@ -399,6 +404,8 @@ function acquire(
     num_coherently_integrated_code_periods::Int = 1,
     bit_edge_search_steps::Int = 1,
     num_noncoherent_accumulations::Int = 1,
+    use_secondary_code::Bool = true,
+    max_secondary_code_rotations::Int = 32,
     fft_flag = FFTW.MEASURE,
     subsample_interpolation::Bool = false,
     store_power_bins::Bool = false,
@@ -411,6 +418,8 @@ function acquire(
         num_coherently_integrated_code_periods,
         bit_edge_search_steps,
         num_noncoherent_accumulations,
+        use_secondary_code,
+        max_secondary_code_rotations,
         fft_flag,
     )
     acquire!(plan, signal, collect(Int, prns); interm_freq, subsample_interpolation, store_power_bins)

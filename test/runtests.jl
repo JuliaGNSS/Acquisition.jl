@@ -8,6 +8,7 @@ end
 include("est_signal_noise_power.jl")
 include("cfar.jl")
 include("sign_patterns.jl")
+include("secondary_code_search.jl")
 
 @testset "FM-DBZP" begin
     include("plan.jl")

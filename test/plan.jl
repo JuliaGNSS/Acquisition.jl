@@ -39,6 +39,76 @@ end
     @test step(plan.doppler_freqs) ≈ 25Hz    # 32000/1280
 end
 
+@testset "plan_acquire stores secondary-code search configuration" begin
+    # L1 C/A has no secondary code (L = 1) → rotation axis is a no-op.
+    plan_l1 = plan_acquire(GPSL1CA(), 2.048e6Hz, [1];
+        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 1)
+    @test plan_l1.use_secondary_code == true
+    @test plan_l1.max_secondary_code_rotations == 32
+    @test plan_l1.num_secondary_rotations == 1
+
+    # L5I with NH10 (L = 10) at N = 10 → rotation search is active.
+    plan_l5 = plan_acquire(GPSL5I(), 10.24e6Hz, [1];
+        min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = 10)
+    @test plan_l5.use_secondary_code == true
+    @test plan_l5.max_secondary_code_rotations == 32
+    @test plan_l5.num_secondary_rotations == 10
+    # Pre-allocated sign patterns: rotation_search_active ⇒ L columns per PRN.
+    @test haskey(plan_l5.sign_patterns_by_prn, 1)
+    @test size(plan_l5.sign_patterns_by_prn[1]) == (10, 10)
+
+    # Opt-out: L5I with use_secondary_code = false → rotation axis collapses.
+    plan_l5_optout = plan_acquire(GPSL5I(), 10.24e6Hz, [1];
+        min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = 10,
+        use_secondary_code = false)
+    @test plan_l5_optout.use_secondary_code == false
+    @test plan_l5_optout.num_secondary_rotations == 1
+    # Opt-out collapses the dispatcher to the pilot fast path → no sign_search buffers.
+    @test isempty(plan_l5_optout.sign_patterns_by_prn)
+end
+
+@testset "plan_acquire — secondary-code rotation length must divide N when N > L (pilot)" begin
+    # L5I has L = 10. With N = 15: 15 > 10 and 15 % 10 ≠ 0 → must throw. We assert on a
+    # keyword unique to the new rotation-divisibility check so this isn't satisfied
+    # vicariously by the older data-bit divisibility throw (which would fire on signals
+    # where has_data is true).
+    err = try
+        plan_acquire(GPSL5I(), 10.24e6Hz, [1];
+            min_doppler_coverage = 1_000Hz, num_coherently_integrated_code_periods = 15)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    msg = sprint(showerror, err)
+    @test occursin("secondary", lowercase(msg))   # unique to the new check
+    @test occursin("15", msg)                     # current N
+    @test occursin("10", msg)                     # L
+end
+
+@testset "plan_acquire — secondary-code search cap (L1C_P)" begin
+    # L1C-P has L=1800 ≫ default cap of 32. With use_secondary_code=true (default) and
+    # N > 1, plan_acquire must throw with an actionable message *before* allocating any
+    # of the (very large at L1C-P sample rates) plan buffers.
+    err = try
+        plan_acquire(GPSL1C_P(), 25e6Hz, [1];
+            min_doppler_coverage = 1_000Hz, num_coherently_integrated_code_periods = 2)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    msg = sprint(showerror, err)
+    @test occursin("1800", msg)                                    # offending L
+    @test occursin("32", msg)                                      # cap
+    @test occursin("=2", msg) || occursin("= 2", msg)              # current N
+    @test occursin("GPSL1C_P", msg) || occursin("L1C", msg)        # signal name
+    # Three remedies — reduce N, raise the cap, or opt out
+    @test occursin("num_coherently_integrated_code_periods", msg)
+    @test occursin("max_secondary_code_rotations", msg)
+    @test occursin("use_secondary_code", msg)
+end
+
 @testset "plan_acquire validation errors" begin
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz

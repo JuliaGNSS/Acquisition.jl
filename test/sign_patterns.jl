@@ -28,4 +28,28 @@
         @test size(result) == (20, 1)
         @test result == ones(Float32, 20, 1)
     end
+
+    @testset "L5I NH10, N=10, num_secondary_rotations=10, num_data_bits=1, use_secondary_code=true → 10 columns of cyclic rotations" begin
+        sec = get_secondary_code(GPSL5I())
+        L = 10
+        N = 10
+        result = Acquisition.sign_patterns(sec, 1, 1, L, N, true)
+        @test eltype(result) == Float32
+        @test size(result) == (N, L)
+        # Rotation r: column r+1 has sign at row k+1 = secondary_value(sec, prn, (k + r) mod L)
+        for r in 0:L-1
+            expected_col = Float32[GNSSSignals.secondary_value(sec, 1, mod(k + r, L)) for k in 0:N-1]
+            @test result[:, r + 1] == expected_col
+        end
+        # Pin a specific rotation: r=0 column should equal NH10 itself.
+        # NH10 = (1, 1, 1, 1, -1, -1, 1, -1, 1, -1)
+        @test result[:, 1] == Float32[1, 1, 1, 1, -1, -1, 1, -1, 1, -1]
+    end
+
+    @testset "L5I NH10, N=10, num_secondary_rotations=10 but use_secondary_code=false → 1 column of all +1 (opt-out)" begin
+        sec = get_secondary_code(GPSL5I())
+        result = Acquisition.sign_patterns(sec, 1, 1, 10, 10, false)
+        @test size(result) == (10, 1)
+        @test result == ones(Float32, 10, 1)
+    end
 end
