@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.3](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.3.2...v2.3.3) (2026-05-27)
+
+
+### Bug Fixes
+
+* correct half-band Doppler offset in the sign-search path ([29269f9](https://github.com/JuliaGNSS/Acquisition.jl/commit/29269f92753a8c38aa29410d7ea44828d4ace5cf))
+
 ## [2.3.2](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.3.1...v2.3.2) (2026-05-27)
 
 
