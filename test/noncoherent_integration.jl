@@ -290,8 +290,9 @@ end
     noncoherent_integration_matrix = zeros(Float32, num_doppler_bins, plan.samples_per_code)
     noncoherent_integration_buf = zeros(Float32, num_doppler_bins, plan.samples_per_code)
     sub_block_ffts = zeros(ComplexF32, num_doppler_bins, plan.num_data_bits)
+    patterns = Acquisition.sign_patterns(nothing, 0, plan.num_data_bits, 1, plan.num_coherently_integrated_code_periods, false)
     Acquisition._sign_search_step!(noncoherent_integration_buf, scratch.coherent_integration_matrix, scratch.col_buf, scratch.col_fftshift_buf,
-        plan.col_fft_plan, plan.samples_per_code, num_doppler_bins, plan.num_data_bits, 0, sub_block_ffts)
+        plan.col_fft_plan, plan.samples_per_code, num_doppler_bins, plan.num_data_bits, 0, sub_block_ffts, patterns)
     noncoherent_integration_matrix .+= noncoherent_integration_buf
 
     peak_row, peak_col = Tuple(argmax(noncoherent_integration_matrix))
@@ -346,8 +347,9 @@ end
 
     noncoherent_integration_data = zeros(Float32, num_doppler_bins, plan.samples_per_code)
     sub_block_ffts = zeros(ComplexF32, num_doppler_bins, plan.num_data_bits)
+    patterns = Acquisition.sign_patterns(nothing, 0, plan.num_data_bits, 1, plan.num_coherently_integrated_code_periods, false)
     Acquisition._sign_search_step!(noncoherent_integration_data, scratch.coherent_integration_matrix, scratch.col_buf, scratch.col_fftshift_buf,
-        plan.col_fft_plan, plan.samples_per_code, num_doppler_bins, plan.num_data_bits, 0, sub_block_ffts)
+        plan.col_fft_plan, plan.samples_per_code, num_doppler_bins, plan.num_data_bits, 0, sub_block_ffts, patterns)
 
     # Pilot path: no bit search → the two halves cancel → weaker peak
     noncoherent_integration_pilot = zeros(Float32, num_doppler_bins, plan.samples_per_code)
@@ -546,9 +548,10 @@ end
         plan.num_coherently_integrated_code_periods, scratch.corr_buf,
         plan.double_block_bfft_plan)
     noncoherent_integration_with_transition = zeros(Float32, num_doppler_bins, plan.samples_per_code)
+    patterns = Acquisition.sign_patterns(nothing, 0, plan.num_data_bits, 1, plan.num_coherently_integrated_code_periods, false)
     Acquisition._sign_search_step!(noncoherent_integration_with_transition, scratch.coherent_integration_matrix, scratch.col_buf,
         scratch.col_fftshift_buf, plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
-        plan.num_data_bits, 0, sub_block_ffts)
+        plan.num_data_bits, 0, sub_block_ffts, patterns)
     peak_with_transition = maximum(noncoherent_integration_with_transition)
 
     @test peak_with_transition ≈ peak_no_transition rtol = 0.1
@@ -595,9 +598,10 @@ end
         plan.num_coherently_integrated_code_periods, scratch.corr_buf,
         plan.double_block_bfft_plan)
     noncoherent_integration_with_transition = zeros(Float32, num_doppler_bins, plan.samples_per_code)
+    patterns = Acquisition.sign_patterns(nothing, 0, plan.num_data_bits, 1, plan.num_coherently_integrated_code_periods, false)
     Acquisition._sign_search_step!(noncoherent_integration_with_transition, scratch.coherent_integration_matrix, scratch.col_buf,
         scratch.col_fftshift_buf, plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
-        plan.num_data_bits, 0, sub_block_ffts)
+        plan.num_data_bits, 0, sub_block_ffts, patterns)
     peak_with_transition = maximum(noncoherent_integration_with_transition)
 
     @test peak_with_transition ≈ peak_no_transition rtol = 0.1
