@@ -18,14 +18,14 @@ struct AcquisitionScratch
     row_buf::Vector{Float32}                        # length samples_per_code
     row_shift_buf::Vector{Float32}                  # length samples_per_code
     coherent_integration_matrix::Matrix{ComplexF32}         # (num_doppler_bins, samples_per_code)
-    noncoherent_integration_max_buf::Matrix{Float32}         # (num_doppler_bins, samples_per_code) — 0x0 when simple path is taken (see plan_acquire)
+    sign_search_max_buf::Matrix{Float32}                     # (num_doppler_bins, samples_per_code) — 0x0 when simple path is taken (see plan_acquire). Running max over sign-search alignments.
     noncoherent_integration_buf::Matrix{Float32}             # (num_doppler_bins, samples_per_code)
     # At num_noncoherent_accumulations == 1 this matrix replaces the per-PRN
     # `noncoherent_integration_matrices` vector: each PRN runs one build+accumulate
     # into this per-thread buffer, then extracts its result before the next PRN
     # overwrites it. 0x0 when N_nc > 1 (the per-PRN layout is required there).
     noncoherent_integration_accumulator::Matrix{Float32}
-    sub_block_ffts::Matrix{ComplexF32}              # (num_doppler_bins, num_data_bits) — 0x0 when simple path is taken (see plan_acquire)
+    sub_block_ffts::Matrix{ComplexF32}              # (num_doppler_bins, num_sub_blocks) — 0x0 when simple path is taken (see plan_acquire). Scratch for `_sign_search_step!`.
     col_sums_buf::Vector{Float32}                   # length samples_per_code — scratch for est_signal_noise_power
     # Row-wise code-drift shifts pre-filled per accumulation step on the
     # multistep simple path. length num_doppler_bins when that path is active;
@@ -306,7 +306,7 @@ function plan_acquire(
 
     # The sign-search path in `_accumulate_noncoherent_integration_step!` runs only
     # when num_data_bits > 1 OR bit_edge_search_steps > 1. Otherwise the simple
-    # (pilot) path is taken, which never reads `noncoherent_integration_max_buf` or
+    # (pilot) path is taken, which never reads `sign_search_max_buf` or
     # `sub_block_ffts`. Decide here at plan time so each thread can skip those
     # buffers when they will provably never be read.
     sign_search_path_active = num_data_bits > 1 || bit_edge_search_steps > 1
