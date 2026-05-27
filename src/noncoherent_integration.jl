@@ -26,20 +26,22 @@ end
 
 """
     _sign_search_step!(noncoherent_integration_buf, coherent_integration_matrix, col_buf, col_fftshift_buf, col_fft_plan,
-                       samples_per_code, num_doppler_bins, num_data_bits, row_offset, sub_block_ffts)
+                       samples_per_code, num_doppler_bins, num_data_bits, row_offset, sub_block_ffts, patterns)
 
 Sign-pattern search step for one bit-edge alignment of one non-coherent block. Does *not*
 perform non-coherent accumulation across blocks — that happens at the outer level in
-`_accumulate_noncoherent_integration_step!`. Today this kernel enumerates data-bit polarities
-only; the same mechanism is intended to also enumerate secondary-code rotations in the future
-(see issue #55) — at which point the patterns will be supplied via an external matrix instead
-of being computed inline.
+`_accumulate_noncoherent_integration_step!`. The patterns to enumerate are supplied via
+`patterns` (shape `(num_coh_periods, num_patterns)`), built by [`sign_patterns`](@ref).
+Today's patterns enumerate data-bit polarities only; the same mechanism is intended to
+also enumerate secondary-code rotations in the future (see issue #55).
 
-FM-DBZP column-wise FFT for data channels (paper: N_db > 1). For each of the samples_per_code columns:
-1. Splits the column (with circular row offset `row_offset`) into num_data_bits sub-blocks of
-   length num_doppler_bins÷num_data_bits, zero-pads each to num_doppler_bins, and FFTs it.
-2. For each of 2^(num_data_bits−1) bit sign patterns (d[0]=+1 always fixed), sums ±sub-block
-   FFTs, and accumulates the cell-wise maximum of |result|² into `noncoherent_integration_buf`.
+FM-DBZP column-wise FFT for data channels (paper: N_db > 1). For each of the
+samples_per_code columns:
+1. Splits the column (with circular row offset `row_offset`) into num_data_bits sub-blocks
+   of length num_doppler_bins÷num_data_bits, zero-pads each to num_doppler_bins, and FFTs it.
+2. For each sign pattern, sums ±sub-block FFTs (sign per data bit looked up from the
+   first row of that bit's segment in `patterns`), and accumulates the cell-wise maximum
+   of |result|² into `noncoherent_integration_buf`.
 
 `sub_block_ffts` is a pre-allocated (num_doppler_bins, num_data_bits) scratch matrix.
 """
@@ -54,8 +56,11 @@ function _sign_search_step!(
     num_data_bits::Int,
     row_offset::Int,
     sub_block_ffts::Matrix{ComplexF32},  # (num_doppler_bins, num_data_bits)
+    patterns::Matrix{Float32},           # (num_coh_periods, num_patterns)
 )
     sub_len = num_doppler_bins ÷ num_data_bits   # rows per data bit sub-block
+    num_sign_patterns = size(patterns, 2)
+    coh_per_bit = size(patterns, 1) ÷ num_data_bits
 
     for col_idx in 1:samples_per_code
         # Compute num_data_bits sub-block FFTs for column col_idx
@@ -70,12 +75,12 @@ function _sign_search_step!(
             sub_block_ffts[:, bit_idx + 1] .= col_fftshift_buf
         end
 
-        # Iterate over 2^(num_data_bits−1) bit sign patterns; d[0] = +1 fixed
-        num_sign_patterns = 1 << (num_data_bits - 1)
-        for bits in 0:num_sign_patterns-1
+        # Iterate over precomputed sign patterns; sign per data bit from the first row
+        # of that bit's segment in `patterns`.
+        for p in 1:num_sign_patterns
             fill!(col_buf, zero(ComplexF32))
             for bit_idx in 0:num_data_bits-1
-                bit_sign = bit_idx == 0 ? 1.0f0 : (((bits >> (bit_idx - 1)) & 1) == 0 ? 1.0f0 : -1.0f0)
+                bit_sign = patterns[bit_idx * coh_per_bit + 1, p]
                 col_buf .+= bit_sign .* view(sub_block_ffts, :, bit_idx + 1)
             end
             @inbounds for doppler_row in 1:num_doppler_bins
@@ -349,6 +354,10 @@ function _accumulate_noncoherent_integration_step!(
         # alignments. For sub-bit (num_data_bits==1), only one bit sign pattern exists so
         # _sign_search_step! just picks the best-aligned window. For multi-bit
         # (num_data_bits>1) it also searches 2^(num_data_bits-1) bit sign combinations.
+        # The pattern matrix's shape decides what the kernel searches over; today's
+        # patterns enumerate data-bit polarities only (rotation axis fixed to 1).
+        patterns = sign_patterns(nothing, 0, plan.num_data_bits, 1,
+                                 plan.num_coherently_integrated_code_periods, false)
         fill!(sign_search_max_buf, 0.0f0)
         bit_period_codes = plan.num_coherently_integrated_code_periods ÷ plan.num_data_bits
         edge_step = bit_period_codes * plan.num_blocks ÷ plan.bit_edge_search_steps
@@ -357,7 +366,7 @@ function _accumulate_noncoherent_integration_step!(
             row_offset = bit_edge_search_idx * edge_step
             _sign_search_step!(noncoherent_integration_buf, coherent_integration_matrix, scratch.col_buf, scratch.col_fftshift_buf,
                 plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
-                plan.num_data_bits, row_offset, scratch.sub_block_ffts)
+                plan.num_data_bits, row_offset, scratch.sub_block_ffts, patterns)
             _apply_code_drift!(noncoherent_integration_buf, plan, scratch, accumulation_step_index)
             @. sign_search_max_buf = max(sign_search_max_buf, noncoherent_integration_buf)
         end
