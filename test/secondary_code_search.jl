@@ -123,4 +123,35 @@
         @info "L5I 10ms peak ratio (on/off) = $ratio"
         @test ratio > 8
     end
+
+    @testset "L5I rotation search reports the correct Doppler (no half-band fftshift offset)" begin
+        # Regression for the double-fftshift bug shared by all sign-search kernels:
+        # the per-column sub-block FFT fftshifts internally (circshift by N/2) AND
+        # the result was scattered through fftshift_perm a second time. The two
+        # compose to the identity, leaving the Doppler axis in raw FFT order — the
+        # rotation search then recovered full peak *power* but at a Doppler bin
+        # offset by exactly half the searched band. Detection and the gain-recovery
+        # tests above pass either way (they don't pin the Doppler), so this asserts
+        # the absolute Doppler value, which the bug got wrong.
+        system        = GPSL5I()
+        sampling_freq = 12e6Hz
+        prn           = 1
+        true_doppler  = 1000Hz        # on the 100 Hz Doppler grid at N_coh=10
+        true_cp       = 1234.5
+
+        (; signal) = generate_test_signal(system, prn;
+            num_samples = 10 * 12000,
+            doppler = true_doppler, code_phase = true_cp,
+            sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
+
+        plan = plan_acquire(system, sampling_freq, [prn];
+            num_coherently_integrated_code_periods = 10, num_noncoherent_accumulations = 1)
+        @test plan.num_secondary_rotations > 1   # confirm the rotation search is active
+
+        result = acquire!(plan, signal, prn; interm_freq = 0.0Hz)
+
+        @test is_detected(result)
+        @test result.code_phase ≈ true_cp atol = 1.0
+        @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, true_doppler)) < ustrip(Hz, step(plan.doppler_freqs))
+    end
 end

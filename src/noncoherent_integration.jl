@@ -447,7 +447,17 @@ function _accumulate_noncoherent_integration_step!(
             _apply_code_drift!(noncoherent_integration_buf, plan, scratch, accumulation_step_index)
             @. sign_search_max_buf = max(sign_search_max_buf, noncoherent_integration_buf)
         end
-        _scatter_fftshift_accumulate!(noncoherent_integration_matrix, sign_search_max_buf, plan.fftshift_perm, plan.samples_per_code)
+        # Both sign-search kernels (`_sign_search_step!` and
+        # `_sign_search_step_with_rotations!`) already fftshift each column FFT
+        # internally (circshift by N÷2), so `sign_search_max_buf` is in
+        # sorted-Doppler order — the order `_apply_code_drift!` assumes and the
+        # result extraction reads. Accumulate directly; scattering through
+        # `fftshift_perm` here would shift a second time (the two compose to the
+        # identity), leaving the Doppler axis in raw FFT order and biasing every
+        # reported Doppler by half the searched band. Both arrays are
+        # (num_doppler_bins, samples_per_code), so a whole-array broadcast covers
+        # the same extent as the former scatter.
+        noncoherent_integration_matrix .+= sign_search_max_buf
     end
 end
 # Convenience wrapper for tests and single-threaded callers — routes through
