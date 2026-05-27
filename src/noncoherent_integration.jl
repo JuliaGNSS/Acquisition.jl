@@ -354,7 +354,19 @@ function _accumulate_noncoherent_integration_step!(
             _apply_code_drift!(noncoherent_integration_buf, plan, scratch, accumulation_step_index)
             @. noncoherent_integration_max_buf = max(noncoherent_integration_max_buf, noncoherent_integration_buf)
         end
-        _scatter_fftshift_accumulate!(noncoherent_integration_matrix, noncoherent_integration_max_buf, plan.fftshift_perm, plan.samples_per_code)
+        # `_accumulate_noncoherent_integration_data_bits!` already fftshifts each
+        # column FFT internally (circshift by N÷2), so `noncoherent_integration_max_buf`
+        # is in sorted-Doppler order — the same order `_apply_code_drift!` assumes
+        # and the result extraction reads. Accumulate directly; applying
+        # `fftshift_perm` here would shift a second time (the two compose to the
+        # identity), leaving the Doppler axis in raw FFT order and biasing every
+        # reported Doppler by half the searched band. The pilot reference path
+        # (raw-order kernel) is the one that pairs with `_scatter_fftshift_accumulate!`.
+        @inbounds for col_idx in 1:plan.samples_per_code
+            @simd for doppler_bin in 1:num_doppler_bins
+                noncoherent_integration_matrix[doppler_bin, col_idx] += noncoherent_integration_max_buf[doppler_bin, col_idx]
+            end
+        end
     end
 end
 # Convenience wrapper for tests and single-threaded callers — routes through

@@ -198,6 +198,41 @@ end
     @test abs(res_multi.carrier_doppler / 1Hz - ustrip(Hz, doppler_true)) < ustrip(Hz, step(plan_multi.doppler_freqs))
 end
 
+@testset "acquire! — sign-search path reports correct Doppler (no half-band fftshift offset)" begin
+    # Regression for the double-fftshift bug in the sign-search kernel: when
+    # num_data_bits > 1 the column sub-block FFT applied fftshift (circshift by
+    # N/2) AND the result was scattered through fftshift_perm a second time.
+    # Two fftshifts compose to the identity, leaving the Doppler axis in raw FFT
+    # order — every reported Doppler was off by exactly half the searched band,
+    # while code phase (the column axis) stayed correct. The pilot path shifts
+    # once and is unaffected, so existing tests (all num_data_bits == 1) missed it.
+    system = GPSL1CA()
+    sampling_freq = 2.048e6Hz
+    prn = 1
+    doppler_true = 500Hz      # on the 25 Hz Doppler grid
+    code_phase_true = 100.0
+
+    # N_coh = 40 code periods = 2 GPS data-bit periods (20 each) → num_data_bits = 2,
+    # which routes through the sign-search kernel rather than the simple pilot path.
+    (; signal) = generate_test_signal(system, prn;
+        num_samples = 40 * 2048,
+        doppler = doppler_true, code_phase = code_phase_true,
+        sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
+
+    plan = plan_acquire(system, sampling_freq, [prn];
+        num_coherently_integrated_code_periods = 40, num_noncoherent_accumulations = 1,
+        fft_flag = FFTW.ESTIMATE)
+    @test plan.num_data_bits == 2   # confirm the sign-search path is exercised
+
+    result = acquire!(plan, signal, prn; interm_freq = 0.0Hz)
+
+    @test is_detected(result)
+    @test result.code_phase ≈ code_phase_true atol = 1.0
+    # The bug shifted Doppler by half the band (8000 Hz here); a correct result
+    # lands within one Doppler bin of the truth.
+    @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, doppler_true)) < ustrip(Hz, step(plan.doppler_freqs))
+end
+
 @testset "acquire! — PRN not in plan throws ArgumentError" begin
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
