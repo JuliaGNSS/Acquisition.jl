@@ -362,11 +362,9 @@ function _accumulate_noncoherent_integration_step!(
         # identity), leaving the Doppler axis in raw FFT order and biasing every
         # reported Doppler by half the searched band. The pilot reference path
         # (raw-order kernel) is the one that pairs with `_scatter_fftshift_accumulate!`.
-        @inbounds for col_idx in 1:plan.samples_per_code
-            @simd for doppler_bin in 1:num_doppler_bins
-                noncoherent_integration_matrix[doppler_bin, col_idx] += noncoherent_integration_max_buf[doppler_bin, col_idx]
-            end
-        end
+        # Both arrays are (num_doppler_bins, samples_per_code), so a whole-array
+        # broadcast covers the same extent as the former scatter.
+        noncoherent_integration_matrix .+= noncoherent_integration_max_buf
     end
 end
 # Convenience wrapper for tests and single-threaded callers — routes through
