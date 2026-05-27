@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.2](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.3.1...v2.3.2) (2026-05-27)
+
+
+### Performance Improvements
+
+* fuse |x|² + code-drift + fftshift on the multistep simple path ([de0522e](https://github.com/JuliaGNSS/Acquisition.jl/commit/de0522ef35cdf0ffdc786841b8efe79585afc350)), closes [#62](https://github.com/JuliaGNSS/Acquisition.jl/issues/62)
+
 ## [2.3.1](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.3.0...v2.3.1) (2026-05-26)
 
 
