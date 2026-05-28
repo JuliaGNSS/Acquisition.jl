@@ -291,7 +291,7 @@ end
     noncoherent_integration_buf = zeros(Float32, num_doppler_bins, plan.samples_per_code)
     sub_block_ffts = zeros(ComplexF32, num_doppler_bins, plan.num_data_bits)
     patterns = Acquisition.sign_patterns(nothing, 0, plan.num_data_bits, 1, plan.num_coherently_integrated_code_periods, false)
-    Acquisition._sign_search_step!(noncoherent_integration_buf, scratch.coherent_integration_matrix, scratch.col_buf, scratch.col_fftshift_buf,
+    Acquisition._sign_search_step!(noncoherent_integration_buf, scratch.coherent_integration_matrix, scratch.col_buf,
         plan.col_fft_plan, plan.samples_per_code, num_doppler_bins, plan.num_data_bits, 0, sub_block_ffts, patterns)
     noncoherent_integration_matrix .+= noncoherent_integration_buf
 
@@ -348,7 +348,7 @@ end
     noncoherent_integration_data = zeros(Float32, num_doppler_bins, plan.samples_per_code)
     sub_block_ffts = zeros(ComplexF32, num_doppler_bins, plan.num_data_bits)
     patterns = Acquisition.sign_patterns(nothing, 0, plan.num_data_bits, 1, plan.num_coherently_integrated_code_periods, false)
-    Acquisition._sign_search_step!(noncoherent_integration_data, scratch.coherent_integration_matrix, scratch.col_buf, scratch.col_fftshift_buf,
+    Acquisition._sign_search_step!(noncoherent_integration_data, scratch.coherent_integration_matrix, scratch.col_buf,
         plan.col_fft_plan, plan.samples_per_code, num_doppler_bins, plan.num_data_bits, 0, sub_block_ffts, patterns)
 
     # Pilot path: no bit search → the two halves cancel → weaker peak
@@ -411,20 +411,26 @@ end
         min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 200)
     num_doppler_bins = plan.num_coherently_integrated_code_periods * plan.num_blocks  # 640
 
-    # Row corresponding to doppler_hz ≈ 7000 Hz
-    doppler_row_7khz = findfirst(f -> abs(f / (1Hz) - 7000) < 1, plan.doppler_freqs)
+    # `_apply_code_drift!` operates on a buffer in raw FFT-bin order (the sign-search
+    # kernels emit directly from the column FFT; the single output fftshift happens
+    # later in `_accumulate_noncoherent_integration_step!`). The per-row Doppler is
+    # therefore looked up via `doppler_freqs[fftshift_perm[row]]`. To test "shift at
+    # 7000 Hz Doppler" plant the spike at the RAW bin whose effective Doppler is
+    # 7000 Hz — i.e. at `fftshift_perm[sorted_bin_for_7khz]`.
+    sorted_bin_7khz = findfirst(f -> abs(f / (1Hz) - 7000) < 1, plan.doppler_freqs)
+    raw_bin_7khz    = plan.fftshift_perm[sorted_bin_7khz]
 
-    doppler_hz_7khz       = plan.doppler_freqs[doppler_row_7khz] / (1Hz)   # ≈ 7000 Hz
+    doppler_hz_7khz       = plan.doppler_freqs[sorted_bin_7khz] / (1Hz)    # ≈ 7000 Hz
     sampling_freq_hz_val  = plan.sampling_freq / (1Hz)
     carrier_freq_hz_val   = get_center_frequency(plan.system) / (1Hz)
     coherent_duration_s   = plan.num_coherently_integrated_code_periods * plan.samples_per_code / sampling_freq_hz_val  # 0.04 s
     expected_shift = round(Int, doppler_hz_7khz * 100 * coherent_duration_s * sampling_freq_hz_val / carrier_freq_hz_val)  # ≈ 36
 
-    # Spike at (doppler_row_7khz, 500) — all other entries zero
+    # Spike at (raw_bin_7khz, 500) — all other entries zero
     noncoherent_integration_step0   = zeros(Float32, num_doppler_bins, plan.samples_per_code)
     noncoherent_integration_step100 = zeros(Float32, num_doppler_bins, plan.samples_per_code)
-    noncoherent_integration_step0[doppler_row_7khz, 500] = 1.0f0
-    noncoherent_integration_step100[doppler_row_7khz, 500] = 1.0f0
+    noncoherent_integration_step0[raw_bin_7khz, 500] = 1.0f0
+    noncoherent_integration_step100[raw_bin_7khz, 500] = 1.0f0
 
     Acquisition._apply_code_drift!(noncoherent_integration_step0, plan, 0)    # m=0: no change
     Acquisition._apply_code_drift!(noncoherent_integration_step100, plan, 100) # m=100: shift ≈ 36 samples
@@ -549,8 +555,7 @@ end
         plan.double_block_bfft_plan)
     noncoherent_integration_with_transition = zeros(Float32, num_doppler_bins, plan.samples_per_code)
     patterns = Acquisition.sign_patterns(nothing, 0, plan.num_data_bits, 1, plan.num_coherently_integrated_code_periods, false)
-    Acquisition._sign_search_step!(noncoherent_integration_with_transition, scratch.coherent_integration_matrix, scratch.col_buf,
-        scratch.col_fftshift_buf, plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
+    Acquisition._sign_search_step!(noncoherent_integration_with_transition, scratch.coherent_integration_matrix, scratch.col_buf, plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
         plan.num_data_bits, 0, sub_block_ffts, patterns)
     peak_with_transition = maximum(noncoherent_integration_with_transition)
 
@@ -599,8 +604,7 @@ end
         plan.double_block_bfft_plan)
     noncoherent_integration_with_transition = zeros(Float32, num_doppler_bins, plan.samples_per_code)
     patterns = Acquisition.sign_patterns(nothing, 0, plan.num_data_bits, 1, plan.num_coherently_integrated_code_periods, false)
-    Acquisition._sign_search_step!(noncoherent_integration_with_transition, scratch.coherent_integration_matrix, scratch.col_buf,
-        scratch.col_fftshift_buf, plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
+    Acquisition._sign_search_step!(noncoherent_integration_with_transition, scratch.coherent_integration_matrix, scratch.col_buf, plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
         plan.num_data_bits, 0, sub_block_ffts, patterns)
     peak_with_transition = maximum(noncoherent_integration_with_transition)
 

@@ -216,7 +216,6 @@ end
         :noncoherent_integration_buf,
         :sub_block_ffts,
         :col_buf,
-        :col_fftshift_buf,
         :row_buf,
         :row_shift_buf,
         :double_block_buf,
