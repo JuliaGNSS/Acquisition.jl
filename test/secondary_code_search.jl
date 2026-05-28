@@ -190,4 +190,74 @@
         @test result.code_phase ≈ true_cp atol = 1.5
         @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, true_doppler)) < ustrip(Hz, step(plan.doppler_freqs))
     end
+
+    @testset "L5I rotation search — KNOWN BIAS at worst-case code-phase (block / NH10 misalignment)" begin
+        # ──────────────────────────────────────────────────────────────────────
+        # @test_broken: this test is *expected to fail* with the current rotation
+        # search and documents a structural limitation rather than a fixable bug
+        # in this kernel. If a future change makes it pass, that's a real
+        # improvement and the @test_broken will flag itself as Unexpected Pass.
+        # ──────────────────────────────────────────────────────────────────────
+        #
+        # Setup. L5I has L = 10 NH10 chips per primary code period (1 ms / 10230
+        # chips). The rotation search assigns ONE NH10 chip per coherent
+        # integration sub-block (= one primary code period of `samples_per_code`
+        # samples). That mapping is exact only when the primary-code wrap (where
+        # NH10 increments) happens at the block boundary — i.e. when
+        # `code_phase == 0`.
+        #
+        # At any other code phase the wrap drifts INSIDE the block. The sample
+        # where the wrap lands is
+        #     W(cp) = round((code_length − cp) · fs / code_freq)
+        # so for L5I at fs = 12 MHz and cp = 5115 chips the wrap lands at
+        # sample W ≈ 6000 of 12000 — exactly 50% into each block. Each block
+        # then carries ~51% of one NH10 chip and ~49% of the next. No discrete
+        # rotation hypothesis matches that 51/49 mix.
+        #
+        # Two stacked consequences at this worst-case `cp`:
+        #   1. Mid-block misalignment burns ~6.5 dB of coherent gain — empirically
+        #      peak/N drops from ≈ 110 at cp=0 to ≈ 25 at cp=5115.
+        #   2. The single-rotation Doppler spectrum at the peak code-phase column
+        #      is near-flat (top ~7 bins all within 2% of each other). The
+        #      argmax flips on noise within that flat region, biasing the
+        #      reported Doppler by up to 7 bins from truth.
+        #
+        # The "best-rotation winner" replacement for cell-wise max was tested
+        # (claude_scratch/best_rot_proto.jl) and produces BIT-IDENTICAL Doppler
+        # errors to today's cell-wise max — the flatness lives inside the single
+        # rotation's spectrum, not in the cross-rotation envelope.
+        #
+        # The only fix verified empirically is the long-code path
+        # (acquire as if NH10 were baked into a 102 300-chip primary code,
+        # N_coh = 1 long period, simple pilot). That gives Doppler exact at
+        # every `cp` and ~10× the peak/N at the worst alignment, at the cost of
+        # a 10× larger code-phase axis (≈ 1.6× per-PRN runtime).
+        # See claude_scratch/secondary-code-acquisition-plan.md.
+        system        = GPSL5I()
+        sampling_freq = 12e6Hz
+        prn           = 1
+        true_doppler  = 1000Hz
+        # cp = 5115 chips → wrap at exactly 50% of the receive block. This is
+        # the deterministic worst case across the cp sweep. dop = 1000 Hz lands
+        # on the 100 Hz Doppler grid so the assertion has no half-bin slop.
+        true_cp = 5115.0
+
+        (; signal) = generate_test_signal(system, prn;
+            num_samples = 10 * 12000,
+            doppler = true_doppler, code_phase = true_cp,
+            sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
+
+        plan = plan_acquire(system, sampling_freq, [prn];
+            num_coherently_integrated_code_periods = 10, num_noncoherent_accumulations = 1)
+        @test plan.num_secondary_rotations > 1   # confirm the rotation search is active
+
+        result = acquire!(plan, signal, prn; interm_freq = 0.0Hz)
+
+        # Detection still works — peak/N is degraded but well above threshold.
+        @test is_detected(result)
+        # Code phase is unaffected (the bias is in the Doppler axis only).
+        @test result.code_phase ≈ true_cp atol = 1.0
+        # Doppler is the failing axis: empirically off by ≈ −700 Hz (7 bins).
+        @test_broken abs(result.carrier_doppler / 1Hz - ustrip(Hz, true_doppler)) < ustrip(Hz, step(plan.doppler_freqs))
+    end
 end
