@@ -14,7 +14,6 @@ struct AcquisitionScratch
     corr_buf::Vector{ComplexF32}                    # length double_block_size
     sig_buf::Vector{ComplexF32}                     # length segment_length — downconverted signal segment (thread 1 only)
     col_buf::Vector{ComplexF32}                     # length num_doppler_bins
-    col_fftshift_buf::Vector{ComplexF32}            # length num_doppler_bins
     row_buf::Vector{Float32}                        # length samples_per_code
     row_shift_buf::Vector{Float32}                  # length samples_per_code
     coherent_integration_matrix::Matrix{ComplexF32}         # (num_doppler_bins, samples_per_code)
@@ -403,7 +402,6 @@ function plan_acquire(
             zeros(ComplexF32, double_block_size),
             zeros(ComplexF32, double_block_size),
             zeros(ComplexF32, segment_length),
-            zeros(ComplexF32, num_doppler_bins),
             zeros(ComplexF32, num_doppler_bins),
             zeros(Float32, samples_per_code),
             zeros(Float32, samples_per_code),

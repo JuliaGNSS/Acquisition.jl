@@ -154,4 +154,40 @@
         @test result.code_phase ≈ true_cp atol = 1.0
         @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, true_doppler)) < ustrip(Hz, step(plan.doppler_freqs))
     end
+
+    @testset "L5I rotation search — correct Doppler/code-phase with non-zero code drift (N_nc>1)" begin
+        # Locks the sign-search path's drift correction. `_apply_code_drift!` is
+        # currently called per non-coherent step with a sorted-row buf; any future
+        # refactor that moves the buf to raw-row order (e.g. fusing the kernel's
+        # internal fftshift into a single output shift) must keep the drift
+        # mapping consistent or this test will catch the regression.
+        #
+        # Parameters chosen so the per-row drift `round(f_d·m·T_coh·fs/f_c)`
+        # rounds to non-zero at later steps: at f_c=L5=1.176 GHz, T_coh=10 ms,
+        # fs=12 MHz, f_d=5000 Hz, the step-1 drift is ≈0.51 samples → rounds to 1;
+        # step-3 ≈1.53 → 2. So the drift path is genuinely exercised.
+        system        = GPSL5I()
+        sampling_freq = 12e6Hz
+        prn           = 1
+        true_doppler  = 5000Hz
+        true_cp       = 1234.5
+        Ncoh = 10; Nnc = 4
+
+        (; signal) = generate_test_signal(system, prn;
+            num_samples = Nnc * Ncoh * 12000,
+            doppler = true_doppler, code_phase = true_cp,
+            sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
+
+        plan = plan_acquire(system, sampling_freq, [prn];
+            num_coherently_integrated_code_periods = Ncoh,
+            num_noncoherent_accumulations = Nnc)
+        @test plan.num_secondary_rotations > 1
+        @test plan.num_noncoherent_accumulations > 1   # multistep path → drift active
+
+        result = acquire!(plan, signal, prn; interm_freq = 0.0Hz)
+
+        @test is_detected(result)
+        @test result.code_phase ≈ true_cp atol = 1.5
+        @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, true_doppler)) < ustrip(Hz, step(plan.doppler_freqs))
+    end
 end
