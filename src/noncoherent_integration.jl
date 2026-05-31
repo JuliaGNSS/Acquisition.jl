@@ -93,21 +93,66 @@ end
 
 """
     _sign_search_step_with_rotations!(noncoherent_integration_buf, coherent_integration_matrix, col_buf,
-                                      col_fft_plan, samples_per_code, num_doppler_bins, num_coh_periods, num_blocks,
-                                      row_offset, sub_block_ffts, patterns)
+                                      combine_buf_re, combine_buf_im, col_fft_plan,
+                                      samples_per_code, num_doppler_bins, num_coh_periods, num_blocks,
+                                      block_size, row_offset, sub_block_ffts,
+                                      tiled_phase_patterns_re, tiled_phase_patterns_im)
 
 Sign-pattern search step for one bit-edge alignment when per-coherent-period signs vary
-(secondary-code rotation search). Splits each column into `num_coh_periods` sub-blocks
-of `num_blocks` rows each (one per coherent code period) and computes one column FFT per
-sub-block. Then, for each pattern column, sums `sign[k] * sub_block_FFT[k]` over the
-`num_coh_periods` sub-blocks and accumulates the cell-wise max of `|result|²` into
-`noncoherent_integration_buf`.
+(secondary-code rotation search). Splits each column into `num_coh_periods` sub-blocks of
+`num_blocks` rows each (one per coherent code period) and computes one column FFT per
+sub-block. Then, for each pattern column, accumulates
+`tiled_phase_patterns[ω, p, q] * sub_block_FFT_p[ω]` over the `num_coh_periods` sub-blocks
+and cell-wise-maxes `|result|²` into `noncoherent_integration_buf`.
 
 This is the generalisation of [`_sign_search_step!`](@ref) — that kernel groups consecutive
 coherent periods into one sub-block per data bit (`num_data_bits` sub-blocks total) and is
 correct only when the sign is constant within each data bit. When the secondary code varies
-the sign per coherent period, we need one sub-block per period; `patterns` may have
-arbitrary `±1` entries per row.
+the sign per coherent period, we need one sub-block per period; `tiled_phase_patterns`
+holds the per-(ω, p, q) complex coefficient.
+
+## Inter-sub-block phase ramp (LongL5I equivalence)
+
+A naive `Σ_p sign[p] · sub_block_FFT_p[ω]` combination (the previous form of this kernel)
+is matched-filter optimal only when the true Doppler lands on the coarse `1 / (T_code)`
+sub-block FFT grid. Between grid points the inter-sub-block phase rotates by some
+`δ ∈ (0, 2π)` per code period that ±1 cannot fit, losing 3–8 dB of coherent gain. The fix
+is to recognise that a length-`num_doppler_bins` column FFT decomposes as
+
+    FFT_total(x)[ω] = Σ_p exp(-2πi · p · s / num_coh_periods) · sub_block_FFT_p[ω],
+                                                                       s = ω mod num_coh_periods
+
+so the optimal NH10-rotation-aware combination at fine-bin class `s` is
+
+    Σ_p NH10[(p+r) mod L] · exp(-2πi · p · s / num_coh_periods) · sub_block_FFT_p[ω].
+
+`tiled_phase_patterns_re/im[ω, p, q]` are the compact `(num_coh_periods, num_patterns,
+num_coh_periods)` phasor of [`combined_phase_patterns`](@ref) pre-tiled along ω AND
+split into Float32 real/imag arrays so the kernel inner loop drives Float32 SIMD;
+see [`tile_phase_patterns`](@ref) for the layout. This buys the LongL5I full-FFT
+sensitivity (≈5 dB) with a combine loop that runs slightly faster than the previous
+±1 ComplexF32 kernel on commodity x86, because complex MACs pack better as Float32
+than as ComplexF32 in Julia today. `combine_buf_re/im` are length-`num_doppler_bins`
+Float32 scratch vectors holding the running per-ω complex accumulator in split form;
+they live in `AcquisitionScratch` alongside `col_buf`.
+
+## Per-column block alignment
+
+A fixed sub-block partition (`row_offset` constant across columns) makes one NH10 chip
+correspond to one sub-block *only* when the primary-code wrap lands at sample 0 of every
+sub-block — i.e. at `code_phase == 0`. At any other code phase the wrap drifts inside the
+sub-block, each sub-block carries a fractional mix of two consecutive NH10 chips, and no
+discrete ±1 rotation hypothesis matches the mix. Worst case (wrap at 50% of the block)
+burns ~6.5 dB of coherent gain and flattens the Doppler spectrum.
+
+The wrap sample for code-phase column `c` is exactly
+`W(c) = _fmdbzp_column_to_tau(c-1, num_blocks, block_size)`, so we can pick a per-column
+row shift `s(c) = round(W(c)/block_size) mod num_blocks` that snaps each sub-block to the
+nearest NH10 chip boundary. Residual misalignment is at most half a block_size
+(≈ `1/(2*num_blocks)` of a primary-code period) regardless of code phase. The shift is
+applied uniformly to every sub-block in the column, so the cross-sub-block Doppler phase
+relationship is preserved (the overall phase factor — even with the complex combined
+phasor — vanishes in `|·|²` because it factors out of the sum over `p`).
 
 `sub_block_ffts` must have at least `num_coh_periods` columns.
 """
@@ -115,39 +160,81 @@ function _sign_search_step_with_rotations!(
     noncoherent_integration_buf::Matrix{Float32},
     coherent_integration_matrix::Matrix{ComplexF32},
     col_buf::Vector{ComplexF32},
+    combine_buf_re::Vector{Float32},
+    combine_buf_im::Vector{Float32},
     col_fft_plan,
     samples_per_code::Int,
     num_doppler_bins::Int,
     num_coh_periods::Int,
     num_blocks::Int,
+    block_size::Int,
     row_offset::Int,
     sub_block_ffts::Matrix{ComplexF32},
-    patterns::Matrix{Float32},
+    tiled_phase_patterns_re::Array{Float32,3},
+    tiled_phase_patterns_im::Array{Float32,3},
 )
-    num_sign_patterns = size(patterns, 2)
+    num_sign_patterns = size(tiled_phase_patterns_re, 3)
+    size(tiled_phase_patterns_re, 1) == num_doppler_bins || throw(ArgumentError(
+        "tiled_phase_patterns_re has $(size(tiled_phase_patterns_re, 1)) rows, expected num_doppler_bins=$num_doppler_bins"))
+    size(tiled_phase_patterns_re, 2) == num_coh_periods || throw(ArgumentError(
+        "tiled_phase_patterns_re has $(size(tiled_phase_patterns_re, 2)) sub-block columns, expected num_coh_periods=$num_coh_periods"))
+    size(tiled_phase_patterns_im) == size(tiled_phase_patterns_re) || throw(ArgumentError(
+        "tiled_phase_patterns_im shape $(size(tiled_phase_patterns_im)) ≠ tiled_phase_patterns_re shape $(size(tiled_phase_patterns_re))"))
+    length(combine_buf_re) == num_doppler_bins && length(combine_buf_im) == num_doppler_bins ||
+        throw(ArgumentError("combine_buf_re/im must each have length num_doppler_bins=$num_doppler_bins"))
+    half_block = block_size >> 1
     for col_idx in 1:samples_per_code
+        # Snap the sub-block partition to the primary-code wrap for this column.
+        # `wrap_sample` is the FM-DBZP delay associated with `col_idx`; rounding
+        # to the nearest multiple of block_size aligns sub-block 0 (and hence
+        # every sub-block, by uniform shift) to within ±half_block of an NH10
+        # chip boundary. Cheap (four integer ops per column) and recovers ~6 dB
+        # of coherent gain at the worst code phase.
+        pc = col_idx - 1
+        wrap_sample = ((num_blocks - div(pc, block_size)) % num_blocks) * block_size + (pc % block_size)
+        col_row_offset = div(wrap_sample + half_block, block_size) % num_blocks
+        eff_row_offset = (row_offset + col_row_offset) % num_doppler_bins
+
         # One sub-block FFT per coherent period (sub-block size = num_blocks).
         for k in 0:num_coh_periods-1
             fill!(col_buf, zero(ComplexF32))
             for sub_row in 0:num_blocks-1
-                src_row = ((row_offset + k * num_blocks + sub_row) % num_doppler_bins) + 1
+                src_row = ((eff_row_offset + k * num_blocks + sub_row) % num_doppler_bins) + 1
                 col_buf[sub_row + 1] = coherent_integration_matrix[src_row, col_idx]
             end
             mul!(col_buf, col_fft_plan, col_buf)
             sub_block_ffts[:, k + 1] .= col_buf   # raw FFT order; output fftshift happens once in `_accumulate_noncoherent_integration_step!`
         end
 
-        for p in 1:num_sign_patterns
-            fill!(col_buf, zero(ComplexF32))
-            for k in 0:num_coh_periods-1
-                sign = patterns[k + 1, p]
-                col_buf .+= sign .* view(sub_block_ffts, :, k + 1)
-            end
-            @inbounds for doppler_row in 1:num_doppler_bins
-                cell_power = abs2(col_buf[doppler_row])
-                if cell_power > noncoherent_integration_buf[doppler_row, col_idx]
-                    noncoherent_integration_buf[doppler_row, col_idx] = cell_power
+        # Combine sub-block FFTs with the precomputed (ω, p, q)-tiled phasors,
+        # then WRITE per-pattern to the q-th cp slice of the noncoherent buffer
+        # (no cell-wise max — each rotation hypothesis gets its own cell so the
+        # CFAR statistics match LongL5I's matched-filter layout, recovering the
+        # ~5 dB noise-floor inflation that cell-wise max would otherwise cost).
+        # Loop ordering: outer pattern q, middle sub-block p, inner ω. The
+        # complex MAC is unfused into four real `muladd`s so the compiler packs
+        # the inner loop into Float32 SIMD lanes — measured ~3× faster than
+        # the equivalent ComplexF32-storage form.
+        for q in 1:num_sign_patterns
+            fill!(combine_buf_re, 0f0)
+            fill!(combine_buf_im, 0f0)
+            for p in 1:num_coh_periods
+                @inbounds @simd for ω in 1:num_doppler_bins
+                    ar = tiled_phase_patterns_re[ω, p, q]
+                    ai = tiled_phase_patterns_im[ω, p, q]
+                    br, bi = reim(sub_block_ffts[ω, p])
+                    combine_buf_re[ω] = muladd(ar, br, muladd(-ai, bi, combine_buf_re[ω]))
+                    combine_buf_im[ω] = muladd(ar, bi, muladd( ai, br, combine_buf_im[ω]))
                 end
+            end
+            # Each rotation hypothesis q maps to a samples_per_code-wide slice
+            # of the expanded cp axis. Result extraction decodes back via
+            # `(col-1) ÷ samples_per_code → rotation_idx`, `(col-1) % samples_per_code + 1 → cp_within`.
+            dest_col = col_idx + (q - 1) * samples_per_code
+            @inbounds for ω in 1:num_doppler_bins
+                cell_power = muladd(combine_buf_re[ω], combine_buf_re[ω],
+                                    combine_buf_im[ω] * combine_buf_im[ω])
+                noncoherent_integration_buf[ω, dest_col] = cell_power
             end
         end
     end
@@ -177,13 +264,26 @@ function _apply_code_drift!(noncoherent_integration_buf::Matrix{Float32}, plan::
     row_buf = scratch.row_buf
     row_shift_buf = scratch.row_shift_buf
     fftshift_perm = plan.fftshift_perm
+    # On the rotation path the cp axis is `samples_per_code_eff` =
+    # `samples_per_code * num_secondary_rotations` wide, with each rotation
+    # hypothesis occupying its own `samples_per_code`-wide block. Drift is
+    # phase-walk of the primary code within ONE rotation hypothesis, so the
+    # circshift wraps inside each block — not across rotation-block boundaries
+    # (which would wrongly mix hypotheses). On the non-rotation path
+    # `num_rotation_blocks == 1` and the body collapses to the original
+    # single-circshift form.
+    samples_per_code = plan.samples_per_code
+    num_rotation_blocks = size(noncoherent_integration_buf, 2) ÷ samples_per_code
     for doppler_row in 1:num_doppler_bins
         doppler_hz = ustrip(Hz, plan.doppler_freqs[fftshift_perm[doppler_row]])
         shift = round(Int, doppler_hz * accumulation_step_index * coherent_duration_s * sampling_freq_hz / carrier_freq_hz)
         shift == 0 && continue
-        row_buf .= view(noncoherent_integration_buf, doppler_row, :)
-        circshift!(row_shift_buf, row_buf, shift)
-        noncoherent_integration_buf[doppler_row, :] .= row_shift_buf
+        for r in 0:num_rotation_blocks-1
+            base = r * samples_per_code
+            row_buf .= view(noncoherent_integration_buf, doppler_row, (base+1):(base+samples_per_code))
+            circshift!(row_shift_buf, row_buf, shift)
+            view(noncoherent_integration_buf, doppler_row, (base+1):(base+samples_per_code)) .= row_shift_buf
+        end
     end
 end
 # Single-argument scratch convenience: used by tests and code-drift testset directly
@@ -426,10 +526,10 @@ function _accumulate_noncoherent_integration_step!(
     else
         sign_search_max_buf = scratch.sign_search_max_buf
         noncoherent_integration_buf = scratch.noncoherent_integration_buf
-        # Sign-pattern search path. The plan pre-computed the pattern matrix per
-        # PRN at `plan_acquire` time; the kernel selection depends only on the
-        # rotation axis. The kernel reads `patterns` to decide what to search.
-        patterns = plan.sign_patterns_by_prn[prn]
+        # Sign-pattern search path. The plan pre-computed the pattern matrices
+        # per PRN at `plan_acquire` time. The rotation kernel consumes the
+        # complex-phasor-multiplied patterns (LongL5I-equivalent inter-sub-block
+        # combination); the non-rotation kernel uses the plain ±1 patterns.
         fill!(sign_search_max_buf, 0.0f0)
         bit_period_codes = plan.num_coherently_integrated_code_periods ÷ plan.num_data_bits
         edge_step = bit_period_codes * plan.num_blocks ÷ plan.bit_edge_search_steps
@@ -438,14 +538,19 @@ function _accumulate_noncoherent_integration_step!(
             row_offset = bit_edge_search_idx * edge_step
             if rotation_search_active
                 _sign_search_step_with_rotations!(noncoherent_integration_buf, coherent_integration_matrix,
-                    scratch.col_buf, plan.col_fft_plan,
+                    scratch.col_buf, scratch.combine_buf_re, scratch.combine_buf_im,
+                    plan.col_fft_plan,
                     plan.samples_per_code, num_doppler_bins,
                     plan.num_coherently_integrated_code_periods, plan.num_blocks,
-                    row_offset, scratch.sub_block_ffts, patterns)
+                    plan.block_size,
+                    row_offset, scratch.sub_block_ffts,
+                    plan.tiled_phase_patterns_re_by_prn[prn],
+                    plan.tiled_phase_patterns_im_by_prn[prn])
             else
                 _sign_search_step!(noncoherent_integration_buf, coherent_integration_matrix, scratch.col_buf,
                     plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
-                    plan.num_data_bits, row_offset, scratch.sub_block_ffts, patterns)
+                    plan.num_data_bits, row_offset, scratch.sub_block_ffts,
+                    plan.sign_patterns_by_prn[prn])
             end
             _apply_code_drift!(noncoherent_integration_buf, plan, scratch, accumulation_step_index)
             @. sign_search_max_buf = max(sign_search_max_buf, noncoherent_integration_buf)
@@ -458,7 +563,7 @@ function _accumulate_noncoherent_integration_step!(
         # "shift exactly once, at the output" convention and removes the
         # per-column circshift that previously ran 120 000× per dwell.
         _scatter_fftshift_accumulate!(noncoherent_integration_matrix,
-            sign_search_max_buf, plan.fftshift_perm, plan.samples_per_code)
+            sign_search_max_buf, plan.fftshift_perm, plan.samples_per_code_eff)
     end
 end
 # Convenience wrapper for tests and single-threaded callers — routes through
