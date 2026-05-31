@@ -1,3 +1,33 @@
+# Test-only shim that re-presents GPSL5I as if its primary code were the full
+# 102 300-chip primary×NH10 product (10 primary periods × NH10 length 10). With
+# no secondary code on the wrapped system, `plan_acquire(..., N_coh=1)` runs the
+# simple pilot path over a single 10 ms coherent integration — i.e. exactly the
+# 10 ms column FFT the rotation kernel SHOULD be equivalent to. Used as the
+# reference oracle in the algebraic-equivalence @test_broken below.
+#
+# Mirrors /workspace/Acquisition/claude_scratch/long_code.jl. GPSL5I's gen_code!
+# naturally bakes NH10 across primary periods at the sample level, so forwarding
+# `gen_code!` to the wrapped GPSL5I instance is sufficient.
+const _Frequency = Union{Unitful.Quantity{T, Unitful.𝐓^-1, U},
+                         Unitful.Level{L, S, Unitful.Quantity{T, Unitful.𝐓^-1, U}} where {L, S}} where {T, U}
+struct _LongL5I <: GNSSSignals.AbstractGNSSSignal{Matrix{Int16}}
+    inner::GPSL5I{Matrix{Int16}}
+end
+_LongL5I() = _LongL5I(GPSL5I())
+GNSSSignals.get_code_length(::_LongL5I)             = 102_300
+GNSSSignals.get_code_frequency(::_LongL5I)          = GNSSSignals.get_code_frequency(GPSL5I())
+GNSSSignals.get_center_frequency(::_LongL5I)        = GNSSSignals.get_center_frequency(GPSL5I())
+GNSSSignals.get_data_frequency(::_LongL5I)          = 0.0Hz
+GNSSSignals.get_secondary_code(::_LongL5I)          = GNSSSignals.NoSecondaryCode()
+GNSSSignals.get_secondary_code_length(::_LongL5I)   = 1
+GNSSSignals.get_code_type(::_LongL5I)               = Int16
+function GNSSSignals.gen_code!(buffer::AbstractVector, ::_LongL5I, prn::Integer,
+                               sampling_frequency::_Frequency, code_frequency::_Frequency,
+                               start_phase, start_index::Integer)
+    GNSSSignals.gen_code!(buffer, GPSL5I(), prn, sampling_frequency,
+                          code_frequency, start_phase, start_index)
+end
+
 @testset "secondary_code_search" begin
     @testset "L5I rotation discovery — detection succeeds at every NH10 starting phase" begin
         # For each r ∈ 0..9, build an L5I signal whose first integrated primary period
@@ -191,55 +221,46 @@
         @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, true_doppler)) < ustrip(Hz, step(plan.doppler_freqs))
     end
 
-    @testset "L5I rotation search — KNOWN BIAS at worst-case code-phase (block / NH10 misalignment)" begin
+    @testset "L5I rotation search — worst-case code-phase (block / NH10 misalignment fixed)" begin
         # ──────────────────────────────────────────────────────────────────────
-        # @test_broken: this test is *expected to fail* with the current rotation
-        # search and documents a structural limitation rather than a fixable bug
-        # in this kernel. If a future change makes it pass, that's a real
-        # improvement and the @test_broken will flag itself as Unexpected Pass.
-        # ──────────────────────────────────────────────────────────────────────
+        # Regression lock for the "mid-primary-code secondary-code shift" fix.
+        # Before the fix this test was @test_broken: the rotation search used a
+        # FIXED sub-block partition (`row_offset` constant across columns), so
+        # one NH10 chip mapped cleanly to one sub-block only when the primary-
+        # code wrap landed at sample 0 (i.e. `code_phase == 0`). At any other
+        # code phase the wrap drifted INSIDE every sub-block; each block then
+        # carried a fractional mix of two consecutive NH10 chips, no discrete
+        # ±1 rotation hypothesis matched the mix, ~6.5 dB of coherent gain
+        # burned, the Doppler spectrum flattened, and `argmax` flipped on noise
+        # → up to ±700 Hz Doppler bias at the worst code phase.
         #
-        # Setup. L5I has L = 10 NH10 chips per primary code period (1 ms / 10230
-        # chips). The rotation search assigns ONE NH10 chip per coherent
-        # integration sub-block (= one primary code period of `samples_per_code`
-        # samples). That mapping is exact only when the primary-code wrap (where
-        # NH10 increments) happens at the block boundary — i.e. when
-        # `code_phase == 0`.
+        # The wrap sample for column `c` is exactly the FM-DBZP delay,
+        #     W(c) = _fmdbzp_column_to_tau(c-1, num_blocks, block_size),
+        # so `_sign_search_step_with_rotations!` now picks a per-column row
+        # shift `s(c) = round(W(c) / block_size) mod num_blocks` that snaps the
+        # sub-block partition to the nearest NH10 chip boundary. Residual
+        # misalignment is at most half a block_size (≈ `1/(2*num_blocks)` of a
+        # primary-code period) regardless of code phase — at L5I/12 MHz that's
+        # 400 samples → 0.4 dB residual loss vs. ideal (vs. 6.5 dB before).
+        # Cost is four integer ops per column iteration of the kernel.
         #
-        # At any other code phase the wrap drifts INSIDE the block. The sample
-        # where the wrap lands is
-        #     W(cp) = round((code_length − cp) · fs / code_freq)
-        # so for L5I at fs = 12 MHz and cp = 5115 chips the wrap lands at
-        # sample W ≈ 6000 of 12000 — exactly 50% into each block. Each block
-        # then carries ~51% of one NH10 chip and ~49% of the next. No discrete
-        # rotation hypothesis matches that 51/49 mix.
+        # The Doppler axis stays correct because the shift is uniform across
+        # the column's sub-blocks: it adds an overall phase factor
+        # `exp(2πi · f_d · s · block_size / fs)` that vanishes in `|·|²`. The
+        # cyclic wrap that the partition introduces for the last sub-block is
+        # consistent because the divisibility check in `plan_acquire` requires
+        # the integration window to span a whole number of secondary-code
+        # periods, so NH10 has period equal to the buffer length and the
+        # wrapped portion carries the same chip back to itself.
         #
-        # Two stacked consequences at this worst-case `cp`:
-        #   1. Mid-block misalignment burns ~6.5 dB of coherent gain — empirically
-        #      peak/N drops from ≈ 110 at cp=0 to ≈ 25 at cp=5115.
-        #   2. The single-rotation Doppler spectrum at the peak code-phase column
-        #      is near-flat (top ~7 bins all within 2% of each other). The
-        #      argmax flips on noise within that flat region, biasing the
-        #      reported Doppler by up to 7 bins from truth.
-        #
-        # The "best-rotation winner" replacement for cell-wise max was tested
-        # (claude_scratch/best_rot_proto.jl) and produces BIT-IDENTICAL Doppler
-        # errors to today's cell-wise max — the flatness lives inside the single
-        # rotation's spectrum, not in the cross-rotation envelope.
-        #
-        # The only fix verified empirically is the long-code path
-        # (acquire as if NH10 were baked into a 102 300-chip primary code,
-        # N_coh = 1 long period, simple pilot). That gives Doppler exact at
-        # every `cp` and ~10× the peak/N at the worst alignment, at the cost of
-        # a 10× larger code-phase axis (≈ 1.6× per-PRN runtime).
-        # See claude_scratch/secondary-code-acquisition-plan.md.
+        # `cp = 5115` chips picks the deterministic worst case across the cp
+        # sweep (wrap at exactly 50% of the receive block); `dop = 1000 Hz`
+        # lands on the 100 Hz Doppler grid so the assertion has no half-bin
+        # slop.
         system        = GPSL5I()
         sampling_freq = 12e6Hz
         prn           = 1
         true_doppler  = 1000Hz
-        # cp = 5115 chips → wrap at exactly 50% of the receive block. This is
-        # the deterministic worst case across the cp sweep. dop = 1000 Hz lands
-        # on the 100 Hz Doppler grid so the assertion has no half-bin slop.
         true_cp = 5115.0
 
         (; signal) = generate_test_signal(system, prn;
@@ -253,11 +274,93 @@
 
         result = acquire!(plan, signal, prn; interm_freq = 0.0Hz)
 
-        # Detection still works — peak/N is degraded but well above threshold.
         @test is_detected(result)
-        # Code phase is unaffected (the bias is in the Doppler axis only).
         @test result.code_phase ≈ true_cp atol = 1.0
-        # Doppler is the failing axis: empirically off by ≈ −700 Hz (7 bins).
-        @test_broken abs(result.carrier_doppler / 1Hz - ustrip(Hz, true_doppler)) < ustrip(Hz, step(plan.doppler_freqs))
+        @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, true_doppler)) < ustrip(Hz, step(plan.doppler_freqs))
+    end
+
+    @testset "L5I rotation search — matches LongL5I (full 10 ms FFT) on off-grid Doppler" begin
+        # ──────────────────────────────────────────────────────────────────────
+        # Algebraic-equivalence regression for the inter-sub-block phase ramp
+        # combination. Planted as @test_broken: today the rotation kernel
+        # combines sub-block FFTs with ±1 NH10 patterns, which is matched-filter
+        # optimal ONLY when the true Doppler lands on the coarse 1-kHz sub-block
+        # FFT grid (or the 500 Hz half-grid where alternating ±1 happens to
+        # align). Between grid points, the inter-sub-block phase rotates by
+        # δ ∈ (0, 2π) per code period — a fractional phase that ±1 cannot fit —
+        # so the rotation sum loses several dB of coherent gain.
+        #
+        # LongL5I avoids this by treating NH10·primary as a single 102 300-chip
+        # primary code and running one 10 ms column FFT. The full FFT decomposes
+        # exactly as:
+        #     FFT_total(x)[ω] = Σ_p exp(-2πi·p·s/N_coh) · sub_block_FFT_p[ω]
+        # with s = ω mod N_coh, so the rotation kernel can match LongL5I by
+        # replacing `±1 · NH10[(p+r)]` with the complex phasor
+        # `NH10[(p+r)] · exp(-2πi·p·s/N_coh)`.
+        #
+        # This noiseless test compares maximum power-bin amplitude. ON-grid
+        # (Doppler exactly on the 1 kHz sub-block grid) both kernels match
+        # today — the on-grid baseline assertion stays as a live @test. OFF-grid
+        # (true Doppler off the coarse grid but on the fine 100 Hz output grid)
+        # is currently a structural ~5 dB gap → @test_broken. The fix promotes
+        # this to a hard @test.
+        #
+        # The signal is constructed without `generate_test_signal`'s noise term
+        # so the gap is purely structural (no statistical jitter on the ratio).
+        system        = GPSL5I()
+        long_system   = _LongL5I()
+        sampling_freq = 12e6Hz
+        prn           = 1
+        true_cp       = 0.0       # isolates off-grid Doppler loss from any chip-boundary residual
+        N_coh         = 10
+        spc           = 12000     # samples_per_code for L5I at 12 MHz
+        N_total       = N_coh * spc
+
+        # Build a noiseless NH10·primary signal at amplitude 1.0 at the test Doppler.
+        sec = get_secondary_code(system)
+        fc  = get_code_frequency(system)
+        code_full = ComplexF32.(gen_code(N_total, system, prn, sampling_freq,
+                                         fc, true_cp))
+        # The L5I sample-level code generation already bakes NH10 across primary
+        # periods (same property `_LongL5I` exploits), so `code_full` *is* the
+        # NH10·primary product over 10 periods.
+
+        plan_rot = plan_acquire(system, sampling_freq, [prn];
+            num_coherently_integrated_code_periods = N_coh, num_noncoherent_accumulations = 1)
+        plan_long = plan_acquire(long_system, sampling_freq, [prn];
+            num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 1)
+
+        # Helper: run both plans on the same noiseless signal at `doppler_hz`
+        # and return (peak_rot_power, peak_long_power). Both plans share the
+        # same Doppler grid (100 Hz spacing, 150 bins covering ±7.5 kHz).
+        function peaks_at(doppler_hz)
+            ω = 2π * doppler_hz / ustrip(Hz, sampling_freq)
+            carrier = cis.(ω .* (0:N_total-1))
+            signal  = ComplexF32.(carrier .* code_full)
+            res_rot  = acquire!(plan_rot,  signal, prn; interm_freq = 0.0Hz, store_power_bins = true)
+            res_long = acquire!(plan_long, signal, prn; interm_freq = 0.0Hz, store_power_bins = true)
+            (maximum(res_rot.power_bins), maximum(res_long.power_bins))
+        end
+
+        # On-coarse-grid Doppler — both kernels agree today (live @test).
+        peak_rot_on, peak_long_on = peaks_at(1000.0)
+        @test peak_rot_on / peak_long_on > 0.95
+
+        # Off-coarse-grid, ON the fine 100 Hz output grid. With the inter-sub-
+        # block phase ramp combination active, the rotation kernel reaches
+        # LongL5I-equivalent peak power within FFTW jitter (ratio ≈ 1.0).
+        # Before the phase-ramp fix this lost ≈6 dB at 100 Hz and ≈8 dB at
+        # 500 Hz (see /workspace/Acquisition/claude_scratch/probe_gap-style
+        # measurements). The ratio > 0.95 bound below catches a regression
+        # back to the ±1 combination without flapping on FFTW noise.
+        peak_rot_off, peak_long_off = peaks_at(100.0)
+        @test peak_rot_off / peak_long_off > 0.95
+
+        # 500 Hz was the worst-case off-grid loss before the fix (≈8 dB:
+        # neither the unshifted ±1 NH10 nor the alternating ±1 hypothesis
+        # aligns with the half-coarse-grid Doppler). Asserting ratio > 0.95
+        # at 500 Hz keeps the strongest single-point regression locked.
+        peak_rot_500, peak_long_500 = peaks_at(500.0)
+        @test peak_rot_500 / peak_long_500 > 0.95
     end
 end

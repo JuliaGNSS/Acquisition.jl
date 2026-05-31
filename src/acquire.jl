@@ -288,16 +288,26 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins,
     peak_to_noise = (signal_power + noise_power) / noise_power
     CN0 = 10 * log10(signal_power / noise_power / code_period / 1.0Hz)
 
-    scrambled_col = code_bin_idx - 1
+    # On the rotation path the cp axis is expanded to
+    # `samples_per_code * num_secondary_rotations` and the peak col encodes
+    # `(cp_within, rotation_idx)` together. Decode back to cp_within for the
+    # public `code_phase` output; rotation_idx is currently hidden (the
+    # detection geometry doesn't need it for downstream tracking).
+    samples_per_code = plan.samples_per_code
+    rotation_block = (code_bin_idx - 1) ÷ samples_per_code
+    scrambled_col = (code_bin_idx - 1) % samples_per_code
     delay_samples = _fmdbzp_column_to_tau(scrambled_col, plan.num_blocks, plan.block_size)
     code_phase = mod(-delay_samples * code_freq_hz / sampling_freq_hz, code_length)
 
     if subsample_interpolation
-        num_code_bins = plan.samples_per_code
-        col_left  = mod(scrambled_col - 1, num_code_bins)
-        col_right = mod(scrambled_col + 1, num_code_bins)
+        # Neighbouring columns for parabolic interpolation must stay within the
+        # SAME rotation block (different blocks correspond to different NH10
+        # hypotheses and aren't physically adjacent in cp).
+        num_code_bins = samples_per_code
+        col_left  = mod(scrambled_col - 1, num_code_bins) + rotation_block * samples_per_code
+        col_right = mod(scrambled_col + 1, num_code_bins) + rotation_block * samples_per_code
         power_left  = power_bins[doppler_bin_idx, col_left + 1]
-        power_peak  = power_bins[doppler_bin_idx, scrambled_col + 1]
+        power_peak  = power_bins[doppler_bin_idx, code_bin_idx]
         power_right = power_bins[doppler_bin_idx, col_right + 1]
         if max(power_left, power_right) > sqrt(noise_power)
             fractional_col_offset = _parabolic_interp(power_left, power_peak, power_right)

@@ -25,6 +25,12 @@ struct AcquisitionScratch
     # overwrites it. 0x0 when N_nc > 1 (the per-PRN layout is required there).
     noncoherent_integration_accumulator::Matrix{Float32}
     sub_block_ffts::Matrix{ComplexF32}              # (num_doppler_bins, num_sub_blocks) — 0x0 when simple path is taken (see plan_acquire). Scratch for `_sign_search_step!`.
+    # Real/imag-split accumulator for the rotation-kernel's complex-MAC combine loop.
+    # Each is length num_doppler_bins, sized 0 when the rotation kernel is not active.
+    # Split storage drives Float32 SIMD on the tiled phasor inner loop —
+    # ComplexF32 storage is ~3× slower because the compiler can't pack the MAC.
+    combine_buf_re::Vector{Float32}
+    combine_buf_im::Vector{Float32}
     col_sums_buf::Vector{Float32}                   # length samples_per_code — scratch for est_signal_noise_power
     # Row-wise code-drift shifts pre-filled per accumulation step on the
     # multistep simple path. length num_doppler_bins when that path is active;
@@ -43,6 +49,13 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     system::S
     sampling_freq::typeof(1.0Hz)
     samples_per_code::Int       # paper N_τ  — samples per code period
+    # Effective columns in the noncoherent buffer / result matrix. Equal to
+    # `samples_per_code * num_secondary_rotations` when the rotation search is
+    # active so each rotation hypothesis occupies its own (cp_within, doppler)
+    # cell instead of being collapsed by a cell-wise max. Equals `samples_per_code`
+    # otherwise. Result extraction decodes peak col as
+    # `(cp_within, rotation_idx) = ((col-1) % samples_per_code + 1, (col-1) ÷ samples_per_code)`.
+    samples_per_code_eff::Int
     num_blocks::Int             # paper N_step — blocks per code period (power of 2)
     block_size::Int             # paper B_size — samples per block = samples_per_code ÷ num_blocks
     num_coherently_integrated_code_periods::Int       # paper N     — total code periods per coherent integration
@@ -87,6 +100,16 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     # secondary code) the same matrix value is stored under every PRN key — keeps
     # the lookup uniform without per-call allocation.
     sign_patterns_by_prn::Dict{Int,Matrix{Float32}}
+    # Pre-computed phase-ramp-multiplied patterns per PRN, pre-tiled along the
+    # Doppler-bin axis AND split into separate real/imag Float32 arrays. The
+    # tiled form makes the inner ω loop contiguous; the real/imag split lets
+    # the compiler pack the complex MAC into Float32 SIMD lanes (~3× faster
+    # than the ComplexF32 form, even with the same per-iteration FLOP count).
+    # Both arrays have shape `(num_doppler_bins, num_coh_periods, num_patterns)`,
+    # indexed `[ω, p, q]`. Empty when the rotation kernel is not active. See
+    # [`combined_phase_patterns`](@ref) and [`tile_phase_patterns`](@ref).
+    tiled_phase_patterns_re_by_prn::Dict{Int,Array{Float32,3}}
+    tiled_phase_patterns_im_by_prn::Dict{Int,Array{Float32,3}}
 end
 
 # Thread 1's scratch is the ambient single-threaded scratch reused by `acquire!`
@@ -338,15 +361,6 @@ function plan_acquire(
     # per-thread accumulator (see `noncoherent_integration_accumulator` in
     # AcquisitionScratch). The multistep path (N_nc > 1) still needs the
     # per-PRN vector because it accumulates across steps.
-    sequential_prn_mode = num_noncoherent_accumulations == 1
-    noncoherent_integration_matrices = sequential_prn_mode ?
-        Matrix{Float32}[] :
-        [zeros(Float32, num_doppler_bins, samples_per_code) for _ in prns]
-    accumulator_rows = sequential_prn_mode ? num_doppler_bins : 0
-    accumulator_cols = sequential_prn_mode ? samples_per_code : 0
-    fftshift_perm = [mod(r - 1 + num_doppler_bins ÷ 2, num_doppler_bins) + 1 for r in 1:num_doppler_bins]
-    result_buffers = Union{Nothing,Matrix{Float32}}[nothing for _ in prns]
-
     # Derive the secondary-code rotation search size. No-op for signals without a
     # secondary code (L = 1) or when the user opts out.
     secondary_code_length = get_secondary_code_length(system)
@@ -355,6 +369,25 @@ function plan_acquire(
                              num_coherently_integrated_code_periods > 1
     num_secondary_rotations = rotation_search_active ? secondary_code_length : 1
 
+    # When the rotation search is active, expand the cp axis of the noncoherent
+    # buffers by `num_secondary_rotations` so each rotation hypothesis writes to
+    # its own column slice instead of being collapsed by a cell-wise max. The
+    # expanded buffer has the same total cell count as the LongL5I baseline
+    # (num_doppler_bins × samples_per_code × num_rotations), recovering LongL5I-
+    # equivalent CFAR statistics. Result extraction decodes peak col back into
+    # `(cp_within, rotation_idx)`.
+    samples_per_code_eff = rotation_search_active ?
+        samples_per_code * num_secondary_rotations : samples_per_code
+
+    sequential_prn_mode = num_noncoherent_accumulations == 1
+    noncoherent_integration_matrices = sequential_prn_mode ?
+        Matrix{Float32}[] :
+        [zeros(Float32, num_doppler_bins, samples_per_code_eff) for _ in prns]
+    accumulator_rows = sequential_prn_mode ? num_doppler_bins : 0
+    accumulator_cols = sequential_prn_mode ? samples_per_code_eff : 0
+    fftshift_perm = [mod(r - 1 + num_doppler_bins ÷ 2, num_doppler_bins) + 1 for r in 1:num_doppler_bins]
+    result_buffers = Union{Nothing,Matrix{Float32}}[nothing for _ in prns]
+
     # The sign-search path in `_accumulate_noncoherent_integration_step!` runs when
     # num_data_bits > 1, bit_edge_search_steps > 1, or the secondary-code rotation
     # search is active. Otherwise the simple/pilot path is taken, which never reads
@@ -362,8 +395,8 @@ function plan_acquire(
     # thread can skip those buffers when they will provably never be read.
     sign_search_path_active = num_data_bits > 1 || bit_edge_search_steps > 1 ||
                               rotation_search_active
-    sign_search_max_rows = sign_search_path_active ? num_doppler_bins  : 0
-    sign_search_max_cols = sign_search_path_active ? samples_per_code  : 0
+    sign_search_max_rows = sign_search_path_active ? num_doppler_bins      : 0
+    sign_search_max_cols = sign_search_path_active ? samples_per_code_eff  : 0
     # The data-bit kernel needs one sub-block FFT column per data bit; the
     # rotation kernel needs one per coherent period. Size to the max so the same
     # scratch matrix serves both code paths.
@@ -380,8 +413,8 @@ function plan_acquire(
     # sign-search path still consumes the buf — it reuses the buf across
     # bit-edge-search alignments to take the cell-wise max.
     integration_buf_needed = sign_search_path_active
-    integration_buf_rows = integration_buf_needed ? num_doppler_bins : 0
-    integration_buf_cols = integration_buf_needed ? samples_per_code : 0
+    integration_buf_rows = integration_buf_needed ? num_doppler_bins      : 0
+    integration_buf_cols = integration_buf_needed ? samples_per_code_eff  : 0
 
     # Multistep simple path uses `code_drift_shifts` (length num_doppler_bins)
     # to precompute the per-row column shift once per accumulation step before
@@ -403,6 +436,9 @@ function plan_acquire(
             zeros(ComplexF32, double_block_size),
             zeros(ComplexF32, segment_length),
             zeros(ComplexF32, num_doppler_bins),
+            # row_buf / row_shift_buf hold ONE primary-code-period block; drift
+            # correction shifts within each rotation block independently when
+            # the expanded buffer is in use, so per-block length suffices.
             zeros(Float32, samples_per_code),
             zeros(Float32, samples_per_code),
             zeros(ComplexF32, num_doppler_bins, samples_per_code),
@@ -410,7 +446,9 @@ function plan_acquire(
             zeros(Float32, integration_buf_rows, integration_buf_cols),
             zeros(Float32, accumulator_rows, accumulator_cols),
             zeros(ComplexF32, sign_search_max_rows, sub_block_cols),
-            zeros(Float32, samples_per_code),
+            zeros(Float32, rotation_search_active ? num_doppler_bins : 0),
+            zeros(Float32, rotation_search_active ? num_doppler_bins : 0),
+            zeros(Float32, samples_per_code_eff),
             zeros(Int, code_drift_shifts_len),
         )
         for _ in 1:nthreads
@@ -430,6 +468,23 @@ function plan_acquire(
     # (no rotation, or shared secondary code) still get a per-PRN entry — the
     # underlying matrix object can be shared to avoid duplicate storage.
     sign_patterns_by_prn = Dict{Int,Matrix{Float32}}()
+    # The rotation kernel consumes the phase-ramp-multiplied patterns, pre-
+    # tiled along the Doppler-bin axis so the inner combine loop is contiguous
+    # SIMD. The non-rotation sign-search kernel (`_sign_search_step!`) keeps
+    # using the plain ±1 `sign_patterns_by_prn`. Both dicts are populated for
+    # sign_search_path PRNs so the dispatcher can look up the right form
+    # without a branch.
+    tiled_phase_patterns_re_by_prn = Dict{Int,Array{Float32,3}}()
+    tiled_phase_patterns_im_by_prn = Dict{Int,Array{Float32,3}}()
+    empty_tile = Array{Float32,3}(undef, 0, 0, 0)
+    function _build_tiled(p)
+        rotation_search_active || return (empty_tile, empty_tile)
+        compact = combined_phase_patterns(p, num_coherently_integrated_code_periods)
+        tiled = tile_phase_patterns(compact, num_doppler_bins)
+        # Split into Float32 real/imag arrays so the kernel inner loop runs as
+        # Float32 SIMD (≈3× faster than ComplexF32 storage with the same MACs).
+        Float32.(real.(tiled)), Float32.(imag.(tiled))
+    end
     if sign_search_path_active
         secondary_code_obj = use_secondary_code ? get_secondary_code(system) : nothing
         # When patterns are PRN-independent, build once and alias under every key.
@@ -440,21 +495,28 @@ function plan_acquire(
                                    num_secondary_rotations,
                                    num_coherently_integrated_code_periods,
                                    use_secondary_code)
+            shared_re, shared_im = _build_tiled(shared)
             for prn in prns
                 sign_patterns_by_prn[prn] = shared
+                tiled_phase_patterns_re_by_prn[prn] = shared_re
+                tiled_phase_patterns_im_by_prn[prn] = shared_im
             end
         else
             for prn in prns
-                sign_patterns_by_prn[prn] = sign_patterns(secondary_code_obj, prn,
+                p = sign_patterns(secondary_code_obj, prn,
                     num_data_bits, num_secondary_rotations,
                     num_coherently_integrated_code_periods, use_secondary_code)
+                sign_patterns_by_prn[prn] = p
+                re, im = _build_tiled(p)
+                tiled_phase_patterns_re_by_prn[prn] = re
+                tiled_phase_patterns_im_by_prn[prn] = im
             end
         end
     end
 
     return AcquisitionPlan(
         system, convert(typeof(1.0Hz), sampling_freq),
-        samples_per_code, num_blocks, block_size, num_coherently_integrated_code_periods, num_data_bits, bit_edge_search_steps, num_noncoherent_accumulations,
+        samples_per_code, samples_per_code_eff, num_blocks, block_size, num_coherently_integrated_code_periods, num_data_bits, bit_edge_search_steps, num_noncoherent_accumulations,
         prn_conj_ffts,
         double_block_fft_plan, double_block_bfft_plan, col_fft_plan, col_batch_fft_plan,
         doppler_freqs,
@@ -469,5 +531,7 @@ function plan_acquire(
         max_secondary_code_rotations,
         num_secondary_rotations,
         sign_patterns_by_prn,
+        tiled_phase_patterns_re_by_prn,
+        tiled_phase_patterns_im_by_prn,
     )
 end

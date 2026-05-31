@@ -1,0 +1,5 @@
+[deps]
+Acquisition = "d4bbf60b-102b-5ffb-8f97-a7ea5817e69f"
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+GNSSSignals = "52c80523-2a4e-5c38-8979-05588f836870"
+Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
