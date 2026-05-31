@@ -92,10 +92,10 @@ function _sign_search_step!(
 end
 
 """
-    _sign_search_step_with_rotations!(noncoherent_integration_buf, coherent_integration_matrix, col_buf,
-                                      combine_buf_re, combine_buf_im, col_fft_plan,
+    _sign_search_step_with_rotations!(noncoherent_integration_buf, coherent_integration_matrix,
+                                      thread_scratch, col_fft_plan,
                                       samples_per_code, num_doppler_bins, num_coh_periods, num_blocks,
-                                      block_size, row_offset, sub_block_ffts,
+                                      block_size, row_offset,
                                       tiled_phase_patterns_re, tiled_phase_patterns_im)
 
 Sign-pattern search step for one bit-edge alignment when per-coherent-period signs vary
@@ -132,9 +132,13 @@ split into Float32 real/imag arrays so the kernel inner loop drives Float32 SIMD
 see [`tile_phase_patterns`](@ref) for the layout. This buys the LongL5I full-FFT
 sensitivity (≈5 dB) with a combine loop that runs slightly faster than the previous
 ±1 ComplexF32 kernel on commodity x86, because complex MACs pack better as Float32
-than as ComplexF32 in Julia today. `combine_buf_re/im` are length-`num_doppler_bins`
-Float32 scratch vectors holding the running per-ω complex accumulator in split form;
-they live in `AcquisitionScratch` alongside `col_buf`.
+than as ComplexF32 in Julia today.
+
+`thread_scratch` is the plan's per-thread `AcquisitionScratch` vector; the kernel
+parallelises across `col_idx` with `@batch per=core` and indexes the scratch by
+`Threads.threadid()` inside each iteration. `combine_buf_re/im` are length-
+`num_doppler_bins` Float32 scratch vectors held in each thread's scratch alongside
+`col_buf` and `sub_block_ffts`.
 
 ## Per-column block alignment
 
@@ -159,9 +163,7 @@ phasor — vanishes in `|·|²` because it factors out of the sum over `p`).
 function _sign_search_step_with_rotations!(
     noncoherent_integration_buf::Matrix{Float32},
     coherent_integration_matrix::Matrix{ComplexF32},
-    col_buf::Vector{ComplexF32},
-    combine_buf_re::Vector{Float32},
-    combine_buf_im::Vector{Float32},
+    thread_scratch::Vector{AcquisitionScratch},
     col_fft_plan,
     samples_per_code::Int,
     num_doppler_bins::Int,
@@ -169,7 +171,6 @@ function _sign_search_step_with_rotations!(
     num_blocks::Int,
     block_size::Int,
     row_offset::Int,
-    sub_block_ffts::Matrix{ComplexF32},
     tiled_phase_patterns_re::Array{Float32,3},
     tiled_phase_patterns_im::Array{Float32,3},
 )
@@ -180,10 +181,21 @@ function _sign_search_step_with_rotations!(
         "tiled_phase_patterns_re has $(size(tiled_phase_patterns_re, 2)) sub-block columns, expected num_coh_periods=$num_coh_periods"))
     size(tiled_phase_patterns_im) == size(tiled_phase_patterns_re) || throw(ArgumentError(
         "tiled_phase_patterns_im shape $(size(tiled_phase_patterns_im)) ≠ tiled_phase_patterns_re shape $(size(tiled_phase_patterns_re))"))
-    length(combine_buf_re) == num_doppler_bins && length(combine_buf_im) == num_doppler_bins ||
-        throw(ArgumentError("combine_buf_re/im must each have length num_doppler_bins=$num_doppler_bins"))
     half_block = block_size >> 1
-    for col_idx in 1:samples_per_code
+    # Parallelise across columns. Each col_idx writes to a disjoint set of
+    # cells in `noncoherent_integration_buf` (one per (ω, rotation) pair at
+    # this col_idx), and reads from per-thread scratch only — so the cells
+    # never alias across threads. Polyester's `@batch per=core` cooperates
+    # with the PRN-level `@batch` in `_acquire_sequential!` / `_acquire_multistep!`:
+    # multi-PRN acquires fill all cores at the PRN level and this inner @batch
+    # runs sequentially; single-PRN acquires get full core parallelism here.
+    @batch per=core for col_idx in 1:samples_per_code
+        scratch = thread_scratch[Threads.threadid()]
+        col_buf        = scratch.col_buf
+        combine_buf_re = scratch.combine_buf_re
+        combine_buf_im = scratch.combine_buf_im
+        sub_block_ffts = scratch.sub_block_ffts
+
         # Snap the sub-block partition to the primary-code wrap for this column.
         # `wrap_sample` is the FM-DBZP delay associated with `col_idx`; rounding
         # to the nearest multiple of block_size aligns sub-block 0 (and hence
@@ -538,12 +550,10 @@ function _accumulate_noncoherent_integration_step!(
             row_offset = bit_edge_search_idx * edge_step
             if rotation_search_active
                 _sign_search_step_with_rotations!(noncoherent_integration_buf, coherent_integration_matrix,
-                    scratch.col_buf, scratch.combine_buf_re, scratch.combine_buf_im,
-                    plan.col_fft_plan,
+                    plan.thread_scratch, plan.col_fft_plan,
                     plan.samples_per_code, num_doppler_bins,
                     plan.num_coherently_integrated_code_periods, plan.num_blocks,
-                    plan.block_size,
-                    row_offset, scratch.sub_block_ffts,
+                    plan.block_size, row_offset,
                     plan.tiled_phase_patterns_re_by_prn[prn],
                     plan.tiled_phase_patterns_im_by_prn[prn])
             else
