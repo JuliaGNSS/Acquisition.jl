@@ -177,8 +177,10 @@ if _is_fmdbzp && INCLUDE_BATCH_FFT_CROSSOVER
         for N_ms in [1, 5, 10, 20]
             plan = _make_plan(fs, N_ms; prns = [1], num_noncoherent_accumulations = 1)
             ndop = plan.num_coherently_integrated_code_periods * plan.num_blocks
-            cim    = plan.thread_scratch[Threads.threadid()].coherent_integration_matrix
-            col_buf = plan.thread_scratch[Threads.threadid()].col_buf
+            # Slot 1 of the scratch pool is the eagerly-built template scratch
+            # (other slots are materialised lazily on claim).
+            cim    = Acquisition._default_scratch(plan).coherent_integration_matrix
+            col_buf = Acquisition._default_scratch(plan).col_buf
             spc    = plan.samples_per_code
             group_key = "ndop=$(ndop)_fs=$(fs_label)_N=$(N_ms)ms"
             SUITE["BatchFFTCrossover"][group_key] = BenchmarkGroup()

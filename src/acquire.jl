@@ -43,8 +43,12 @@ end
 function _acquire_step_threaded!(plan::AcquisitionPlan, prns, accumulation_step_index::Int)
     @batch per=core for i in eachindex(prns)
         prn = @inbounds prns[i]
-        scratch = plan.thread_scratch[Threads.threadid()]
-        _acquire_prn!(plan, scratch, prn, accumulation_step_index)
+        scratch, slot = _claim_scratch!(plan)
+        try
+            _acquire_prn!(plan, scratch, prn, accumulation_step_index)
+        finally
+            _release_scratch!(plan, slot)
+        end
     end
 end
 
@@ -52,9 +56,14 @@ function _acquire_step!(plan::AcquisitionPlan, prns, accumulation_step_index::In
     if length(prns) > 1 && Threads.nthreads() > 1
         _acquire_step_threaded!(plan, prns, accumulation_step_index)
     else
-        scratch = plan.thread_scratch[Threads.threadid()]
-        for prn in prns
-            _acquire_prn!(plan, scratch, prn, accumulation_step_index)
+        # Single-threaded: one scratch serves the whole PRN loop.
+        scratch, slot = _claim_scratch!(plan)
+        try
+            for prn in prns
+                _acquire_prn!(plan, scratch, prn, accumulation_step_index)
+            end
+        finally
+            _release_scratch!(plan, slot)
         end
     end
 end
@@ -184,10 +193,14 @@ function _acquire_multistep!(plan, signal, prns, segment_length, interm_freq_hz,
         prn = @inbounds prns[result_idx]
         prn_idx = findfirst(==(prn), plan.avail_prns)
         power_bins = plan.noncoherent_integration_matrices[prn_idx]
-        scratch = plan.thread_scratch[Threads.threadid()]
-        results[result_idx] = _extract_result!(plan, scratch, prn, prn_idx, power_bins,
-            sampling_freq_hz, code_freq_hz, code_length, code_period,
-            num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
+        scratch, slot = _claim_scratch!(plan)
+        try
+            results[result_idx] = _extract_result!(plan, scratch, prn, prn_idx, power_bins,
+                sampling_freq_hz, code_freq_hz, code_length, code_period,
+                num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
+        finally
+            _release_scratch!(plan, slot)
+        end
     end
     return results
 end
@@ -230,40 +243,44 @@ function _acquire_sequential!(plan, signal, prns, segment_length, interm_freq_hz
     @batch per=core for result_idx in eachindex(prns)
         prn = @inbounds prns[result_idx]
         prn_idx = findfirst(==(prn), plan.avail_prns)
-        scratch = plan.thread_scratch[Threads.threadid()]
-        accumulator = scratch.noncoherent_integration_accumulator
-        fill!(accumulator, 0f0)
+        scratch, slot = _claim_scratch!(plan)
+        try
+            accumulator = scratch.noncoherent_integration_accumulator
+            fill!(accumulator, 0f0)
 
-        _build_coherent_integration_matrix!(
-            scratch.coherent_integration_matrix,
-            plan.signal_block_ffts,
-            plan.prn_conj_ffts[prn],
-            plan.samples_per_code,
-            plan.num_blocks,
-            plan.block_size,
-            plan.num_coherently_integrated_code_periods,
-            scratch.corr_buf,
-            plan.double_block_bfft_plan,
-        )
-        if simple_path
-            if num_doppler_bins <= BATCH_FFT_THRESHOLD
-                _accumulate_fftshifted_power_pilot_batched!(
-                    accumulator, scratch.coherent_integration_matrix,
-                    plan.col_batch_fft_plan, plan.samples_per_code, num_doppler_bins)
+            _build_coherent_integration_matrix!(
+                scratch.coherent_integration_matrix,
+                plan.signal_block_ffts,
+                plan.prn_conj_ffts[prn],
+                plan.samples_per_code,
+                plan.num_blocks,
+                plan.block_size,
+                plan.num_coherently_integrated_code_periods,
+                scratch.corr_buf,
+                plan.double_block_bfft_plan,
+            )
+            if simple_path
+                if num_doppler_bins <= BATCH_FFT_THRESHOLD
+                    _accumulate_fftshifted_power_pilot_batched!(
+                        accumulator, scratch.coherent_integration_matrix,
+                        plan.col_batch_fft_plan, plan.samples_per_code, num_doppler_bins)
+                else
+                    _accumulate_fftshifted_power_pilot!(
+                        accumulator, scratch.coherent_integration_matrix,
+                        scratch.col_buf, plan.col_fft_plan,
+                        plan.samples_per_code, num_doppler_bins)
+                end
             else
-                _accumulate_fftshifted_power_pilot!(
-                    accumulator, scratch.coherent_integration_matrix,
-                    scratch.col_buf, plan.col_fft_plan,
-                    plan.samples_per_code, num_doppler_bins)
+                _accumulate_noncoherent_integration_step!(accumulator, scratch.coherent_integration_matrix,
+                    plan, scratch, prn, 0)
             end
-        else
-            _accumulate_noncoherent_integration_step!(accumulator, scratch.coherent_integration_matrix,
-                plan, scratch, prn, 0)
-        end
 
-        results[result_idx] = _extract_result!(plan, scratch, prn, prn_idx, accumulator,
-            sampling_freq_hz, code_freq_hz, code_length, code_period,
-            num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
+            results[result_idx] = _extract_result!(plan, scratch, prn, prn_idx, accumulator,
+                sampling_freq_hz, code_freq_hz, code_length, code_period,
+                num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
+        finally
+            _release_scratch!(plan, slot)
+        end
     end
     return results
 end
