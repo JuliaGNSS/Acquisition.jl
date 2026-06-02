@@ -7,6 +7,7 @@ using DocStringExtensions,
 import Unitful: Hz
 using Unitful: ustrip
 using PrettyTables: pretty_table, TextHighlighter
+using CPUSummary: num_cores
 
 export acquire,
     acquire!,

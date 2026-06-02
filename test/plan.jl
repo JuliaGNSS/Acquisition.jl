@@ -280,7 +280,7 @@ end
     @test simple_plan.bit_edge_search_steps == 1
     @test size(simple_scratch.sign_search_max_buf) == (0, 0)
     @test size(simple_scratch.sub_block_ffts) == (0, 0)
-    # And every thread's slot matches — not just thread 1.
+    # And every pool slot matches — not just slot 1.
     for t_scratch in simple_plan.thread_scratch
         @test size(t_scratch.sign_search_max_buf) == (0, 0)
         @test size(t_scratch.sub_block_ffts) == (0, 0)
@@ -372,4 +372,53 @@ end
         @test size(nim) == (length(multi_plan.doppler_freqs), multi_plan.samples_per_code)
     end
     @test size(multi_scratch.noncoherent_integration_accumulator) == (0, 0)
+end
+
+@testset "scratch pool: hard-capped, all slots built up front" begin
+    # The per-thread scratch is a fixed pool of `min(nthreads, num_cores)` slots,
+    # all materialised at construction (the size is known in plan_acquire). Slot 1
+    # doubles as the ambient scratch. The footprint is hard-capped no matter how
+    # often / from which threads acquire! is called — the Issue #60 guarantee a
+    # long-running receiver relies on — and there is no first-acquire spike.
+    system = GPSL1CA()
+    sampling_freq = 2.048e6Hz
+    prns = collect(1:4)
+
+    plan = plan_acquire(system, sampling_freq, prns;
+        num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 1)
+    cap = min(Threads.nthreads(), max(1, Int(Acquisition.num_cores())))
+
+    # Pool is sized to the cap; all slots are free initially.
+    @test length(plan.thread_scratch) == cap
+    @test length(plan.scratch_free) == cap
+
+    # All slots are built up front at full geometry — none are empty placeholders.
+    expected = (length(plan.doppler_freqs), plan.samples_per_code)
+    materialised(p) = count(s -> size(s.coherent_integration_matrix, 2) > 0, p.thread_scratch)
+    @test materialised(plan) == cap
+    for s in plan.thread_scratch
+        @test size(s.coherent_integration_matrix) == expected
+    end
+
+    # Acquiring produces correct results and returns every slot to the pool.
+    (; signal, doppler, code_phase) = generate_test_signal(system, prns[1];
+        num_samples = plan.samples_per_code,
+        doppler = 1234Hz, code_phase = 100.0,
+        sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
+    results = acquire!(plan, signal, prns; interm_freq = 0.0Hz)
+    @test length(results) == length(prns)
+    # PRN 1 is the planted signal; it should acquire to the right cell.
+    @test results[1].code_phase ≈ code_phase atol = 2.0
+    @test abs(results[1].carrier_doppler / 1Hz - ustrip(Hz, doppler)) <
+        ustrip(Hz, step(plan.doppler_freqs))
+    @test length(plan.scratch_free) == cap   # all slots released, none leaked
+
+    # Cap is stable under repeated @spawn-driven calls — the scenario that makes
+    # threadid()-indexed storage drift. Slot count and free list never change.
+    for _ in 1:30
+        fetch(Threads.@spawn acquire!(plan, signal, prns; interm_freq = 0.0Hz))
+    end
+    @test length(plan.thread_scratch) == cap
+    @test materialised(plan) == cap
+    @test length(plan.scratch_free) == cap
 end

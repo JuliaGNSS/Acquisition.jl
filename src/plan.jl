@@ -80,9 +80,22 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     # opt-in call per PRN; subsequent calls reuse the same matrix in-place.
     result_buffers::Vector{Union{Nothing,Matrix{Float32}}}
     avail_prns::Vector{Int}
-    # Per-thread scratch, indexed by Threads.threadid() (length = nthreads at plan_acquire time).
-    # Thread 1's entry doubles as the ambient single-threaded scratch — see `_default_scratch`.
+    # Hard-capped per-thread scratch pool. The per-PRN work runs under
+    # `@batch per=core`, which executes at most `min(nthreads, num_cores)` chunks
+    # concurrently, so `thread_scratch` holds exactly that many scratches and a
+    # chunk claims a free slot for the duration of each PRN (via `scratch_free` /
+    # `scratch_lock`) rather than indexing by `Threads.threadid()`. That bounds
+    # the footprint at a constant `min(nthreads, num_cores)` scratches no matter
+    # how `acquire!` is scheduled (Issue #60); a `threadid()` index would instead
+    # need one slot per thread `acquire!` ever runs on — which drifts upward over
+    # a long session when driven from `Threads.@spawn`, a risk for a 24/7 receiver.
+    # All slots are built up front (the size is known here), so the plan's
+    # construction footprint is its steady-state footprint — no first-`acquire!`
+    # spike. Slot 1 doubles as the ambient single-threaded scratch — see
+    # `_default_scratch`.
     thread_scratch::Vector{AcquisitionScratch}
+    scratch_free::Vector{Int}        # indices of currently-free slots in `thread_scratch`
+    scratch_lock::Threads.SpinLock   # guards `scratch_free`
     # Pre-allocated results buffer, concrete-typed to avoid boxing allocations
     acq_results_buf::Vector{R}
     # Singleton selecting the noise-power estimator used by `est_signal_noise_power`.
@@ -112,12 +125,42 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     tiled_phase_patterns_im_by_prn::Dict{Int,Array{Float32,3}}
 end
 
-# Thread 1's scratch is the ambient single-threaded scratch reused by `acquire!`
+# Slot 1 of the pool is the ambient single-threaded scratch reused by `acquire!`
 # (downconversion + signal-block FFT precompute happen before the per-PRN parallel
 # loop) and by test/REPL call sites that drive the kernels directly. Naming this
 # convention here keeps it from being re-implemented as `plan.thread_scratch[1]`
 # across the codebase.
 _default_scratch(plan::AcquisitionPlan) = plan.thread_scratch[1]
+
+# Claim an exclusive scratch slot from the pool. Returns `(scratch, slot)`; the
+# caller MUST return the slot via `_release_scratch!` (use try/finally).
+#
+# Under the supported contract — one `acquire!` per plan at a time — the
+# `@batch per=core` loop runs at most as many chunks as there are slots, so the
+# free list is never empty and this is just a pop. The spin is a non-allocating
+# safety net for accidental concurrent use of one plan: it waits for a slot to
+# free rather than allocating beyond the pool, preserving the hard cap.
+@inline function _claim_scratch!(plan::AcquisitionPlan)
+    idx = 0
+    while true
+        lock(plan.scratch_lock)
+        if !isempty(plan.scratch_free)
+            idx = pop!(plan.scratch_free)
+            unlock(plan.scratch_lock)
+            break
+        end
+        unlock(plan.scratch_lock)
+        GC.safepoint()  # only reached under unsupported concurrent use of one plan
+    end
+    return (@inbounds plan.thread_scratch[idx]), idx
+end
+
+@inline function _release_scratch!(plan::AcquisitionPlan, idx::Int)
+    lock(plan.scratch_lock)
+    push!(plan.scratch_free, idx)
+    unlock(plan.scratch_lock)
+    return nothing
+end
 
 """
     _precompute_prn_ffts!(prn_ffts, system, prn, sampling_freq, samples_per_code, num_blocks, block_size, double_block_size, fft_plan)
@@ -431,13 +474,17 @@ function plan_acquire(
     multistep_simple_path_active = !sequential_prn_mode && !sign_search_path_active
     code_drift_shifts_len = multistep_simple_path_active ? num_doppler_bins : 0
 
-    # Per-thread scratch: one entry per thread, indexed by Threads.threadid().
-    # Use maxthreadid() to cover Julia's internal task-switching threads (always >= nthreads()).
-    # `sig_buf` lives here so that thread 1's scratch — the ambient single-threaded
-    # scratch — owns the downconverted-signal buffer used by `acquire!` before the
-    # per-PRN parallel loop. Other threads' sig_buf entries are unused (a few MB
-    # × nthreads, dwarfed by the matrices already sized per-thread).
-    nthreads = Threads.maxthreadid()
+    # Per-thread scratch pool. Sized to the most chunks `@batch per=core` ever
+    # runs at once, `min(nthreads, num_cores)`, rather than `maxthreadid()`: a
+    # chunk claims a free slot per PRN (see `_claim_scratch!`) instead of indexing
+    # by `threadid()`, so the footprint is hard-capped at this many scratches no
+    # matter how `acquire!` is scheduled (Issue #60). For a wide signal each
+    # scratch is large (~296 MiB for GPS L1C-P at 16 MHz), so this is the dominant
+    # plan cost. `sig_buf` lives in slot 1, the ambient single-threaded scratch
+    # `acquire!` uses for downconversion before the parallel loop. All slots are
+    # built up front (the size is known here), so the plan's construction
+    # footprint is its steady-state footprint — no first-`acquire!` spike.
+    nthreads = min(Threads.nthreads(), max(1, Int(num_cores())))
     thread_scratch = [
         AcquisitionScratch(
             zeros(ComplexF32, double_block_size),
@@ -461,6 +508,8 @@ function plan_acquire(
         )
         for _ in 1:nthreads
     ]
+    scratch_free = collect(1:nthreads)
+    scratch_lock = Threads.SpinLock()
 
     avail_prns_vec = collect(Int, prns)
 
@@ -533,6 +582,8 @@ function plan_acquire(
         result_buffers,
         avail_prns_vec,
         thread_scratch,
+        scratch_free,
+        scratch_lock,
         acq_results_buf,
         noise_estimator,
         use_secondary_code,
