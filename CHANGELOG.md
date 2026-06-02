@@ -1,5 +1,29 @@
 # Changelog
 
+# [2.4.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.3.3...v2.4.0) (2026-06-02)
+
+
+### Bug Fixes
+
+* correct half-band Doppler offset on the secondary-code rotation path ([18e143d](https://github.com/JuliaGNSS/Acquisition.jl/commit/18e143d06936c6e657aa790ae797b42f6937cb28)), closes [#65](https://github.com/JuliaGNSS/Acquisition.jl/issues/65)
+
+
+### Features
+
+* close ~5 dB GPSL5I-rotation sensitivity gap to LongL5I ([5a4578d](https://github.com/JuliaGNSS/Acquisition.jl/commit/5a4578daffd5277cfc3e07ee4e87fe4d05eb54fb))
+* secondary-code rotation search with use_secondary_code opt-out and cap ([b58d237](https://github.com/JuliaGNSS/Acquisition.jl/commit/b58d2373858cfa839dc2b3f89c0aa8148702e02f)), closes [hi#level](https://github.com/hi/issues/level) [JuliaGNSS/Acquisition.jl#58](https://github.com/JuliaGNSS/Acquisition.jl/issues/58)
+
+
+### Performance Improvements
+
+* fold fftshift into sign-search kernels + drop max_buf when bit_edge_search_steps==1 ([b2d524e](https://github.com/JuliaGNSS/Acquisition.jl/commit/b2d524e04abd1931e30b4860aa00d3997b18cd55))
+* parallelise rotation-kernel col_idx loop with Polyester [@batch](https://github.com/batch) ([99c0279](https://github.com/JuliaGNSS/Acquisition.jl/commit/99c02794cf62df17f7b19c91d4e1bd5e30011573))
+
+
+### Reverts
+
+* Revert "perf: parallelise rotation-kernel col_idx loop with Polyester [@batch](https://github.com/batch)" ([0cce813](https://github.com/JuliaGNSS/Acquisition.jl/commit/0cce81389a5104875d651ca71e201cdd5c0fbc1a))
+
 ## [2.3.3](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.3.2...v2.3.3) (2026-05-27)
 
 
