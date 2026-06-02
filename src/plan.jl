@@ -391,15 +391,23 @@ function plan_acquire(
     # The sign-search path in `_accumulate_noncoherent_integration_step!` runs when
     # num_data_bits > 1, bit_edge_search_steps > 1, or the secondary-code rotation
     # search is active. Otherwise the simple/pilot path is taken, which never reads
-    # `sign_search_max_buf` or `sub_block_ffts`. Decide here at plan time so each
-    # thread can skip those buffers when they will provably never be read.
+    # `sign_search_max_buf` or `sub_block_ffts`.
     sign_search_path_active = num_data_bits > 1 || bit_edge_search_steps > 1 ||
                               rotation_search_active
-    sign_search_max_rows = sign_search_path_active ? num_doppler_bins      : 0
-    sign_search_max_cols = sign_search_path_active ? samples_per_code_eff  : 0
+    # `sign_search_max_buf` is the running max across bit-edge-search alignments;
+    # it only exists when more than one alignment is searched. When
+    # `bit_edge_search_steps == 1` the dispatcher writes the kernel output
+    # directly into the noncoherent integration matrix (`.+=` accumulate) and
+    # this buffer stays at 0×0 — the dominant configuration for the rotation
+    # search path on L5I (≈68 MiB/thread saved at fs=12 MHz, N_coh=10).
+    max_buf_needed = bit_edge_search_steps > 1
+    sign_search_max_rows = max_buf_needed ? num_doppler_bins      : 0
+    sign_search_max_cols = max_buf_needed ? samples_per_code_eff  : 0
     # The data-bit kernel needs one sub-block FFT column per data bit; the
     # rotation kernel needs one per coherent period. Size to the max so the same
-    # scratch matrix serves both code paths.
+    # scratch matrix serves both code paths. The row dim is `num_doppler_bins`
+    # — independent of whether `sign_search_max_buf` is allocated.
+    sub_block_rows = sign_search_path_active ? num_doppler_bins : 0
     sub_block_cols = if sign_search_path_active
         rotation_search_active ? max(num_data_bits, num_coherently_integrated_code_periods) :
                                  num_data_bits
@@ -445,7 +453,7 @@ function plan_acquire(
             zeros(Float32, sign_search_max_rows, sign_search_max_cols),
             zeros(Float32, integration_buf_rows, integration_buf_cols),
             zeros(Float32, accumulator_rows, accumulator_cols),
-            zeros(ComplexF32, sign_search_max_rows, sub_block_cols),
+            zeros(ComplexF32, sub_block_rows, sub_block_cols),
             zeros(Float32, rotation_search_active ? num_doppler_bins : 0),
             zeros(Float32, rotation_search_active ? num_doppler_bins : 0),
             zeros(Float32, samples_per_code_eff),

@@ -41,7 +41,8 @@ samples_per_code columns:
    of length num_doppler_bins÷num_data_bits, zero-pads each to num_doppler_bins, and FFTs it.
 2. For each sign pattern, sums ±sub-block FFTs (sign per data bit looked up from the
    first row of that bit's segment in `patterns`), and accumulates the cell-wise maximum
-   of |result|² into `noncoherent_integration_buf`.
+   of |result|² into `noncoherent_integration_buf` **in sorted-Doppler row order**
+   (fftshift folded inline as a top/bottom half-row swap).
 
 `sub_block_ffts` is a pre-allocated (num_doppler_bins, num_data_bits) scratch matrix.
 """
@@ -74,17 +75,29 @@ function _sign_search_step!(
         end
 
         # Iterate over precomputed sign patterns; sign per data bit from the first row
-        # of that bit's segment in `patterns`.
+        # of that bit's segment in `patterns`. We write directly in sorted-Doppler row
+        # order: fftshift is the top/bottom half swap, so the raw-bin range [1, half]
+        # maps to dst rows [half+1, N] and [half+1, N] maps to [1, half]. Two contiguous
+        # SIMD-friendly half-loops replace what used to be a separate scatter pass.
+        half = num_doppler_bins ÷ 2
         for p in 1:num_sign_patterns
             fill!(col_buf, zero(ComplexF32))
             for bit_idx in 0:num_data_bits-1
                 bit_sign = patterns[bit_idx * coh_per_bit + 1, p]
                 col_buf .+= bit_sign .* view(sub_block_ffts, :, bit_idx + 1)
             end
-            @inbounds for doppler_row in 1:num_doppler_bins
-                cell_power = abs2(col_buf[doppler_row])
-                if cell_power > noncoherent_integration_buf[doppler_row, col_idx]
-                    noncoherent_integration_buf[doppler_row, col_idx] = cell_power
+            @inbounds for ω in 1:half
+                cell_power = abs2(col_buf[ω])
+                dst_row = ω + half
+                if cell_power > noncoherent_integration_buf[dst_row, col_idx]
+                    noncoherent_integration_buf[dst_row, col_idx] = cell_power
+                end
+            end
+            @inbounds for ω in half+1:num_doppler_bins
+                cell_power = abs2(col_buf[ω])
+                dst_row = ω - half
+                if cell_power > noncoherent_integration_buf[dst_row, col_idx]
+                    noncoherent_integration_buf[dst_row, col_idx] = cell_power
                 end
             end
         end
@@ -208,13 +221,23 @@ function _sign_search_step_with_rotations!(
 
         # Combine sub-block FFTs with the precomputed (ω, p, q)-tiled phasors,
         # then WRITE per-pattern to the q-th cp slice of the noncoherent buffer
-        # (no cell-wise max — each rotation hypothesis gets its own cell so the
-        # CFAR statistics match LongL5I's matched-filter layout, recovering the
-        # ~5 dB noise-floor inflation that cell-wise max would otherwise cost).
-        # Loop ordering: outer pattern q, middle sub-block p, inner ω. The
-        # complex MAC is unfused into four real `muladd`s so the compiler packs
-        # the inner loop into Float32 SIMD lanes — measured ~3× faster than
-        # the equivalent ComplexF32-storage form.
+        # in sorted-Doppler row order (no cell-wise max — each rotation
+        # hypothesis gets its own cell so the CFAR statistics match LongL5I's
+        # matched-filter layout, recovering the ~5 dB noise-floor inflation
+        # that cell-wise max would otherwise cost). Loop ordering: outer
+        # pattern q, middle sub-block p, inner ω. The complex MAC is unfused
+        # into four real `muladd`s so the compiler packs the inner loop into
+        # Float32 SIMD lanes — measured ~3× faster than the equivalent
+        # ComplexF32-storage form.
+        #
+        # fftshift is folded into the row-write here: raw bin ω∈[1, half] maps
+        # to sorted-Doppler row ω+half, and ω∈[half+1, N] maps to ω-half. Two
+        # contiguous SIMD-friendly half-loops replace what used to be a
+        # separate `_scatter_fftshift_accumulate!` pass over the whole
+        # `(num_doppler_bins, samples_per_code_eff)` buffer per non-coherent
+        # step. The compute pass over `combine_buf_re/im` stays in raw bin
+        # order — it reads `tiled_phase_patterns[ω, …]` contiguously.
+        half = num_doppler_bins ÷ 2
         for q in 1:num_sign_patterns
             fill!(combine_buf_re, 0f0)
             fill!(combine_buf_im, 0f0)
@@ -231,10 +254,15 @@ function _sign_search_step_with_rotations!(
             # of the expanded cp axis. Result extraction decodes back via
             # `(col-1) ÷ samples_per_code → rotation_idx`, `(col-1) % samples_per_code + 1 → cp_within`.
             dest_col = col_idx + (q - 1) * samples_per_code
-            @inbounds for ω in 1:num_doppler_bins
+            @inbounds for ω in 1:half
                 cell_power = muladd(combine_buf_re[ω], combine_buf_re[ω],
                                     combine_buf_im[ω] * combine_buf_im[ω])
-                noncoherent_integration_buf[ω, dest_col] = cell_power
+                noncoherent_integration_buf[ω + half, dest_col] = cell_power
+            end
+            @inbounds for ω in half+1:num_doppler_bins
+                cell_power = muladd(combine_buf_re[ω], combine_buf_re[ω],
+                                    combine_buf_im[ω] * combine_buf_im[ω])
+                noncoherent_integration_buf[ω - half, dest_col] = cell_power
             end
         end
     end
@@ -249,11 +277,9 @@ code-phase walk-off caused by carrier Doppler during coherent integration.
 `accumulation_step_index` is the 0-based incoherent step index (0 → no shift).
 `S_CD[w] = round(doppler_hz[w] * accumulation_step_index * T_coherent * sampling_freq_hz / carrier_freq_hz)`
 
-The buffer is in **raw FFT-bin order** (matches the sign-search kernels' direct
-FFT output). Raw bin `w` corresponds to sorted-Doppler position `fftshift_perm[w]`,
-so the per-row shift uses `doppler_freqs[fftshift_perm[w]]`. The single output
-fftshift in `_accumulate_noncoherent_integration_step!` then re-maps the
-corrected raw buffer into sorted-Doppler order on the way out.
+The buffer is in **sorted-Doppler row order** (the sign-search kernels now fold
+fftshift into their cell-write loops). So `doppler_freqs[w]` directly gives the
+frequency for row `w` — no `fftshift_perm` indirection needed here anymore.
 """
 function _apply_code_drift!(noncoherent_integration_buf::Matrix{Float32}, plan::AcquisitionPlan, scratch, accumulation_step_index::Int)
     accumulation_step_index == 0 && return  # no drift on first step
@@ -263,7 +289,6 @@ function _apply_code_drift!(noncoherent_integration_buf::Matrix{Float32}, plan::
     coherent_duration_s = plan.num_coherently_integrated_code_periods * plan.samples_per_code / sampling_freq_hz
     row_buf = scratch.row_buf
     row_shift_buf = scratch.row_shift_buf
-    fftshift_perm = plan.fftshift_perm
     # On the rotation path the cp axis is `samples_per_code_eff` =
     # `samples_per_code * num_secondary_rotations` wide, with each rotation
     # hypothesis occupying its own `samples_per_code`-wide block. Drift is
@@ -275,7 +300,7 @@ function _apply_code_drift!(noncoherent_integration_buf::Matrix{Float32}, plan::
     samples_per_code = plan.samples_per_code
     num_rotation_blocks = size(noncoherent_integration_buf, 2) ÷ samples_per_code
     for doppler_row in 1:num_doppler_bins
-        doppler_hz = ustrip(Hz, plan.doppler_freqs[fftshift_perm[doppler_row]])
+        doppler_hz = ustrip(Hz, plan.doppler_freqs[doppler_row])
         shift = round(Int, doppler_hz * accumulation_step_index * coherent_duration_s * sampling_freq_hz / carrier_freq_hz)
         shift == 0 && continue
         for r in 0:num_rotation_blocks-1
@@ -524,18 +549,28 @@ function _accumulate_noncoherent_integration_step!(
             end
         end
     else
-        sign_search_max_buf = scratch.sign_search_max_buf
         noncoherent_integration_buf = scratch.noncoherent_integration_buf
         # Sign-pattern search path. The plan pre-computed the pattern matrices
         # per PRN at `plan_acquire` time. The rotation kernel consumes the
         # complex-phasor-multiplied patterns (LongL5I-equivalent inter-sub-block
         # combination); the non-rotation kernel uses the plain ±1 patterns.
-        fill!(sign_search_max_buf, 0.0f0)
+        #
+        # Pipeline since the fftshift-fold change:
+        #   - the sign-search kernels write `noncoherent_integration_buf`
+        #     directly in **sorted-Doppler row order** (fftshift inlined as a
+        #     top/bottom half-row swap);
+        #   - `_apply_code_drift!` shifts in sorted-Doppler order;
+        #   - the running max over bit-edge alignments only exists when
+        #     `bit_edge_search_steps > 1` — otherwise the loop runs once and
+        #     the buf is already the correct per-step result.
+        # The final step `noncoherent_integration_matrix .+= buf` (or `+= max_buf`)
+        # accumulates across non-coherent steps. No fftshift scatter needed.
         bit_period_codes = plan.num_coherently_integrated_code_periods ÷ plan.num_data_bits
         edge_step = bit_period_codes * plan.num_blocks ÷ plan.bit_edge_search_steps
-        for bit_edge_search_idx in 0:plan.bit_edge_search_steps-1
+        if plan.bit_edge_search_steps == 1
+            # No outer max — the kernel writes the only alignment's result
+            # directly. Skip `sign_search_max_buf` (sized 0×0 in this case).
             fill!(noncoherent_integration_buf, 0.0f0)
-            row_offset = bit_edge_search_idx * edge_step
             if rotation_search_active
                 _sign_search_step_with_rotations!(noncoherent_integration_buf, coherent_integration_matrix,
                     scratch.col_buf, scratch.combine_buf_re, scratch.combine_buf_im,
@@ -543,27 +578,44 @@ function _accumulate_noncoherent_integration_step!(
                     plan.samples_per_code, num_doppler_bins,
                     plan.num_coherently_integrated_code_periods, plan.num_blocks,
                     plan.block_size,
-                    row_offset, scratch.sub_block_ffts,
+                    0, scratch.sub_block_ffts,
                     plan.tiled_phase_patterns_re_by_prn[prn],
                     plan.tiled_phase_patterns_im_by_prn[prn])
             else
                 _sign_search_step!(noncoherent_integration_buf, coherent_integration_matrix, scratch.col_buf,
                     plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
-                    plan.num_data_bits, row_offset, scratch.sub_block_ffts,
+                    plan.num_data_bits, 0, scratch.sub_block_ffts,
                     plan.sign_patterns_by_prn[prn])
             end
             _apply_code_drift!(noncoherent_integration_buf, plan, scratch, accumulation_step_index)
-            @. sign_search_max_buf = max(sign_search_max_buf, noncoherent_integration_buf)
+            noncoherent_integration_matrix .+= noncoherent_integration_buf
+        else
+            sign_search_max_buf = scratch.sign_search_max_buf
+            fill!(sign_search_max_buf, 0.0f0)
+            for bit_edge_search_idx in 0:plan.bit_edge_search_steps-1
+                fill!(noncoherent_integration_buf, 0.0f0)
+                row_offset = bit_edge_search_idx * edge_step
+                if rotation_search_active
+                    _sign_search_step_with_rotations!(noncoherent_integration_buf, coherent_integration_matrix,
+                        scratch.col_buf, scratch.combine_buf_re, scratch.combine_buf_im,
+                        plan.col_fft_plan,
+                        plan.samples_per_code, num_doppler_bins,
+                        plan.num_coherently_integrated_code_periods, plan.num_blocks,
+                        plan.block_size,
+                        row_offset, scratch.sub_block_ffts,
+                        plan.tiled_phase_patterns_re_by_prn[prn],
+                        plan.tiled_phase_patterns_im_by_prn[prn])
+                else
+                    _sign_search_step!(noncoherent_integration_buf, coherent_integration_matrix, scratch.col_buf,
+                        plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
+                        plan.num_data_bits, row_offset, scratch.sub_block_ffts,
+                        plan.sign_patterns_by_prn[prn])
+                end
+                _apply_code_drift!(noncoherent_integration_buf, plan, scratch, accumulation_step_index)
+                @. sign_search_max_buf = max(sign_search_max_buf, noncoherent_integration_buf)
+            end
+            noncoherent_integration_matrix .+= sign_search_max_buf
         end
-        # Unified convention: the sign-search kernels emit raw FFT-bin order
-        # (no internal circshift), `_apply_code_drift!` shifts in raw order using
-        # `doppler_freqs[fftshift_perm[w]]`, and the final scatter below performs
-        # the single fftshift from raw to sorted-Doppler order on the way into
-        # `noncoherent_integration_matrix`. This matches the pilot path's
-        # "shift exactly once, at the output" convention and removes the
-        # per-column circshift that previously ran 120 000× per dwell.
-        _scatter_fftshift_accumulate!(noncoherent_integration_matrix,
-            sign_search_max_buf, plan.fftshift_perm, plan.samples_per_code_eff)
     end
 end
 # Convenience wrapper for tests and single-threaded callers — routes through
