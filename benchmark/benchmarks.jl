@@ -300,4 +300,27 @@ if _is_fmdbzp
                 min_doppler_coverage = $bench_min_doppler,
                 num_noncoherent_accumulations = $N_nc)
     end
+
+    # Secondary-code rotation search path — exercises
+    # `_sign_search_step_with_rotations!` and the (samples_per_code × L)-wide
+    # noncoherent buffer. L5I at 12 MHz / N_coh=10 is the canonical rotation
+    # workload (the case the rotation-vs-LongL5I sensitivity work in
+    # `claude_scratch/sensitivity-fix.md` is tuned for). Without this entry,
+    # the default L5I bench above runs at N_coh=1 and never touches the sign-
+    # search path, so plan-size/runtime savings in that path go unmeasured.
+    let
+        fs = 12.0e6Hz
+        label = "L5I_12MHz_Ncoh10"
+        N_coh = 10
+        plan = plan_acquire(GNSSSignals.GPSL5I(), fs, bench_prns;
+            min_doppler_coverage = bench_min_doppler,
+            num_coherently_integrated_code_periods = N_coh)
+        signal = _make_signal(plan, 1)
+        SUITE["AcquireSignals"][label] =
+            @benchmarkable acquire!($plan, $signal, $bench_prns; interm_freq = 0.0Hz)
+        SUITE["PlanAcquire"][label] =
+            @benchmarkable plan_acquire(GNSSSignals.GPSL5I(), $fs, $bench_prns;
+                min_doppler_coverage = $bench_min_doppler,
+                num_coherently_integrated_code_periods = $N_coh)
+    end
 end
