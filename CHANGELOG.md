@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.1](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.4.0...v2.4.1) (2026-06-03)
+
+
+### Performance Improvements
+
+* hard-cap per-thread acquisition scratch with a slot pool (Issue [#60](https://github.com/JuliaGNSS/Acquisition.jl/issues/60)) ([52c2e36](https://github.com/JuliaGNSS/Acquisition.jl/commit/52c2e364c2ddc9a2dbc79eb7217aa96afe71bf37))
+
 # [2.4.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.3.3...v2.4.0) (2026-06-02)
 
 
