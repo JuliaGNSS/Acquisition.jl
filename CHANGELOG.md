@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.1](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.5.0...v2.5.1) (2026-06-09)
+
+
+### Bug Fixes
+
+* count secondary-code rotation expansion in get_num_cells ([#70](https://github.com/JuliaGNSS/Acquisition.jl/issues/70)) ([508a861](https://github.com/JuliaGNSS/Acquisition.jl/commit/508a861e7d9eacab68686ef8cffaa7ae0711787e)), closes [#69](https://github.com/JuliaGNSS/Acquisition.jl/issues/69)
+
 # [2.5.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.4.1...v2.5.0) (2026-06-09)
 
 
