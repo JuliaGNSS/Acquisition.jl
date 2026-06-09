@@ -404,6 +404,10 @@ Convenience wrapper: calls [`plan_acquire`](@ref) then [`acquire!`](@ref).
   - `num_coherently_integrated_code_periods`: Code periods per coherent block (default: `1`)
   - `bit_edge_search_steps`: Bit edge search positions (default: `1`)
   - `num_noncoherent_accumulations`: Non-coherent integration steps (default: `1`)
+  - `use_secondary_code`: enable the secondary-code rotation search (default: `true`).
+    Requires `num_coherently_integrated_code_periods` to be a whole multiple of the
+    secondary-code length `L`; a partial period is rejected to avoid the ±Doppler sign
+    ambiguity (issue #68). See [`plan_acquire`](@ref).
   - `fft_flag`: FFTW planning flag (default: `FFTW.MEASURE`)
 
 # Keyword Arguments forwarded to `acquire!`:
