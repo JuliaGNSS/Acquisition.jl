@@ -69,6 +69,20 @@ end
             # Rotation discovery: with the search active, the peak should clear the opt-out
             # baseline by a substantial margin, regardless of NH10 starting phase.
             @test peak_on > 5 * peak_off
+            # The recovered secondary-code phase must equal the planted rotation r
+            # (the NH10 chip the integration window started on). Locks the
+            # `rotation_block → secondary_code_phase` decode convention.
+            @test results_on[1].secondary_code_phase == r
+        end
+
+        # When no rotation search runs the field is `nothing`, not an integer:
+        # use_secondary_code = false (opt-out)…
+        @test acquire!(plan_off, ref_signal, [prn])[1].secondary_code_phase === nothing
+        # …and a signal with no secondary code at all (L1 C/A, L = 1).
+        let l1 = GPSL1CA()
+            l1plan = plan_acquire(l1, 5e6Hz, [1]; num_coherently_integrated_code_periods = 1)
+            l1sig = ComplexF32.(randn(ComplexF64, l1plan.samples_per_code))
+            @test acquire!(l1plan, l1sig, [1])[1].secondary_code_phase === nothing
         end
     end
 

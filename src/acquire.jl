@@ -196,6 +196,7 @@ function _acquire_multistep!(plan, signal, prns, segment_length, interm_freq_hz,
         scratch, slot = _claim_scratch!(plan)
         try
             results[result_idx] = _extract_result!(plan, scratch, prn, prn_idx, power_bins,
+                signal, interm_freq_hz,
                 sampling_freq_hz, code_freq_hz, code_length, code_period,
                 num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
         finally
@@ -276,6 +277,7 @@ function _acquire_sequential!(plan, signal, prns, segment_length, interm_freq_hz
             end
 
             results[result_idx] = _extract_result!(plan, scratch, prn, prn_idx, accumulator,
+                signal, interm_freq_hz,
                 sampling_freq_hz, code_freq_hz, code_length, code_period,
                 num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
         finally
@@ -285,11 +287,63 @@ function _acquire_sequential!(plan, signal, prns, segment_length, interm_freq_hz
     return results
 end
 
+# Exact secondary-code phase estimate. The FM-DBZP rotation index (`rotation_block`)
+# is ±1 at worst-case code phases — the chip and the sub-chip code phase entangle in
+# the factored search. So instead, with the peak's `(doppler, code_phase)` in hand,
+# we despread the first `L` per-coherent-period prompt correlations against each of the
+# `L` secondary-code rotations and take the strongest. A full secondary-code period of
+# coherent despread is the unambiguous case (bounded periodic autocorrelation), so this
+# is exact at every code phase. `L = num_secondary_rotations` and only the first `L`
+# periods are used, so an unknown data-bit flip at a symbol boundary (N > L) never
+# enters — the NH-phase is constant across symbols anyway (N is a multiple of L).
+#
+# Carrier (interm + doppler) wipe-off uses an incremental complex phasor reset each
+# period (one `sincos` per period, not per sample) to stay cheap and bound Float32
+# drift to within a primary-code period. The primary-code reference is generated once
+# per call; for signals whose `gen_code` bakes the secondary code (e.g. GPS L5I) it
+# carries a single constant chip, a global ±1 that cancels in the magnitude `argmax`.
+function _estimate_secondary_code_phase(plan, prn, signal, interm_freq_hz,
+                                        sampling_freq_hz, code_phase, doppler_hz)
+    system = plan.system
+    L = plan.num_secondary_rotations
+    spc = plan.samples_per_code
+    sec = get_secondary_code(system)
+    code = gen_code(spc, system, prn, plan.sampling_freq, get_code_frequency(system), code_phase)
+    phase_step = -2.0 * π * (interm_freq_hz + doppler_hz) / sampling_freq_hz
+    dphi = ComplexF32(cos(phase_step), sin(phase_step))   # per-sample carrier rotation
+    zs = Vector{ComplexF32}(undef, L)
+    @inbounds for k in 0:L-1
+        base = k * spc
+        s0, c0 = sincos(phase_step * base)                # reset phasor each period
+        carr = ComplexF32(c0, s0)
+        acc = zero(ComplexF32)
+        for n in 0:spc-1
+            acc += ComplexF32(signal[base + n + 1]) * carr * ComplexF32(code[n + 1])
+            carr *= dphi
+        end
+        zs[k + 1] = acc
+    end
+    best_r = 0
+    best_mag = -1.0f0
+    @inbounds for r in 0:L-1
+        s = zero(ComplexF32)
+        for k in 0:L-1
+            s += Float32(GNSSSignals.secondary_value(sec, prn, mod(k + r, L))) * zs[k + 1]
+        end
+        mag = abs2(s)
+        if mag > best_mag
+            best_mag = mag
+            best_r = r
+        end
+    end
+    return best_r
+end
+
 # Read the peak out of `power_bins` and assemble an AcquisitionResults. Used by
 # both the sequential and multistep paths; in the sequential path `power_bins`
 # is the per-thread accumulator (and is reused by the next PRN), so the
 # store_power_bins copy must happen here before this function returns.
-function _extract_result!(plan, scratch, prn, prn_idx, power_bins,
+function _extract_result!(plan, scratch, prn, prn_idx, power_bins, signal, interm_freq_hz,
                           sampling_freq_hz, code_freq_hz, code_length, code_period,
                           num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
     col_sums_buf = scratch.col_sums_buf
@@ -307,9 +361,10 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins,
 
     # On the rotation path the cp axis is expanded to
     # `samples_per_code * num_secondary_rotations` and the peak col encodes
-    # `(cp_within, rotation_idx)` together. Decode back to cp_within for the
-    # public `code_phase` output; rotation_idx is currently hidden (the
-    # detection geometry doesn't need it for downstream tracking).
+    # `(cp_within, rotation_idx)` together. We decode `cp_within` for the public
+    # `code_phase`; the secondary-code phase is recovered exactly further below
+    # via `_estimate_secondary_code_phase` (the raw `rotation_idx` is ±1 at
+    # worst-case code phases, so it is not used for the public field).
     samples_per_code = plan.samples_per_code
     rotation_block = (code_bin_idx - 1) ÷ samples_per_code
     scrambled_col = (code_bin_idx - 1) % samples_per_code
@@ -344,6 +399,25 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins,
         end
     end
 
+    # Exact secondary-code phase — only on the rotation path AND only when the peak
+    # clears the CFAR detection threshold. A secondary phase for a non-detected PRN is
+    # meaningless (it would despread noise), so it stays `nothing`; this also means
+    # absent PRNs in a wide search pay nothing for the estimator (it's the few detected
+    # PRNs that run it). The gate uses the same default pfa as [`is_detected`](@ref).
+    secondary_code_phase = if plan.num_secondary_rotations > 1
+        num_cells = num_doppler_bins * plan.num_blocks * plan.block_size
+        threshold = cfar_threshold(0.01, num_cells;
+            num_noncoherent_integrations = plan.num_noncoherent_accumulations)
+        if peak_to_noise > threshold
+            _estimate_secondary_code_phase(plan, prn, signal, interm_freq_hz,
+                sampling_freq_hz, code_phase, ustrip(Hz, doppler))
+        else
+            nothing
+        end
+    else
+        nothing
+    end
+
     result_buf = if store_power_bins
         cached = plan.result_buffers[prn_idx]
         buf = cached === nothing ? similar(power_bins) : cached
@@ -359,6 +433,7 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins,
         plan.sampling_freq,
         doppler,
         code_phase,
+        secondary_code_phase,
         CN0,
         Float32(noise_power),
         Float32(peak_to_noise),

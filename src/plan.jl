@@ -551,7 +551,7 @@ function plan_acquire(
 
     # Pre-allocate concrete-typed results buffer to avoid boxing allocations in acquire!
     dummy_result = AcquisitionResults(
-        system, 0, convert(typeof(1.0Hz), sampling_freq), 0.0Hz, 0.0, 0.0,
+        system, 0, convert(typeof(1.0Hz), sampling_freq), 0.0Hz, 0.0, nothing, 0.0,
         0f0, 0f0, 0, nothing, doppler_freqs, num_blocks, block_size)
     acq_results_buf = Vector{typeof(dummy_result)}(undef, length(prns))
 
