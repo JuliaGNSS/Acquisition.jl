@@ -86,6 +86,40 @@ end
     @test occursin("10", msg)                     # L
 end
 
+@testset "plan_acquire — partial secondary period rejected (Doppler sign ambiguity, #68)" begin
+    # Issue #68: GPS L5I has NH10 (L = 10). A partial-secondary-period coherent length
+    # (e.g. N = 5, the user's natural 5 ms choice) makes the rotation search produce a
+    # ±Doppler sign ambiguity — a near-equal mirror peak at -f whose sign flips at random
+    # under noise. With use_secondary_code = true (the default), plan_acquire must reject
+    # any N that is not a whole multiple of L > 1.
+    err = try
+        plan_acquire(GPSL5I(), 10.24e6Hz, [1];
+            min_doppler_coverage = 1_000Hz, num_coherently_integrated_code_periods = 5)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    msg = sprint(showerror, err)
+    @test occursin("secondary", lowercase(msg))
+    @test occursin("5", msg)                       # offending N
+    @test occursin("10", msg)                      # L
+    @test occursin("68", msg)                       # references the issue
+    # All three documented remedies are present in the message.
+    @test occursin("num_coherently_integrated_code_periods", msg)
+    @test occursin("num_noncoherent_accumulations", msg)
+    @test occursin("use_secondary_code", msg)
+
+    # Full secondary period (N = L) is accepted, and opting out at the partial period is
+    # accepted (no rotation search → no ambiguity).
+    @test plan_acquire(GPSL5I(), 10.24e6Hz, [1];
+        min_doppler_coverage = 1_000Hz,
+        num_coherently_integrated_code_periods = 10).num_secondary_rotations == 10
+    @test plan_acquire(GPSL5I(), 10.24e6Hz, [1];
+        min_doppler_coverage = 1_000Hz, num_coherently_integrated_code_periods = 5,
+        use_secondary_code = false).num_secondary_rotations == 1
+end
+
 @testset "plan_acquire — secondary-code search cap (L1C_P)" begin
     # L1C-P has L=1800 ≫ default cap of 32. With use_secondary_code=true (default) and
     # N > 1, plan_acquire must throw with an actionable message *before* allocating any

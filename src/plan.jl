@@ -232,6 +232,18 @@ start Julia with `-t N` before calling `plan_acquire` to enable multi-threaded a
 - `num_noncoherent_accumulations`: Number of successive incoherent integration
   steps (default: `1`). Signal passed to `acquire!` must contain at least
   `num_noncoherent_accumulations` full segments.
+- `use_secondary_code`: enable the secondary-code rotation search (default: `true`).
+  When the signal has a secondary code of length `L > 1` and
+  `num_coherently_integrated_code_periods > 1`, the search jointly estimates the
+  unknown secondary-code start phase, recovering the full coherent gain.
+  **`num_coherently_integrated_code_periods` must then be a whole multiple of `L`**
+  (e.g. `10` for GPS L5I's NH10). A partial secondary period introduces a ±Doppler
+  sign ambiguity (a near-equal mirror peak at `-f`; issue #68) and is rejected with
+  an `ArgumentError`. Set `false` to opt out of the search (no constraint, coarser
+  effective gain when a secondary code is present).
+- `max_secondary_code_rotations`: cap on the secondary-code rotation-search size
+  (default: `32`). `plan_acquire` errors if `L` exceeds this, before allocating
+  buffers, so large-`L` signals (e.g. GPS L1C-P, `L = 1800`) fail fast.
 - `noise_estimator`: how `acquire!` estimates noise power for the CFAR
   test statistic. Defaults to [`OppositeRowNoiseEstimator`](@ref) (averages
   one Doppler row, robust to Doppler-conditional banding from DC offset/IF
@@ -281,17 +293,41 @@ function plan_acquire(
                 "(2) raise max_secondary_code_rotations to at least $L; or " *
                 "(3) set use_secondary_code = false to opt out of the rotation search."))
         end
-        # Rotation-length divisibility: when the integration window spans more than one
-        # secondary-code period (N > L), the window must cover a whole number of those
-        # periods so the cyclic-rotation semantics are well-defined. For data signals this
-        # collapses into the existing bit_period_codes check (bit_period_codes is a
-        # multiple of L in practice), so this is only meaningful for pilot signals.
+        # Rotation-length divisibility: when the rotation search is active, the coherent
+        # window must span a WHOLE number of secondary-code periods (N a multiple of L).
+        # Two distinct failures motivate this — both resolved by the same constraint:
+        #
+        #  - N > L, non-multiple: the cyclic-rotation semantics are ill-defined; the
+        #    trailing partial period doesn't map to a clean secondary-chip sequence.
+        #  - N not a multiple of L (notably the sub-bit regime N < L, e.g. 5 ms on
+        #    GPS L5I whose NH10 has L = 10): a ±Doppler SIGN AMBIGUITY (issue #68). Over
+        #    a partial secondary period the cross-correlation between a WRONG rotation
+        #    hypothesis and the true sequence can fit a frequency-mirrored carrier almost
+        #    as well as the true rotation fits the true carrier. The rotation search then
+        #    surfaces a near-equal mirror peak at -f, and the acquired Doppler keeps a
+        #    stable magnitude but flips sign at random under noise — tracking gets seeded
+        #    ~2|f| off and never locks. The mirror cancels only when the window covers a
+        #    full secondary-code period (N % L == 0), where the periodic autocorrelation
+        #    of the secondary code is bounded.
+        #
+        # For data signals this mostly coincides with the bit_period_codes check below
+        # (bit_period_codes is typically a multiple of L), but it ALSO catches the sub-bit
+        # regime N < bit_period_codes, which that check deliberately allows.
         if use_secondary_code && L > 1 &&
-           num_coherently_integrated_code_periods > L &&
+           num_coherently_integrated_code_periods > 1 &&
            num_coherently_integrated_code_periods % L != 0
             throw(ArgumentError(
-                "secondary-code rotation length L=$L must divide " *
-                "num_coherently_integrated_code_periods=$num_coherently_integrated_code_periods when N > L."))
+                "Secondary-code rotation search requires num_coherently_integrated_code_periods " *
+                "to be a whole multiple of the secondary-code length L=$L, got " *
+                "num_coherently_integrated_code_periods=$num_coherently_integrated_code_periods. " *
+                "A partial secondary-code period makes the rotation search produce a ±Doppler " *
+                "sign ambiguity — a near-equal mirror peak at -f whose sign flips at random under " *
+                "noise (issue #68). Remedies (in order): " *
+                "(1) set num_coherently_integrated_code_periods to a multiple of $L " *
+                "(e.g. $L for one full secondary-code period); " *
+                "(2) set num_coherently_integrated_code_periods = 1 and raise " *
+                "num_noncoherent_accumulations for a robust sign at coarser Doppler resolution; or " *
+                "(3) set use_secondary_code = false to opt out of the rotation search."))
         end
     end
 
