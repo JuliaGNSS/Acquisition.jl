@@ -1,5 +1,23 @@
 # Changelog
 
+# [2.5.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.4.1...v2.5.0) (2026-06-09)
+
+
+### Bug Fixes
+
+* reject partial secondary-code periods (Doppler sign ambiguity, [#68](https://github.com/JuliaGNSS/Acquisition.jl/issues/68)) ([9d152bd](https://github.com/JuliaGNSS/Acquisition.jl/commit/9d152bde23a6cdb181a242af5a93342c8c23fad9))
+* rotation kernel buffer overflow at N >= 2L (data-bit × rotation) ([2201261](https://github.com/JuliaGNSS/Acquisition.jl/commit/2201261b6e8551b1742253eeff67f4ebaefc4a90))
+
+
+### Features
+
+* expose exact secondary_code_phase in AcquisitionResults ([4466401](https://github.com/JuliaGNSS/Acquisition.jl/commit/4466401baf051c43ad1c23c9ef16cc9449d45c68))
+
+
+### Performance Improvements
+
+* keep L5I rotation path at baseline speed (PR [#69](https://github.com/JuliaGNSS/Acquisition.jl/issues/69) CI regression) ([0eb991f](https://github.com/JuliaGNSS/Acquisition.jl/commit/0eb991f6c9eb2caa022d510fde7563e4c5dfc89c))
+
 ## [2.4.1](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.4.0...v2.4.1) (2026-06-03)
 
 
