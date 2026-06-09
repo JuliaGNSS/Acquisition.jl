@@ -405,7 +405,14 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins, signal, inter
     # absent PRNs in a wide search pay nothing for the estimator (it's the few detected
     # PRNs that run it). The gate uses the same default pfa as [`is_detected`](@ref).
     secondary_code_phase = if plan.num_secondary_rotations > 1
-        num_cells = num_doppler_bins * plan.num_blocks * plan.block_size
+        # True searched-cell count INCLUDING the rotation expansion: the rotation
+        # path's power_bins is `num_doppler_bins × (samples_per_code ×
+        # num_secondary_rotations)`. Omitting the `× num_secondary_rotations`
+        # understates the cell count L-fold, dropping the CFAR threshold enough
+        # that pure-noise peaks clear it and the estimator fires on absent PRNs —
+        # that was the AcquireSignals/L5I regression. (`num_blocks × block_size ==
+        # samples_per_code`.)
+        num_cells = num_doppler_bins * plan.samples_per_code * plan.num_secondary_rotations
         threshold = cfar_threshold(0.01, num_cells;
             num_noncoherent_integrations = plan.num_noncoherent_accumulations)
         if peak_to_noise > threshold
