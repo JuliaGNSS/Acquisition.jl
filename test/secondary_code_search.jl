@@ -463,4 +463,65 @@ end
         peak_rot_500, peak_long_500 = peaks_at(500.0)
         @test peak_rot_500 / peak_long_500 > 0.95
     end
+
+    @testset "get_num_cells / is_detected count the rotation expansion (issue #70)" begin
+        # On the rotation-search path the peak is taken over an EXPANDED surface
+        # num_doppler_bins × (samples_per_code × num_secondary_rotations) — L× more
+        # independent cells than the bare Doppler × code-phase grid. `get_num_cells`
+        # (and therefore `is_detected`) used to return only num_doppler_bins ×
+        # samples_per_code, understating the count L-fold → the Bonferroni CFAR
+        # correction was applied for too few cells → threshold too low → realised
+        # false-alarm rate well above the requested pfa, and pure-noise peaks called
+        # "detected". The fix carries `num_secondary_rotations` on the result and folds
+        # it into `get_num_cells`.
+        system        = GPSL5I()
+        sampling_freq = 12e6Hz
+        prn           = 1
+
+        plan = plan_acquire(system, sampling_freq, [prn];
+            num_coherently_integrated_code_periods = 10, num_noncoherent_accumulations = 1)
+        @test plan.num_secondary_rotations == 10   # rotation search active
+
+        (; signal) = generate_test_signal(system, prn;
+            num_samples = 10 * 12000, doppler = 1000Hz, code_phase = 1234.5,
+            sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
+        result = acquire!(plan, signal, prn; interm_freq = 0.0Hz, store_power_bins = true)
+
+        # The expansion factor is carried on the result …
+        @test result.num_secondary_rotations == plan.num_secondary_rotations
+        # … and `get_num_cells` is the full expanded count, which equals the stored
+        # power-surface size (num_doppler_bins × samples_per_code × num_rotations).
+        num_dop = length(result.dopplers)
+        @test get_num_cells(result) ==
+              num_dop * plan.samples_per_code * plan.num_secondary_rotations
+        @test get_num_cells(result) == length(result.power_bins)
+        # It is exactly L× what the pre-fix formula (Doppler × code-phase only) gave.
+        @test get_num_cells(result) ==
+              10 * num_dop * plan.num_blocks * plan.block_size
+
+        # `is_detected` now flips exactly at the expanded-count threshold, the same
+        # threshold the `secondary_code_phase` gate uses — the two were inconsistent
+        # before the fix (the gate already counted the expansion, `is_detected` did not).
+        thr = cfar_threshold(0.01, get_num_cells(result);
+            num_noncoherent_integrations = result.num_noncoherent_integrations)
+        @test is_detected(result; pfa = 0.01) == (result.peak_to_noise_ratio > thr)
+        # A detected rotation peak carries a secondary-code phase; both decisions agree.
+        @test is_detected(result; pfa = 0.01)
+        @test result.secondary_code_phase !== nothing
+    end
+
+    @testset "get_num_cells unchanged off the rotation path (issue #70 regression guard)" begin
+        # The expansion must be a no-op everywhere the rotation search is inactive:
+        # num_secondary_rotations == 1, so `get_num_cells` stays the bare
+        # Doppler × code-phase grid. Guards against the fix changing CFAR statistics
+        # on L1 C/A and the pilot/sign-search paths.
+        system        = GPSL1CA()
+        prn           = 1
+        (; signal, sampling_freq, interm_freq) = generate_test_signal(system, prn)
+        result = only(acquire(system, signal, sampling_freq, [prn]; interm_freq))
+
+        @test result.num_secondary_rotations == 1
+        @test get_num_cells(result) ==
+              length(result.dopplers) * result.num_blocks * result.block_size
+    end
 end

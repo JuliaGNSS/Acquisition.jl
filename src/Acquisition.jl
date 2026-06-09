@@ -58,6 +58,8 @@ Results from GNSS signal acquisition for a single PRN.
   - `dopplers`: Doppler frequencies searched
   - `num_blocks::Int`: FM-DBZP number of blocks per code period
   - `block_size::Int`: FM-DBZP samples per block
+  - `num_secondary_rotations::Int`: Secondary-code rotation hypotheses per cell (`1` off
+    the rotation-search path). Part of the CFAR cell count — see [`get_num_cells`](@ref).
 
 # Plotting
 
@@ -95,15 +97,30 @@ struct AcquisitionResults{S<:AbstractGNSSSignal,T,D<:AbstractRange}
     dopplers::D
     num_blocks::Int
     block_size::Int
+    # Number of secondary-code rotation hypotheses searched per (Doppler, code
+    # phase) cell. `1` on every non-rotation path; `get_secondary_code_length(system)`
+    # when the secondary-code rotation search is active. The peak is taken over the
+    # expanded `num_doppler_bins × (samples_per_code × num_secondary_rotations)`
+    # surface, so this factor is part of the CFAR cell count (see `get_num_cells`).
+    num_secondary_rotations::Int
 end
 
 """
     get_num_cells(result::AcquisitionResults) -> Int
 
-Return the number of search cells (Doppler bins × code phases) in the acquisition
-result. This is the `num_cells` argument expected by [`cfar_threshold`](@ref).
+Return the number of search cells in the acquisition result. This is the `num_cells`
+argument expected by [`cfar_threshold`](@ref).
+
+The base grid is Doppler bins × code phases (`num_blocks * block_size == samples_per_code`).
+On the secondary-code rotation-search path the peak is taken over an expanded surface that
+carries `num_secondary_rotations` independent code-phase hypotheses per cell, so the count
+is multiplied by `num_secondary_rotations` (`1` on every non-rotation path). Omitting this
+factor understates the cell count `num_secondary_rotations`-fold, which sets the CFAR
+threshold too low and inflates the realised false-alarm rate (issue #70).
 """
-get_num_cells(result::AcquisitionResults) = length(result.dopplers) * result.num_blocks * result.block_size
+get_num_cells(result::AcquisitionResults) =
+    length(result.dopplers) * result.num_blocks * result.block_size *
+    result.num_secondary_rotations
 
 """
     is_detected(result::AcquisitionResults; pfa=0.01) -> Bool
