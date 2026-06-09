@@ -107,8 +107,8 @@ end
 """
     _sign_search_step_with_rotations!(noncoherent_integration_buf, coherent_integration_matrix, col_buf,
                                       combine_buf_re, combine_buf_im, col_fft_plan,
-                                      samples_per_code, num_doppler_bins, num_coh_periods, num_blocks,
-                                      block_size, row_offset, sub_block_ffts,
+                                      samples_per_code, num_doppler_bins, num_coh_periods, num_data_combos,
+                                      num_blocks, block_size, row_offset, sub_block_ffts,
                                       tiled_phase_patterns_re, tiled_phase_patterns_im)
 
 Sign-pattern search step for one bit-edge alignment when per-coherent-period signs vary
@@ -116,7 +116,17 @@ Sign-pattern search step for one bit-edge alignment when per-coherent-period sig
 `num_blocks` rows each (one per coherent code period) and computes one column FFT per
 sub-block. Then, for each pattern column, accumulates
 `tiled_phase_patterns[ω, p, q] * sub_block_FFT_p[ω]` over the `num_coh_periods` sub-blocks
-and cell-wise-maxes `|result|²` into `noncoherent_integration_buf`.
+and writes `|result|²` into `noncoherent_integration_buf`.
+
+The `num_sign_patterns` pattern columns are the Cartesian product of
+`num_secondary_rotations` secondary-code rotations and `num_data_combos = 2^(num_data_bits−1)`
+data-bit polarities (rotation-major, data-minor; see [`sign_patterns`](@ref)). Each rotation
+is a distinct code phase and gets its own `samples_per_code`-wide cp slice; the
+`num_data_combos` polarities sharing a rotation are collapsed into that slice by a cell-wise
+max (the data sign is a nuisance hypothesis). The buffer's cp axis must therefore be at least
+`(num_sign_patterns ÷ num_data_combos) * samples_per_code` wide. (Before this was fixed the
+kernel wrote one slice per *pattern* into a buffer sized for one slice per *rotation*, which
+overran the buffer whenever `num_data_combos > 1`, i.e. N ≥ 2·L — a segfault.)
 
 This is the generalisation of [`_sign_search_step!`](@ref) — that kernel groups consecutive
 coherent periods into one sub-block per data bit (`num_data_bits` sub-blocks total) and is
@@ -179,6 +189,7 @@ function _sign_search_step_with_rotations!(
     samples_per_code::Int,
     num_doppler_bins::Int,
     num_coh_periods::Int,
+    num_data_combos::Int,
     num_blocks::Int,
     block_size::Int,
     row_offset::Int,
@@ -187,6 +198,14 @@ function _sign_search_step_with_rotations!(
     tiled_phase_patterns_im::Array{Float32,3},
 )
     num_sign_patterns = size(tiled_phase_patterns_re, 3)
+    num_data_combos >= 1 || throw(ArgumentError("num_data_combos must be >= 1, got $num_data_combos"))
+    num_sign_patterns % num_data_combos == 0 || throw(ArgumentError(
+        "num_sign_patterns=$num_sign_patterns must be a multiple of num_data_combos=$num_data_combos"))
+    num_rotation_blocks = num_sign_patterns ÷ num_data_combos
+    size(noncoherent_integration_buf, 2) >= num_rotation_blocks * samples_per_code || throw(ArgumentError(
+        "noncoherent_integration_buf has $(size(noncoherent_integration_buf, 2)) cp columns, " *
+        "need num_rotation_blocks*samples_per_code=$(num_rotation_blocks * samples_per_code) " *
+        "(num_sign_patterns=$num_sign_patterns ÷ num_data_combos=$num_data_combos rotations × samples_per_code=$samples_per_code)"))
     size(tiled_phase_patterns_re, 1) == num_doppler_bins || throw(ArgumentError(
         "tiled_phase_patterns_re has $(size(tiled_phase_patterns_re, 1)) rows, expected num_doppler_bins=$num_doppler_bins"))
     size(tiled_phase_patterns_re, 2) == num_coh_periods || throw(ArgumentError(
@@ -220,12 +239,14 @@ function _sign_search_step_with_rotations!(
         end
 
         # Combine sub-block FFTs with the precomputed (ω, p, q)-tiled phasors,
-        # then WRITE per-pattern to the q-th cp slice of the noncoherent buffer
-        # in sorted-Doppler row order (no cell-wise max — each rotation
-        # hypothesis gets its own cell so the CFAR statistics match LongL5I's
-        # matched-filter layout, recovering the ~5 dB noise-floor inflation
-        # that cell-wise max would otherwise cost). Loop ordering: outer
-        # pattern q, middle sub-block p, inner ω. The complex MAC is unfused
+        # then WRITE each pattern to its ROTATION's cp slice of the noncoherent
+        # buffer in sorted-Doppler row order. Rotations get their own cells (no
+        # collapse) so the CFAR statistics match LongL5I's matched-filter layout,
+        # recovering the ~5 dB noise-floor inflation that collapsing distinct code
+        # phases would cost; the `num_data_combos` data-bit polarities that share a
+        # rotation ARE collapsed by cell-wise max (nuisance hypothesis — see the
+        # dest_col block below). Loop ordering: outer pattern q, middle sub-block
+        # p, inner ω. The complex MAC is unfused
         # into four real `muladd`s so the compiler packs the inner loop into
         # Float32 SIMD lanes — measured ~3× faster than the equivalent
         # ComplexF32-storage form.
@@ -250,19 +271,38 @@ function _sign_search_step_with_rotations!(
                     combine_buf_im[ω] = muladd(ar, bi, muladd( ai, br, combine_buf_im[ω]))
                 end
             end
-            # Each rotation hypothesis q maps to a samples_per_code-wide slice
-            # of the expanded cp axis. Result extraction decodes back via
-            # `(col-1) ÷ samples_per_code → rotation_idx`, `(col-1) % samples_per_code + 1 → cp_within`.
-            dest_col = col_idx + (q - 1) * samples_per_code
+            # Patterns are laid out rotation-major, data-bit-minor (see
+            # `sign_patterns`): pattern q decodes to rotation
+            # `(q-1) ÷ num_data_combos` and data-bit combo `(q-1) % num_data_combos`.
+            # ROTATIONS are distinct secondary-code phases — distinct code phases
+            # in the LongL5I sense — so each gets its own samples_per_code-wide
+            # slice of the cp axis (no collapse; preserves the matched-filter CFAR
+            # layout the noise floor is calibrated against). DATA-BIT polarity, by
+            # contrast, is a nuisance hypothesis (the unknown data sign), so the
+            # `num_data_combos` patterns sharing a rotation are collapsed by a
+            # cell-wise MAX into that rotation's slice — exactly as the
+            # non-rotation `_sign_search_step!` maxes data combos. When
+            # num_data_combos == 1 (no multi-bit search, the only case before this
+            # fix) the max is against the 0-initialised buffer, so it reduces to a
+            # plain write and the N < 2L behaviour is unchanged. Result extraction
+            # decodes via `(col-1) ÷ samples_per_code → rotation_idx`.
+            rotation_idx = (q - 1) ÷ num_data_combos
+            dest_col = col_idx + rotation_idx * samples_per_code
             @inbounds for ω in 1:half
                 cell_power = muladd(combine_buf_re[ω], combine_buf_re[ω],
                                     combine_buf_im[ω] * combine_buf_im[ω])
-                noncoherent_integration_buf[ω + half, dest_col] = cell_power
+                dst = ω + half
+                if cell_power > noncoherent_integration_buf[dst, dest_col]
+                    noncoherent_integration_buf[dst, dest_col] = cell_power
+                end
             end
             @inbounds for ω in half+1:num_doppler_bins
                 cell_power = muladd(combine_buf_re[ω], combine_buf_re[ω],
                                     combine_buf_im[ω] * combine_buf_im[ω])
-                noncoherent_integration_buf[ω - half, dest_col] = cell_power
+                dst = ω - half
+                if cell_power > noncoherent_integration_buf[dst, dest_col]
+                    noncoherent_integration_buf[dst, dest_col] = cell_power
+                end
             end
         end
     end
@@ -567,6 +607,9 @@ function _accumulate_noncoherent_integration_step!(
         # accumulates across non-coherent steps. No fftshift scatter needed.
         bit_period_codes = plan.num_coherently_integrated_code_periods ÷ plan.num_data_bits
         edge_step = bit_period_codes * plan.num_blocks ÷ plan.bit_edge_search_steps
+        # Number of data-bit polarity patterns per rotation (1 when num_data_bits == 1).
+        # The rotation kernel maps each tiled pattern back to its rotation via this.
+        num_data_combos = 1 << (plan.num_data_bits - 1)
         if plan.bit_edge_search_steps == 1
             # No outer max — the kernel writes the only alignment's result
             # directly. Skip `sign_search_max_buf` (sized 0×0 in this case).
@@ -576,7 +619,7 @@ function _accumulate_noncoherent_integration_step!(
                     scratch.col_buf, scratch.combine_buf_re, scratch.combine_buf_im,
                     plan.col_fft_plan,
                     plan.samples_per_code, num_doppler_bins,
-                    plan.num_coherently_integrated_code_periods, plan.num_blocks,
+                    plan.num_coherently_integrated_code_periods, num_data_combos, plan.num_blocks,
                     plan.block_size,
                     0, scratch.sub_block_ffts,
                     plan.tiled_phase_patterns_re_by_prn[prn],
@@ -600,7 +643,7 @@ function _accumulate_noncoherent_integration_step!(
                         scratch.col_buf, scratch.combine_buf_re, scratch.combine_buf_im,
                         plan.col_fft_plan,
                         plan.samples_per_code, num_doppler_bins,
-                        plan.num_coherently_integrated_code_periods, plan.num_blocks,
+                        plan.num_coherently_integrated_code_periods, num_data_combos, plan.num_blocks,
                         plan.block_size,
                         row_offset, scratch.sub_block_ffts,
                         plan.tiled_phase_patterns_re_by_prn[prn],
