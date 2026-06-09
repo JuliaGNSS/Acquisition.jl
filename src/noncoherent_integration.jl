@@ -280,28 +280,44 @@ function _sign_search_step_with_rotations!(
             # layout the noise floor is calibrated against). DATA-BIT polarity, by
             # contrast, is a nuisance hypothesis (the unknown data sign), so the
             # `num_data_combos` patterns sharing a rotation are collapsed by a
-            # cell-wise MAX into that rotation's slice — exactly as the
-            # non-rotation `_sign_search_step!` maxes data combos. When
-            # num_data_combos == 1 (no multi-bit search, the only case before this
-            # fix) the max is against the 0-initialised buffer, so it reduces to a
-            # plain write and the N < 2L behaviour is unchanged. Result extraction
-            # decodes via `(col-1) ÷ samples_per_code → rotation_idx`.
+            # cell-wise MAX into that rotation's slice — exactly as the non-rotation
+            # `_sign_search_step!` maxes data combos. Result extraction decodes via
+            # `(col-1) ÷ samples_per_code → rotation_idx`.
+            #
+            # `num_data_combos == 1` (no multi-bit search) is the dominant case: each
+            # pattern is its own rotation, so dest_col cells never collide and we use a
+            # plain SIMD store. Only when combos > 1 do the loops read-then-max — that
+            # read-compare-store can't vectorise like the pure store, so gating it keeps
+            # the common path at the pre-fix speed (see the fold-fftshift kernel).
             rotation_idx = (q - 1) ÷ num_data_combos
             dest_col = col_idx + rotation_idx * samples_per_code
-            @inbounds for ω in 1:half
-                cell_power = muladd(combine_buf_re[ω], combine_buf_re[ω],
-                                    combine_buf_im[ω] * combine_buf_im[ω])
-                dst = ω + half
-                if cell_power > noncoherent_integration_buf[dst, dest_col]
-                    noncoherent_integration_buf[dst, dest_col] = cell_power
+            if num_data_combos == 1
+                @inbounds @simd for ω in 1:half
+                    noncoherent_integration_buf[ω + half, dest_col] =
+                        muladd(combine_buf_re[ω], combine_buf_re[ω],
+                               combine_buf_im[ω] * combine_buf_im[ω])
                 end
-            end
-            @inbounds for ω in half+1:num_doppler_bins
-                cell_power = muladd(combine_buf_re[ω], combine_buf_re[ω],
-                                    combine_buf_im[ω] * combine_buf_im[ω])
-                dst = ω - half
-                if cell_power > noncoherent_integration_buf[dst, dest_col]
-                    noncoherent_integration_buf[dst, dest_col] = cell_power
+                @inbounds @simd for ω in half+1:num_doppler_bins
+                    noncoherent_integration_buf[ω - half, dest_col] =
+                        muladd(combine_buf_re[ω], combine_buf_re[ω],
+                               combine_buf_im[ω] * combine_buf_im[ω])
+                end
+            else
+                @inbounds for ω in 1:half
+                    cell_power = muladd(combine_buf_re[ω], combine_buf_re[ω],
+                                        combine_buf_im[ω] * combine_buf_im[ω])
+                    dst = ω + half
+                    if cell_power > noncoherent_integration_buf[dst, dest_col]
+                        noncoherent_integration_buf[dst, dest_col] = cell_power
+                    end
+                end
+                @inbounds for ω in half+1:num_doppler_bins
+                    cell_power = muladd(combine_buf_re[ω], combine_buf_re[ω],
+                                        combine_buf_im[ω] * combine_buf_im[ω])
+                    dst = ω - half
+                    if cell_power > noncoherent_integration_buf[dst, dest_col]
+                        noncoherent_integration_buf[dst, dest_col] = cell_power
+                    end
                 end
             end
         end
