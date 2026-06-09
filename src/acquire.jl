@@ -411,7 +411,8 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins, signal, inter
         # understates the cell count L-fold, dropping the CFAR threshold enough
         # that pure-noise peaks clear it and the estimator fires on absent PRNs —
         # that was the AcquireSignals/L5I regression. (`num_blocks × block_size ==
-        # samples_per_code`.)
+        # samples_per_code`.) This matches `get_num_cells` of the result built below
+        # — the public `is_detected` undercounted the same way until issue #70.
         num_cells = num_doppler_bins * plan.samples_per_code * plan.num_secondary_rotations
         threshold = cfar_threshold(0.01, num_cells;
             num_noncoherent_integrations = plan.num_noncoherent_accumulations)
@@ -449,6 +450,7 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins, signal, inter
         plan.doppler_freqs,
         plan.num_blocks,
         plan.block_size,
+        plan.num_secondary_rotations,
     )
 end
 
