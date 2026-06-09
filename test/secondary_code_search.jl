@@ -199,6 +199,92 @@ end
         @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, true_doppler)) < ustrip(Hz, step(plan.doppler_freqs))
     end
 
+    @testset "L5I rotation search — multi-symbol N≥2L (data-bit × rotation; segfault regression)" begin
+        # ──────────────────────────────────────────────────────────────────────
+        # Regression for the buffer-overflow segfault when BOTH the data-bit
+        # search and the rotation search are active (N ≥ 2·L). At N = 20 on L5I
+        # (L = 10) the kernel enumerates num_data_combos(2) × num_secondary_
+        # rotations(10) = 20 pattern columns, but the noncoherent buffer's cp
+        # axis is only widened by num_secondary_rotations = 10. The kernel used
+        # to write `dest_col = col + (q-1)*samples_per_code` for all 20 patterns,
+        # overrunning the 10-block buffer → out-of-bounds write → segfault. No
+        # prior test exercised this: every other rotation test uses N = 10
+        # (num_data_bits = 1), so num_data_combos = 1 and pattern index == rotation
+        # index. The fix maps each pattern back to its rotation block and collapses
+        # the data-bit polarities sharing a rotation by a cell-wise max (the data
+        # sign is a nuisance hypothesis, exactly as the non-rotation kernel treats
+        # it). This test plants a genuine data-bit sign flip between the two 10 ms
+        # symbols so the data-combo max must pick the correct polarity to detect.
+        system        = GPSL5I()
+        sampling_freq = 12e6Hz
+        prn           = 1
+        true_doppler  = 1000Hz        # on the 50 Hz grid at N = 20
+        true_cp       = 1234.5
+        N = 20; L = 10
+
+        fc  = get_code_frequency(system)
+        spc = ceil(Int, get_code_length(system) / fc * sampling_freq)
+        sec = get_secondary_code(system)
+        primary = ComplexF32.(gen_code(spc, system, prn, sampling_freq, fc, true_cp))
+
+        signal = ComplexF32[]
+        for k in 0:N-1
+            nh10      = Float32(GNSSSignals.secondary_value(sec, prn, mod(k, L)))
+            data_sign = k < L ? 1.0f0 : -1.0f0   # bit flip between the two symbols
+            append!(signal, (nh10 * data_sign) .* primary)
+        end
+        ω = 2π * ustrip(Hz, true_doppler) / ustrip(Hz, sampling_freq)
+        signal .*= ComplexF32.(cis.(ω .* (0:length(signal)-1)))
+
+        plan = plan_acquire(system, sampling_freq, [prn];
+            num_coherently_integrated_code_periods = N, num_noncoherent_accumulations = 1)
+        @test plan.num_secondary_rotations == L   # rotation search active
+        @test plan.num_data_bits == N ÷ L         # data-bit search active (= 2)
+
+        result = acquire!(plan, signal, prn; interm_freq = 0.0Hz)   # must not segfault
+
+        @test is_detected(result)
+        @test result.code_phase ≈ true_cp atol = 1.0
+        @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, true_doppler)) < ustrip(Hz, step(plan.doppler_freqs))
+        # NH10 starts at chip 0 here (mod(k, L)); the estimator must recover it even
+        # across the data-bit boundary at the 10 ms mark.
+        @test result.secondary_code_phase == 0
+    end
+
+    @testset "secondary_code_phase is exact across code phase & Doppler (estimator)" begin
+        # `_estimate_secondary_code_phase` despreads the first L per-period prompt
+        # correlations at the recovered (doppler, code_phase) — exact at every code
+        # phase, unlike the raw FM-DBZP rotation index which is ±1 at worst-case code
+        # phases (primary-code wrap mid-block). This sweep is the regression guard for
+        # that fix: a non-zero code phase like 5115 (the documented worst case) and a
+        # mid-grid Doppler used to mis-report the secondary phase by one chip.
+        system        = GPSL5I()
+        sampling_freq = 12e6Hz
+        prn           = 1
+        N = 10; L = 10
+        fc  = get_code_frequency(system)
+        spc = ceil(Int, get_code_length(system) / fc * sampling_freq)
+        sec = get_secondary_code(system)
+        plan = plan_acquire(system, sampling_freq, [prn];
+            num_coherently_integrated_code_periods = N, num_noncoherent_accumulations = 1)
+
+        @testset "r0=$r0, cp=$cp, dop=$dop" for r0 in (0, 3, 7, 9),
+                                                 cp in (0.0, 2000.0, 5115.0, 9000.0),
+                                                 dop in (0.0, 1300.0)
+            primary = ComplexF32.(gen_code(spc, system, prn, sampling_freq, fc, cp))
+            signal = ComplexF32[]
+            for k in 0:N-1
+                append!(signal, Float32(GNSSSignals.secondary_value(sec, prn, mod(k + r0, L))) .* primary)
+            end
+            if dop != 0.0
+                ω = 2π * dop / ustrip(Hz, sampling_freq)
+                signal .*= ComplexF32.(cis.(ω .* (0:length(signal)-1)))
+            end
+            result = acquire!(plan, signal, prn; interm_freq = 0.0Hz)
+            @test result.secondary_code_phase == r0
+        end
+    end
+
     @testset "L5I rotation search — correct Doppler/code-phase with non-zero code drift (N_nc>1)" begin
         # Locks the sign-search path's drift correction. `_apply_code_drift!` is
         # currently called per non-coherent step with a sorted-row buf; any future
