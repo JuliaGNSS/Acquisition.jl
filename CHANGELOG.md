@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.5.2](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.5.1...v2.5.2) (2026-07-02)
+
+
+### Performance Improvements
+
+* PRN-outer multistep — one accumulation surface per slot, not per PRN ([f5feade](https://github.com/JuliaGNSS/Acquisition.jl/commit/f5feade1c1393b7c46391b4693acd75defb9c9f0))
+* tile FM-DBZP build+reduce, stream result stats at N_nc=1 ([a134aff](https://github.com/JuliaGNSS/Acquisition.jl/commit/a134aff1f57040f2417e3daadec7a3f6ffa32457))
+
 ## [2.5.1](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.5.0...v2.5.1) (2026-06-09)
 
 
