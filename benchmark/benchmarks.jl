@@ -177,11 +177,12 @@ if _is_fmdbzp && INCLUDE_BATCH_FFT_CROSSOVER
         for N_ms in [1, 5, 10, 20]
             plan = _make_plan(fs, N_ms; prns = [1], num_noncoherent_accumulations = 1)
             ndop = plan.num_coherently_integrated_code_periods * plan.num_blocks
-            # Slot 1 of the scratch pool is the eagerly-built template scratch
-            # (other slots are materialised lazily on claim).
-            cim    = Acquisition._default_scratch(plan).coherent_integration_matrix
+            # The pipeline consumes one (ndop × block_size) tile at a time, so
+            # the crossover question is now batched-tile vs per-column FFTs
+            # over a tile, repeated num_blocks times per PRN.
+            tile    = Acquisition._default_scratch(plan).coherent_tile
             col_buf = Acquisition._default_scratch(plan).col_buf
-            spc    = plan.samples_per_code
+            bsize   = plan.block_size
             group_key = "ndop=$(ndop)_fs=$(fs_label)_N=$(N_ms)ms"
             SUITE["BatchFFTCrossover"][group_key] = BenchmarkGroup()
 
@@ -189,13 +190,13 @@ if _is_fmdbzp && INCLUDE_BATCH_FFT_CROSSOVER
             if plan.col_batch_fft_plan !== nothing
                 batch_plan = plan.col_batch_fft_plan
                 SUITE["BatchFFTCrossover"][group_key]["batched"] =
-                    @benchmarkable mul!($cim, $batch_plan, $cim)
+                    @benchmarkable mul!($tile, $batch_plan, $tile)
             end
 
             col_plan = plan.col_fft_plan
             SUITE["BatchFFTCrossover"][group_key]["individual"] = @benchmarkable begin
-                for c in 1:$spc
-                    copyto!($col_buf, 1, $cim, (c - 1) * $ndop + 1, $ndop)
+                for c in 1:$bsize
+                    copyto!($col_buf, 1, $tile, (c - 1) * $ndop + 1, $ndop)
                     mul!($col_buf, $col_plan, $col_buf)
                 end
             end

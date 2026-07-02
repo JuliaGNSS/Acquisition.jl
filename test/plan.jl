@@ -245,21 +245,26 @@ end
     plan = plan_acquire(GPSL1CA(), 2.048e6Hz, [1];
         num_coherently_integrated_code_periods = 1)
     duplicated_fields = (
-        :coherent_integration_matrix,
-        :sign_search_max_buf,
-        :noncoherent_integration_buf,
+        :coherent_tile,
+        :stage_buf,
         :sub_block_ffts,
         :col_buf,
-        :row_buf,
-        :row_shift_buf,
+        :row_sums_buf,
+        :col_power_buf,
         :double_block_buf,
         :corr_buf,
-        :sig_buf,
         :col_sums_buf,
+        :code_drift_shifts,
     )
     for f in duplicated_fields
         @test !hasfield(typeof(plan), f)
     end
+
+    # `sig_buf` deliberately lives ON the plan as a single instance: it is
+    # filled before the per-PRN parallel loop, so a per-thread copy would be
+    # pure waste ((nthreads-1) × segment_length × 8 bytes).
+    @test hasfield(typeof(plan), :sig_buf)
+    @test !hasfield(Acquisition.AcquisitionScratch, :sig_buf)
 
     # _default_scratch names the "thread 1 is the ambient scratch" convention.
     scratch = Acquisition._default_scratch(plan)
@@ -268,6 +273,53 @@ end
     for f in duplicated_fields
         @test hasfield(typeof(scratch), f)
     end
+end
+
+@testset "per-thread scratch never scales with samples_per_code (tiled pipeline)" begin
+    # THE memory guarantee of the tiled pipeline: no per-thread buffer is
+    # proportional to samples_per_code (or samples_per_code_eff). The largest
+    # scratch member is the (num_doppler_bins × block_size) coherent tile —
+    # num_blocks× smaller than the coherent matrix it replaced. With N threads
+    # the old layout multiplied full surfaces by N; this lock keeps that from
+    # coming back.
+    cases = [
+        # simple/pilot, N_nc = 1 (dominant wide-search config)
+        plan_acquire(GPSL1CA(), 5e6Hz, [1]),
+        # multistep simple
+        plan_acquire(GPSL1CA(), 5e6Hz, [1]; num_noncoherent_accumulations = 4),
+        # data-bit + bit-edge search
+        plan_acquire(GPSL1CA(), 2.048e6Hz, [1];
+            min_doppler_coverage = 10_000Hz,
+            num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4),
+        # secondary-code rotation search (L5I NH10)
+        plan_acquire(GPSL5I(), 10.24e6Hz, [1];
+            num_coherently_integrated_code_periods = 10),
+    ]
+    for plan in cases
+        ndop = length(plan.doppler_freqs)
+        for scratch in plan.thread_scratch
+            @test size(scratch.coherent_tile) == (ndop, plan.block_size)
+            # Nothing else may exceed the tile's column count except the
+            # 1-D col_sums (multistep extraction needs per-column sums).
+            @test size(scratch.stage_buf, 2) <= plan.num_secondary_rotations
+            @test size(scratch.sub_block_ffts, 2) <=
+                max(plan.num_data_bits, plan.num_coherently_integrated_code_periods)
+            @test length(scratch.row_sums_buf) <= ndop
+            @test length(scratch.col_power_buf) <= ndop
+        end
+    end
+
+    # col_sums is the single spc_eff-length vector left, and only where it is
+    # actually consumed: multistep extraction or the GlobalMean estimator.
+    seq_plan = plan_acquire(GPSL1CA(), 5e6Hz, [1])
+    @test isempty(Acquisition._default_scratch(seq_plan).col_sums_buf)
+    seq_gm_plan = plan_acquire(GPSL1CA(), 5e6Hz, [1];
+        noise_estimator = GlobalMeanNoiseEstimator())
+    @test length(Acquisition._default_scratch(seq_gm_plan).col_sums_buf) ==
+        seq_gm_plan.samples_per_code_eff
+    multi_plan = plan_acquire(GPSL1CA(), 5e6Hz, [1]; num_noncoherent_accumulations = 2)
+    @test length(Acquisition._default_scratch(multi_plan).col_sums_buf) ==
+        multi_plan.samples_per_code_eff
 end
 
 @testset "result_buffers are lazy — nothing unless store_power_bins=true" begin
@@ -300,10 +352,10 @@ end
 end
 
 @testset "sign-search scratch is 0x0 when the simple path is provably taken" begin
-    # The router in _accumulate_noncoherent_integration_step! takes the simple/pilot
-    # path when num_data_bits == 1 && bit_edge_search_steps == 1. In that regime
-    # sign_search_max_buf and sub_block_ffts are never read, so the
-    # plan should allocate them as 0x0 sentinels per thread.
+    # The routers take the simple/pilot path when num_data_bits == 1 &&
+    # bit_edge_search_steps == 1 && no rotation search. In that regime
+    # stage_buf and sub_block_ffts are never read, so the plan should
+    # allocate them as 0x0 sentinels per thread.
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
 
@@ -312,77 +364,39 @@ end
     simple_scratch = Acquisition._default_scratch(simple_plan)
     @test simple_plan.num_data_bits == 1
     @test simple_plan.bit_edge_search_steps == 1
-    @test size(simple_scratch.sign_search_max_buf) == (0, 0)
+    @test size(simple_scratch.stage_buf) == (0, 0)
     @test size(simple_scratch.sub_block_ffts) == (0, 0)
     # And every pool slot matches — not just slot 1.
     for t_scratch in simple_plan.thread_scratch
-        @test size(t_scratch.sign_search_max_buf) == (0, 0)
+        @test size(t_scratch.stage_buf) == (0, 0)
         @test size(t_scratch.sub_block_ffts) == (0, 0)
     end
 
-    # Sign-search path: bit_edge_search_steps > 1 makes the kernel actually read
-    # these buffers, so they must be full-sized.
+    # Sign-search path: bit_edge_search_steps > 1 makes the kernels actually
+    # read these buffers, so they must exist — but the stage is per-COLUMN
+    # (num_doppler_bins × num_rotations), never per-surface.
     search_plan = plan_acquire(system, sampling_freq, [1];
         min_doppler_coverage = 10_000Hz,
         num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4)
     search_scratch = Acquisition._default_scratch(search_plan)
-    expected = (length(search_plan.doppler_freqs), search_plan.samples_per_code)
-    @test size(search_scratch.sign_search_max_buf) == expected
+    @test size(search_scratch.stage_buf) ==
+        (length(search_plan.doppler_freqs), search_plan.num_secondary_rotations)
     @test size(search_scratch.sub_block_ffts) ==
         (length(search_plan.doppler_freqs), search_plan.num_data_bits)
+
+    # Rotation search: one stage column per secondary-code rotation.
+    rot_plan = plan_acquire(GPSL5I(), 10.24e6Hz, [1];
+        num_coherently_integrated_code_periods = 10)
+    @test size(Acquisition._default_scratch(rot_plan).stage_buf) ==
+        (length(rot_plan.doppler_freqs), 10)
 end
 
-@testset "noncoherent_integration_buf is 0x0 whenever the simple path runs" begin
-    # The fused FFT+|x|²+(code-drift)+fftshift kernel writes straight into the
-    # destination, so the simple/pilot path never touches `noncoherent_integration_buf`.
-    # That's true at N_nc==1 (slice 5) AND at N_nc>1 (Issue #62). Sign-search is
-    # the only remaining consumer of the buf.
-    system = GPSL1CA()
-    sampling_freq = 2.048e6Hz
-
-    fused_plan = plan_acquire(system, sampling_freq, [1];
-        num_coherently_integrated_code_periods = 1, bit_edge_search_steps = 1,
-        num_noncoherent_accumulations = 1)
-    fused_scratch = Acquisition._default_scratch(fused_plan)
-    @test size(fused_scratch.noncoherent_integration_buf) == (0, 0)
-    for t_scratch in fused_plan.thread_scratch
-        @test size(t_scratch.noncoherent_integration_buf) == (0, 0)
-    end
-
-    # Multistep (N_nc>1) simple path: the fused kernel handles code drift, so
-    # the buf is dropped here too. This is the Issue #62 regression-lock.
-    multi_simple_plan = plan_acquire(system, sampling_freq, [1];
-        num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 2)
-    multi_simple_scratch = Acquisition._default_scratch(multi_simple_plan)
-    @test multi_simple_plan.num_data_bits == 1
-    @test multi_simple_plan.bit_edge_search_steps == 1
-    @test multi_simple_plan.num_noncoherent_accumulations == 2
-    @test size(multi_simple_scratch.noncoherent_integration_buf) == (0, 0)
-    for t_scratch in multi_simple_plan.thread_scratch
-        @test size(t_scratch.noncoherent_integration_buf) == (0, 0)
-    end
-
-    # Sign-search at N_nc=1 still needs the buf.
-    sign_search_plan = plan_acquire(system, sampling_freq, [1];
-        min_doppler_coverage = 10_000Hz,
-        num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4)
-    @test size(Acquisition._default_scratch(sign_search_plan).noncoherent_integration_buf) ==
-        (length(sign_search_plan.doppler_freqs), sign_search_plan.samples_per_code)
-
-    # Multistep sign-search needs the buf too.
-    multi_sign_plan = plan_acquire(system, sampling_freq, [1];
-        min_doppler_coverage = 10_000Hz,
-        num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4,
-        num_noncoherent_accumulations = 2)
-    @test size(Acquisition._default_scratch(multi_sign_plan).noncoherent_integration_buf) ==
-        (length(multi_sign_plan.doppler_freqs), multi_sign_plan.samples_per_code)
-end
-
-@testset "sequential N_nc=1 layout: empty per-PRN matrices, full per-thread accumulator" begin
-    # When num_noncoherent_accumulations == 1 the per-PRN noncoherent matrices
-    # collapse into a single per-thread accumulator reused across PRNs. Layout
-    # should be: empty Vector{Matrix{Float32}} on the plan, full-sized
-    # accumulator per thread.
+@testset "sequential N_nc=1 layout: no power surface exists at all" begin
+    # When num_noncoherent_accumulations == 1 every power cell is produced
+    # exactly once, so the result statistics are streamed per tile and neither
+    # the plan nor the scratch holds any noncoherent power matrix: the per-PRN
+    # vector is empty AND the per-thread accumulator of the pre-tiled layout is
+    # gone entirely (the field no longer exists).
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prns = collect(1:4)
@@ -391,13 +405,14 @@ end
         num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 1)
     seq_scratch = Acquisition._default_scratch(seq_plan)
     @test length(seq_plan.noncoherent_integration_matrices) == 0
-    expected = (length(seq_plan.doppler_freqs), seq_plan.samples_per_code)
-    @test size(seq_scratch.noncoherent_integration_accumulator) == expected
-    for t_scratch in seq_plan.thread_scratch
-        @test size(t_scratch.noncoherent_integration_accumulator) == expected
-    end
+    @test !hasfield(Acquisition.AcquisitionScratch, :noncoherent_integration_accumulator)
+    @test !hasfield(Acquisition.AcquisitionScratch, :noncoherent_integration_buf)
+    @test !hasfield(Acquisition.AcquisitionScratch, :sign_search_max_buf)
+    # Streaming stats live in a length-num_doppler_bins row-sum vector.
+    @test length(seq_scratch.row_sums_buf) == length(seq_plan.doppler_freqs)
 
-    # N_nc>1 path keeps the per-PRN matrices and uses no accumulator.
+    # N_nc>1 path keeps the per-PRN matrices (accumulation across segments
+    # genuinely needs the surface) and no streaming row sums.
     multi_plan = plan_acquire(system, sampling_freq, prns;
         num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 2)
     multi_scratch = Acquisition._default_scratch(multi_plan)
@@ -405,7 +420,7 @@ end
     for nim in multi_plan.noncoherent_integration_matrices
         @test size(nim) == (length(multi_plan.doppler_freqs), multi_plan.samples_per_code)
     end
-    @test size(multi_scratch.noncoherent_integration_accumulator) == (0, 0)
+    @test isempty(multi_scratch.row_sums_buf)
 end
 
 @testset "scratch pool: hard-capped, all slots built up front" begin
@@ -427,11 +442,11 @@ end
     @test length(plan.scratch_free) == cap
 
     # All slots are built up front at full geometry — none are empty placeholders.
-    expected = (length(plan.doppler_freqs), plan.samples_per_code)
-    materialised(p) = count(s -> size(s.coherent_integration_matrix, 2) > 0, p.thread_scratch)
+    expected = (length(plan.doppler_freqs), plan.block_size)
+    materialised(p) = count(s -> size(s.coherent_tile, 2) > 0, p.thread_scratch)
     @test materialised(plan) == cap
     for s in plan.thread_scratch
-        @test size(s.coherent_integration_matrix) == expected
+        @test size(s.coherent_tile) == expected
     end
 
     # Acquiring produces correct results and returns every slot to the pool.

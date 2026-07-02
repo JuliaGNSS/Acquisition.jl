@@ -49,7 +49,9 @@ end
 
 Fill `coherent_integration_matrix` (size `(num_coherently_integrated_code_periods*num_blocks, samples_per_code)`) with double-block correlation results, given precomputed signal-block FFTs.
 
-This is the per-PRN inner kernel. Signal FFTs do not depend on PRN, so they
+Reference/test form of the per-PRN build: the production pipeline builds and
+consumes one column-block tile at a time via [`_build_coherent_tile!`](@ref)
+instead of materialising this matrix. Signal FFTs do not depend on PRN, so they
 are computed once per `acquire!` call by [`_precompute_signal_block_ffts!`](@ref)
 and reused across all PRNs.
 
@@ -75,7 +77,7 @@ column index `pc` (0-indexed) satisfies:
     tau_samples = (num_blocks - pc ÷ block_size) mod num_blocks * block_size + pc mod block_size
 """
 function _build_coherent_integration_matrix!(
-    coherent_integration_matrix::Matrix{ComplexF32},
+    coherent_integration_matrix::AbstractMatrix{ComplexF32},
     signal_block_ffts::Matrix{ComplexF32},  # (double_block_size, num_coh*num_blocks) — precomputed
     prn_conj_fft_matrix::Matrix{ComplexF32},  # (double_block_size, num_blocks), already conjugated
     samples_per_code::Int,
@@ -85,33 +87,71 @@ function _build_coherent_integration_matrix!(
     corr_buf::Vector{ComplexF32},
     bfft_plan,
 )
+    # Reference/test entry point: materialises the full matrix by looping the
+    # tiled builder over every column block. The production pipeline never
+    # calls this — it builds one (num_doppler_bins, block_size) tile at a time
+    # via `_build_coherent_tile!` and reduces it immediately.
+    for col_block_idx in 0:num_blocks-1
+        col_start = col_block_idx * block_size + 1
+        tile = view(coherent_integration_matrix, :, col_start:col_start + block_size - 1)
+        _build_coherent_tile!(tile, signal_block_ffts, prn_conj_fft_matrix,
+            col_block_idx, num_blocks, block_size,
+            num_coherently_integrated_code_periods, corr_buf, bfft_plan)
+    end
+    return coherent_integration_matrix
+end
+
+"""
+    _build_coherent_tile!(tile, signal_block_ffts, prn_conj_fft_matrix, col_block_idx,
+                          num_blocks, block_size, num_coherently_integrated_code_periods,
+                          corr_buf, bfft_plan)
+
+Fill `tile` (size `(num_coh*num_blocks, block_size)`) with column block
+`col_block_idx` (0-based) of the coherent integration matrix — i.e. columns
+`col_block_idx*block_size+1 .. (col_block_idx+1)*block_size` of the full
+surface. Row `global_block_idx + 1` holds the first `block_size` lags of the
+correlation of signal double-block `global_block_idx` with PRN sub-block
+`(block_idx + col_block_idx) mod num_blocks` (see
+[`_build_coherent_integration_matrix!`](@ref) for the full structure and delay
+recovery).
+
+This is the unit of work of the tiled pipeline: every downstream consumer
+(column FFT, sign search, rotation search) is column-oriented, so the full
+`(num_doppler_bins, samples_per_code)` matrix never needs to exist — each tile
+is built, reduced, and overwritten by the next one. The tile is `num_blocks`×
+smaller than the full matrix and typically L2-cache resident, which also spares
+the column FFTs a round-trip through DRAM.
+"""
+function _build_coherent_tile!(
+    tile::AbstractMatrix{ComplexF32},         # (num_coh*num_blocks, block_size)
+    signal_block_ffts::Matrix{ComplexF32},    # (double_block_size, num_coh*num_blocks) — precomputed
+    prn_conj_fft_matrix::Matrix{ComplexF32},  # (double_block_size, num_blocks), already conjugated
+    col_block_idx::Int,                       # 0-based column block index
+    num_blocks::Int,
+    block_size::Int,
+    num_coherently_integrated_code_periods::Int,
+    corr_buf::Vector{ComplexF32},
+    bfft_plan,
+)
     double_block_size = 2 * block_size
     inverse_double_block_size = 1f0 / double_block_size
 
-    # No fill!: every cell of `coherent_integration_matrix` is written exactly
-    # once. Outer loops cover all `num_coh × num_blocks` rows, the column loop
-    # tiles all `num_blocks × block_size = samples_per_code` columns.
-
+    # No fill!: every cell of `tile` is written exactly once — the row loops
+    # cover all `num_coh × num_blocks` rows and each IFFT fills a whole row.
     for code_period_idx in 0:num_coherently_integrated_code_periods-1
         for block_idx in 0:num_blocks-1
             global_block_idx = code_period_idx * num_blocks + block_idx   # 0-based
             sig_fft_col = view(signal_block_ffts, :, global_block_idx + 1)
+            prn_block = mod(block_idx + col_block_idx, num_blocks)
 
-            # For each column block: multiply precomputed signal FFT with
-            # conj(PRN sub-block (block_idx+col_block_idx) mod num_blocks).
-            for col_block_idx in 0:num_blocks-1
-                prn_block = mod(block_idx + col_block_idx, num_blocks)
+            # Multiply precomputed signal FFT with the conjugated PRN FFT.
+            corr_buf .= sig_fft_col .* view(prn_conj_fft_matrix, :, prn_block + 1)
 
-                # Multiply precomputed signal FFT with the conjugated PRN FFT.
-                corr_buf .= sig_fft_col .* view(prn_conj_fft_matrix, :, prn_block + 1)
-
-                # Inverse FFT (unnormalised), normalise, keep first block_size.
-                mul!(corr_buf, bfft_plan, corr_buf)
-                col_start = col_block_idx * block_size + 1
-                row = global_block_idx + 1
-                coherent_integration_matrix[row, col_start:col_start + block_size - 1] .=
-                    view(corr_buf, 1:block_size) .* inverse_double_block_size
-            end
+            # Inverse FFT (unnormalised), normalise, keep first block_size lags.
+            mul!(corr_buf, bfft_plan, corr_buf)
+            row = global_block_idx + 1
+            tile[row, 1:block_size] .= view(corr_buf, 1:block_size) .* inverse_double_block_size
         end
     end
+    return tile
 end
