@@ -1,5 +1,12 @@
 # Changelog
 
+# [2.6.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.5.3...v2.6.0) (2026-07-02)
+
+
+### Features
+
+* support GNSSSignals 3 ([8710840](https://github.com/JuliaGNSS/Acquisition.jl/commit/87108405db435c0c4ee1f1219f53fcf27399162e))
+
 ## [2.5.3](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.5.2...v2.5.3) (2026-07-02)
 
 
