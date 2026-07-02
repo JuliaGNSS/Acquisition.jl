@@ -654,18 +654,20 @@ end
                 doppler = 1300Hz, code_phase = 210.7,
                 sampling_freq = plan.sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 11)
             plan.sig_buf .= ComplexF32.(signal)
-            Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, plan.sig_buf,
+            # One segment's slice of the plan's all-segment signal-FFT cache.
+            seg_ffts = Acquisition._signal_block_ffts_for_step(plan, 1)
+            Acquisition._precompute_signal_block_ffts!(seg_ffts, plan.sig_buf,
                 plan.samples_per_code, plan.num_blocks, plan.block_size,
                 plan.num_coherently_integrated_code_periods, scratch.double_block_buf,
                 plan.double_block_fft_plan)
 
             # Production: tiled driver.
             nim_tiled = zeros(Float32, ndop, plan.samples_per_code_eff)
-            Acquisition._accumulate_prn_step_tiled!(nim_tiled, plan, scratch, prn, step_idx)
+            Acquisition._accumulate_prn_step_tiled!(nim_tiled, seg_ffts, plan, scratch, prn, step_idx)
 
             # Reference: full CIM + materialised dispatcher.
             cim = zeros(ComplexF32, ndop, plan.samples_per_code)
-            Acquisition._build_coherent_integration_matrix!(cim, plan.signal_block_ffts,
+            Acquisition._build_coherent_integration_matrix!(cim, seg_ffts,
                 plan.prn_conj_ffts[prn], plan.samples_per_code, plan.num_blocks,
                 plan.block_size, plan.num_coherently_integrated_code_periods,
                 scratch.corr_buf, plan.double_block_bfft_plan)

@@ -741,16 +741,18 @@ end
 const _EMPTY_TILED_PATTERNS = Array{Float32,3}(undef, 0, 0, 0)
 
 """
-    _accumulate_prn_step_tiled!(nim, plan, scratch, prn, accumulation_step_index)
+    _accumulate_prn_step_tiled!(nim, signal_block_ffts, plan, scratch, prn, accumulation_step_index)
 
 One PRN × one non-coherent step of the multistep (N_nc > 1) pipeline, tiled:
-for each FM-DBZP column block, build the coherent tile and accumulate its power
-into the per-PRN matrix `nim` — via the fused pilot kernels on the simple path
-or the per-column sign-search/rotation kernels otherwise. Code drift is folded
-into the destination columns; no intermediate surface is materialised.
+for each FM-DBZP column block, build the coherent tile from the step's
+`signal_block_ffts` slice and accumulate its power into `nim` — via the fused
+pilot kernels on the simple path or the per-column sign-search/rotation kernels
+otherwise. Code drift is folded into the destination columns; no intermediate
+surface is materialised.
 """
 function _accumulate_prn_step_tiled!(
     nim::Matrix{Float32},
+    signal_block_ffts::AbstractMatrix{ComplexF32},  # this step's (double_block_size, num_coh*num_blocks) slice
     plan::AcquisitionPlan,
     scratch,
     prn::Int,
@@ -766,7 +768,7 @@ function _accumulate_prn_step_tiled!(
     tile = scratch.coherent_tile
 
     for col_block_idx in 0:plan.num_blocks-1
-        _build_coherent_tile!(tile, plan.signal_block_ffts, prn_conj_fft,
+        _build_coherent_tile!(tile, signal_block_ffts, prn_conj_fft,
             col_block_idx, plan.num_blocks, plan.block_size,
             plan.num_coherently_integrated_code_periods,
             scratch.corr_buf, plan.double_block_bfft_plan)

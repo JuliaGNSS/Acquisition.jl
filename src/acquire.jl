@@ -12,46 +12,12 @@ function _parabolic_interp(left::Real, peak::Real, right::Real)
     (right - left) / denom
 end
 
-function _acquire_prn!(plan::AcquisitionPlan, scratch, prn::Int, accumulation_step_index::Int)
-    prn_idx = findfirst(==(prn), plan.avail_prns)
-    # plan.signal_block_ffts is filled by _precompute_signal_block_ffts! in acquire!
-    # before this loop fires. The build+reduce runs tiled — one FM-DBZP column
-    # block at a time — so the full coherent integration matrix never exists.
-    _accumulate_prn_step_tiled!(
-        plan.noncoherent_integration_matrices[prn_idx],
-        plan,
-        scratch,
-        prn,
-        accumulation_step_index,
-    )
-end
-
-function _acquire_step_threaded!(plan::AcquisitionPlan, prns, accumulation_step_index::Int)
-    @batch per=core for i in eachindex(prns)
-        prn = @inbounds prns[i]
-        scratch, slot = _claim_scratch!(plan)
-        try
-            _acquire_prn!(plan, scratch, prn, accumulation_step_index)
-        finally
-            _release_scratch!(plan, slot)
-        end
-    end
-end
-
-function _acquire_step!(plan::AcquisitionPlan, prns, accumulation_step_index::Int)
-    if length(prns) > 1 && Threads.nthreads() > 1
-        _acquire_step_threaded!(plan, prns, accumulation_step_index)
-    else
-        # Single-threaded: one scratch serves the whole PRN loop.
-        scratch, slot = _claim_scratch!(plan)
-        try
-            for prn in prns
-                _acquire_prn!(plan, scratch, prn, accumulation_step_index)
-            end
-        finally
-            _release_scratch!(plan, slot)
-        end
-    end
+# The (double_block_size, num_coh*num_blocks) slice of the plan's all-segment
+# signal-block FFT cache belonging to 1-based accumulation step `step_idx`.
+@inline function _signal_block_ffts_for_step(plan::AcquisitionPlan, step_idx::Int)
+    cols_per_segment = plan.num_coherently_integrated_code_periods * plan.num_blocks
+    view(plan.signal_block_ffts, :,
+        (step_idx - 1) * cols_per_segment + 1 : step_idx * cols_per_segment)
 end
 
 """
@@ -137,30 +103,26 @@ function _downconvert!(sig_buf, signal, seg_start, segment_length, interm_freq_h
     end
 end
 
-# Multistep path (current pre-slice-4 behaviour, factored out unchanged).
+# Multistep path (N_nc > 1), PRN-outer: the per-segment signal-block FFTs are
+# precomputed once for ALL segments (same total FFT work as the former
+# per-segment cache — no recompute anywhere), then each parallel chunk carries
+# one PRN through every accumulation step against its claimed scratch slot's
+# accumulator and extracts the result before moving to the next PRN. This
+# bounds the number of live power surfaces by `min(nthreads, num_cores,
+# num_prns)` instead of one per PRN, and removes the per-step thread barriers
+# the former segment-outer loop needed.
 function _acquire_multistep!(plan, signal, prns, segment_length, interm_freq_hz,
                               sampling_freq_hz, subsample_interpolation, store_power_bins)
-    # Reset per-PRN noncoherent accumulators for the requested PRNs.
-    for prn in prns
-        prn_idx = findfirst(==(prn), plan.avail_prns)
-        fill!(plan.noncoherent_integration_matrices[prn_idx], 0f0)
-    end
-
-    # The downconverted segment lives in the plan's single `sig_buf` (it is
-    # filled before the per-PRN parallel loop, so one instance suffices); the
-    # per-FFT temp comes from thread 1's scratch slot — `_default_scratch(plan)`
-    # names that convention.
+    # Fill the all-segment signal-block FFT cache. The downconverted segment
+    # lives in the plan's single `sig_buf`; the per-FFT temp comes from thread
+    # 1's scratch slot — `_default_scratch(plan)` names that convention.
     main_scratch = _default_scratch(plan)
     sig_buf = plan.sig_buf
-
     for step_idx in 1:plan.num_noncoherent_accumulations
         seg_start = (step_idx - 1) * segment_length + 1
         _downconvert!(sig_buf, signal, seg_start, segment_length, interm_freq_hz, sampling_freq_hz)
-        # Precompute signal-block FFTs once per dwell. They do not depend on
-        # PRN, so the per-PRN inner loop reads from `plan.signal_block_ffts`
-        # instead of redoing this O(num_coh*num_blocks) FFT batch per PRN.
         _precompute_signal_block_ffts!(
-            plan.signal_block_ffts,
+            _signal_block_ffts_for_step(plan, step_idx),
             sig_buf,
             plan.samples_per_code,
             plan.num_blocks,
@@ -169,7 +131,6 @@ function _acquire_multistep!(plan, signal, prns, segment_length, interm_freq_hz,
             main_scratch.double_block_buf,
             plan.double_block_fft_plan,
         )
-        _acquire_step!(plan, prns, step_idx - 1)
     end
 
     results = resize!(plan.acq_results_buf, length(prns))
@@ -181,10 +142,16 @@ function _acquire_multistep!(plan, signal, prns, segment_length, interm_freq_hz,
     @batch per=core for result_idx in eachindex(prns)
         prn = @inbounds prns[result_idx]
         prn_idx = findfirst(==(prn), plan.avail_prns)
-        power_bins = plan.noncoherent_integration_matrices[prn_idx]
         scratch, slot = _claim_scratch!(plan)
         try
-            results[result_idx] = _extract_result!(plan, scratch, prn, prn_idx, power_bins,
+            accumulator = scratch.noncoherent_accumulator
+            fill!(accumulator, 0f0)
+            for step_idx in 1:plan.num_noncoherent_accumulations
+                _accumulate_prn_step_tiled!(accumulator,
+                    _signal_block_ffts_for_step(plan, step_idx),
+                    plan, scratch, prn, step_idx - 1)
+            end
+            results[result_idx] = _extract_result!(plan, scratch, prn, prn_idx, accumulator,
                 signal, interm_freq_hz,
                 sampling_freq_hz, code_freq_hz, code_length, code_period,
                 num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)

@@ -12,13 +12,13 @@ const BATCH_FFT_THRESHOLD = 320
 #
 # The FM-DBZP pipeline is tiled: the coherent correlation surface is produced one
 # `(num_doppler_bins, block_size)` column-block tile at a time
-# (`_build_coherent_tile!`) and reduced immediately, so NO scratch buffer scales
-# with `samples_per_code` on the hot path. The full
+# (`_build_coherent_tile!`) and reduced immediately. The full
 # `(num_doppler_bins, samples_per_code_eff)` power surface is materialised only
-# where it is genuinely needed: the per-PRN `noncoherent_integration_matrices`
+# where it is genuinely needed: one `noncoherent_accumulator` per scratch slot
 # at `num_noncoherent_accumulations > 1` (accumulation across signal segments
-# requires the whole surface) and the per-PRN `result_buffers` when the caller
-# opts in via `store_power_bins = true`.
+# requires the surface; the PRN-outer loop bounds the count by the concurrency,
+# not the PRN count) and the per-PRN `result_buffers` when the caller opts in
+# via `store_power_bins = true`.
 struct AcquisitionScratch
     double_block_buf::Vector{ComplexF32}            # length double_block_size
     corr_buf::Vector{ComplexF32}                    # length double_block_size
@@ -32,10 +32,18 @@ struct AcquisitionScratch
     # (num_doppler_bins, num_secondary_rotations). Holds ONE code-phase column's
     # power per rotation hypothesis, max-reduced across bit-edge alignments and
     # data-bit polarities, before it is consumed (streamed at N_nc == 1,
-    # scattered into the per-PRN accumulator at N_nc > 1). Replaces the
-    # full-surface `noncoherent_integration_buf`/`sign_search_max_buf` pair.
+    # scattered into the accumulator at N_nc > 1). Replaces the full-surface
+    # `noncoherent_integration_buf`/`sign_search_max_buf` pair.
     # 0×0 when the simple/pilot path is taken.
     stage_buf::Matrix{Float32}
+    # Multistep (N_nc > 1) power accumulator: (num_doppler_bins,
+    # samples_per_code_eff). The multistep PRN loop is PRN-outer — one claimed
+    # scratch slot carries one PRN through ALL accumulation steps and extracts
+    # its result before moving on — so `min(nthreads, num_cores, num_prns)`
+    # accumulators replace the former one-per-PRN matrices (a 32-PRN search on
+    # 8 threads holds 8 surfaces instead of 32). 0×0 at N_nc == 1, where the
+    # streamed reduction needs no surface at all.
+    noncoherent_accumulator::Matrix{Float32}
     # Streaming-reduction state at num_noncoherent_accumulations == 1: running
     # per-row (sorted-Doppler order) power sums feeding the OppositeRow noise
     # estimate. length num_doppler_bins; 0 on the multistep path, which reduces
@@ -97,13 +105,20 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     col_batch_fft_plan::P4      # in-place forward FFT along dim 1 of a (num_doppler_bins, block_size) tile; `nothing` when num_doppler_bins > BATCH_FFT_THRESHOLD
     # doppler_freqs: StepRangeLen of num_doppler_bins Hz values, sorted from -doppler_coverage_hz/2 to doppler_coverage_hz/2-doppler_bin_spacing_hz
     doppler_freqs::DS
-    signal_block_ffts::Matrix{ComplexF32} # (double_block_size, num_coh*num_blocks) — precomputed once per acquire!, shared across PRNs
+    # Signal-block FFT cache: (double_block_size, num_coh*num_blocks*N_nc).
+    # Holds FFT(signal double-block k) for EVERY accumulation segment,
+    # precomputed serially once per acquire! call (the same total FFT work the
+    # per-segment cache used to do) and then read-only shared across the PRN
+    # loop. Caching all segments — 16 bytes per signal sample, i.e. 2× the
+    # ComplexF32 signal itself — is what lets the multistep PRN loop run
+    # PRN-outer with `min(nthreads, num_cores, num_prns)` accumulators instead
+    # of one surface per PRN, with zero recompute.
+    signal_block_ffts::Matrix{ComplexF32}
     # Downconverted-segment staging (length segment_length). Filled once per
     # accumulation step BEFORE the per-PRN parallel loop, so a single instance
     # suffices — keeping it out of the per-thread scratch pool saves
     # (nthreads-1) × segment_length × 8 bytes.
     sig_buf::Vector{ComplexF32}
-    noncoherent_integration_matrices::Vector{Matrix{Float32}}  # per PRN, (num_doppler_bins, samples_per_code); index i corresponds to avail_prns[i]
     fftshift_perm::Vector{Int}               # length num_doppler_bins — pre-computed fftshift row permutation
     # Per PRN: holds a copy of power_bins when the caller of `acquire!` passes
     # store_power_bins=true. Initialised to `nothing` and allocated on the first
@@ -469,14 +484,16 @@ function plan_acquire(
 
     segment_length = num_coherently_integrated_code_periods * samples_per_code
     # Pre-allocated signal-block FFT cache: holds FFT(signal double-block k) for
-    # k ∈ 0..num_coh*num_blocks-1. Filled once per acquire! call before the PRN
-    # loop and reused across all PRNs.
-    signal_block_ffts = zeros(ComplexF32, double_block_size, num_coherently_integrated_code_periods * num_blocks)
+    # every accumulation segment (16 bytes per signal sample). Filled once per
+    # acquire! call before the PRN loop and read-only shared across all PRNs —
+    # see the field docstring for why all N_nc segments are cached.
+    signal_block_ffts = zeros(ComplexF32, double_block_size,
+        num_coherently_integrated_code_periods * num_blocks * num_noncoherent_accumulations)
     # At N_nc == 1 each cell of the power surface is produced exactly once, so
     # the result statistics (peak, noise row/column sums) are reduced on the fly
     # per tile and NO noncoherent power matrix exists at all — see
-    # `_acquire_prn_streamed!`. The multistep path (N_nc > 1) keeps the
-    # per-PRN vector because it accumulates across signal segments.
+    # `_acquire_prn_streamed!`. The multistep path (N_nc > 1) accumulates across
+    # signal segments into one per-claimed-scratch surface (PRN-outer loop).
     # Derive the secondary-code rotation search size. No-op for signals without a
     # secondary code (L = 1) or when the user opts out.
     secondary_code_length = get_secondary_code_length(system)
@@ -496,9 +513,6 @@ function plan_acquire(
         samples_per_code * num_secondary_rotations : samples_per_code
 
     sequential_prn_mode = num_noncoherent_accumulations == 1
-    noncoherent_integration_matrices = sequential_prn_mode ?
-        Matrix{Float32}[] :
-        [zeros(Float32, num_doppler_bins, samples_per_code_eff) for _ in prns]
     fftshift_perm = [mod(r - 1 + num_doppler_bins ÷ 2, num_doppler_bins) + 1 for r in 1:num_doppler_bins]
     result_buffers = Union{Nothing,Matrix{Float32}}[nothing for _ in prns]
 
@@ -525,8 +539,14 @@ function plan_acquire(
     end
 
     # Streaming-reduction state exists only on the sequential (N_nc == 1) path;
-    # the multistep path reduces from the materialised per-PRN accumulators.
+    # the multistep path reduces from the per-scratch accumulator surface.
     row_sums_len = sequential_prn_mode ? num_doppler_bins : 0
+    # Multistep accumulator: one power surface per scratch slot — the PRN-outer
+    # multistep loop carries one PRN through all accumulation steps per slot, so
+    # `min(nthreads, num_cores, num_prns)` surfaces bound the footprint instead
+    # of one per PRN. 0×0 at N_nc == 1 (streamed, no surface).
+    accumulator_rows = sequential_prn_mode ? 0 : num_doppler_bins
+    accumulator_cols = sequential_prn_mode ? 0 : samples_per_code_eff
     # Column sums are consumed by multistep extraction (`est_signal_noise_power`
     # always fills them) and by the GlobalMean estimator on the streamed path.
     # At N_nc == 1 with the default OppositeRow estimator nothing reads them,
@@ -540,16 +560,20 @@ function plan_acquire(
     code_drift_shifts_len = sequential_prn_mode ? 0 : num_doppler_bins
 
     # Per-thread scratch pool. Sized to the most chunks `@batch per=core` ever
-    # runs at once, `min(nthreads, num_cores)`, rather than `maxthreadid()`: a
+    # runs at once — `min(nthreads, num_cores, num_prns)` (the PRN loop never
+    # has more concurrent chunks than PRNs) — rather than `maxthreadid()`: a
     # chunk claims a free slot per PRN (see `_claim_scratch!`) instead of indexing
     # by `threadid()`, so the footprint is hard-capped at this many scratches no
     # matter how `acquire!` is scheduled (Issue #60). The pipeline is tiled, so
-    # each scratch's largest member is the (num_doppler_bins × block_size) tile —
-    # nothing in the pool scales with `samples_per_code` (the L1C-P/16 MHz
-    # scratch that used to weigh ~296 MiB is now ~1.5 MiB). All slots are built
-    # up front (the size is known here), so the plan's construction footprint is
-    # its steady-state footprint — no first-`acquire!` spike.
-    nthreads = min(Threads.nthreads(), max(1, Int(num_cores())))
+    # at N_nc == 1 each scratch's largest member is the (num_doppler_bins ×
+    # block_size) tile — nothing in the pool scales with `samples_per_code`
+    # (the L1C-P/16 MHz scratch that used to weigh ~296 MiB is now ~1.5 MiB).
+    # At N_nc > 1 each slot additionally carries ONE accumulation surface (see
+    # `noncoherent_accumulator`), bounding the multistep footprint by the
+    # concurrency instead of the PRN count. All slots are built up front (the
+    # size is known here), so the plan's construction footprint is its
+    # steady-state footprint — no first-`acquire!` spike.
+    nthreads = min(Threads.nthreads(), max(1, Int(num_cores())), max(1, length(prns)))
     thread_scratch = [
         AcquisitionScratch(
             zeros(ComplexF32, double_block_size),
@@ -557,6 +581,7 @@ function plan_acquire(
             zeros(ComplexF32, num_doppler_bins, block_size),
             zeros(ComplexF32, num_doppler_bins),
             zeros(Float32, stage_rows, stage_cols),
+            zeros(Float32, accumulator_rows, accumulator_cols),
             zeros(Float32, row_sums_len),
             zeros(Float32, sequential_prn_mode ? num_doppler_bins : 0),
             zeros(ComplexF32, sub_block_rows, sub_block_cols),
@@ -642,7 +667,7 @@ function plan_acquire(
         doppler_freqs,
         signal_block_ffts,
         sig_buf,
-        noncoherent_integration_matrices, fftshift_perm,
+        fftshift_perm,
         result_buffers,
         avail_prns_vec,
         thread_scratch,

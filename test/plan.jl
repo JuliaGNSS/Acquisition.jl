@@ -300,12 +300,16 @@ end
         for scratch in plan.thread_scratch
             @test size(scratch.coherent_tile) == (ndop, plan.block_size)
             # Nothing else may exceed the tile's column count except the
-            # 1-D col_sums (multistep extraction needs per-column sums).
+            # 1-D col_sums and — at N_nc>1 only — the per-slot accumulator
+            # (bounded by min(threads, cores, num_prns) slots, never per PRN).
             @test size(scratch.stage_buf, 2) <= plan.num_secondary_rotations
             @test size(scratch.sub_block_ffts, 2) <=
                 max(plan.num_data_bits, plan.num_coherently_integrated_code_periods)
             @test length(scratch.row_sums_buf) <= ndop
             @test length(scratch.col_power_buf) <= ndop
+            if plan.num_noncoherent_accumulations == 1
+                @test size(scratch.noncoherent_accumulator) == (0, 0)
+            end
         end
     end
 
@@ -391,12 +395,11 @@ end
         (length(rot_plan.doppler_freqs), 10)
 end
 
-@testset "sequential N_nc=1 layout: no power surface exists at all" begin
-    # When num_noncoherent_accumulations == 1 every power cell is produced
-    # exactly once, so the result statistics are streamed per tile and neither
-    # the plan nor the scratch holds any noncoherent power matrix: the per-PRN
-    # vector is empty AND the per-thread accumulator of the pre-tiled layout is
-    # gone entirely (the field no longer exists).
+@testset "N_nc=1 streams with no surface; N_nc>1 holds one surface per slot" begin
+    # At num_noncoherent_accumulations == 1 every power cell is produced
+    # exactly once, so the result statistics are streamed per tile and NO
+    # noncoherent power matrix exists anywhere — neither per PRN (that plan
+    # field is gone) nor per thread.
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prns = collect(1:4)
@@ -404,23 +407,30 @@ end
     seq_plan = plan_acquire(system, sampling_freq, prns;
         num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 1)
     seq_scratch = Acquisition._default_scratch(seq_plan)
-    @test length(seq_plan.noncoherent_integration_matrices) == 0
-    @test !hasfield(Acquisition.AcquisitionScratch, :noncoherent_integration_accumulator)
+    @test !hasfield(typeof(seq_plan), :noncoherent_integration_matrices)
     @test !hasfield(Acquisition.AcquisitionScratch, :noncoherent_integration_buf)
     @test !hasfield(Acquisition.AcquisitionScratch, :sign_search_max_buf)
+    @test size(seq_scratch.noncoherent_accumulator) == (0, 0)
     # Streaming stats live in a length-num_doppler_bins row-sum vector.
     @test length(seq_scratch.row_sums_buf) == length(seq_plan.doppler_freqs)
 
-    # N_nc>1 path keeps the per-PRN matrices (accumulation across segments
-    # genuinely needs the surface) and no streaming row sums.
+    # N_nc>1: accumulation across segments genuinely needs a surface, but the
+    # PRN-outer loop bounds it at ONE per scratch slot — min(threads, cores,
+    # num_prns) surfaces total, never one per PRN — and no streaming row sums.
     multi_plan = plan_acquire(system, sampling_freq, prns;
         num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 2)
     multi_scratch = Acquisition._default_scratch(multi_plan)
-    @test length(multi_plan.noncoherent_integration_matrices) == length(prns)
-    for nim in multi_plan.noncoherent_integration_matrices
-        @test size(nim) == (length(multi_plan.doppler_freqs), multi_plan.samples_per_code)
+    @test length(multi_plan.thread_scratch) <= length(prns)
+    for t_scratch in multi_plan.thread_scratch
+        @test size(t_scratch.noncoherent_accumulator) ==
+            (length(multi_plan.doppler_freqs), multi_plan.samples_per_code_eff)
     end
     @test isempty(multi_scratch.row_sums_buf)
+    # The all-segment signal-FFT cache is the multistep trade: 16 bytes per
+    # signal sample (2x the ComplexF32 signal), read-only shared across PRNs.
+    @test size(multi_plan.signal_block_ffts, 2) ==
+        multi_plan.num_noncoherent_accumulations *
+        multi_plan.num_coherently_integrated_code_periods * multi_plan.num_blocks
 end
 
 @testset "scratch pool: hard-capped, all slots built up front" begin
@@ -435,7 +445,7 @@ end
 
     plan = plan_acquire(system, sampling_freq, prns;
         num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 1)
-    cap = min(Threads.nthreads(), max(1, Int(Acquisition.num_cores())))
+    cap = min(Threads.nthreads(), max(1, Int(Acquisition.num_cores())), length(prns))
 
     # Pool is sized to the cap; all slots are free initially.
     @test length(plan.thread_scratch) == cap
