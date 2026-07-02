@@ -532,9 +532,14 @@ end
 # Per-column FFT followed by `|x|²` accumulation with per-row code-drift column
 # shift AND fftshift row permutation, folded into one pass (Issue #62).
 #
-# `code_drift_shifts[r]` is the row-r column shift, pre-normalised to
-# `[0, samples_per_code)` by `_fill_code_drift_shifts!`. That lets the inner
-# loop replace `mod(c-1+shift_r, spc)+1` with a single conditional subtract.
+# `code_drift_shifts` is indexed by SORTED-Doppler row (it is filled from
+# `plan.doppler_freqs[row]`), pre-normalised to `[0, samples_per_code)` by
+# `_fill_code_drift_shifts!` so the inner loop replaces `mod(c-1+shift, spc)+1`
+# with a single conditional subtract. Raw FFT bin `r` lands in sorted row
+# `fftshift_perm[r]`, so its drift is that DESTINATION row's shift
+# `code_drift_shifts[fftshift_perm[r]]` — not `[r]` (Issue #74: `[r]` applied
+# the shift of the row half the searched band away). This matches the
+# sign-search path (`_accumulate_sign_tile!`), which drifts in sorted-row order.
 # The caller must dispatch to the non-drift kernel when every row's drift
 # rounds to 0 (step 0, or any step whose rounded drift is zero — at the
 # L1CA / 5 MHz / N_coh=1 grid that's true for every step up to N_nc≈8, so the
@@ -555,9 +560,10 @@ function _accumulate_fftshifted_power_drift_pilot!(
         mul!(col_buf, col_fft_plan, col_buf)
         c_minus_1 = dest_col_offset + src_col - 1
         for r in 1:num_doppler_bins
-            sum = c_minus_1 + code_drift_shifts[r]
+            dst_row = fftshift_perm[r]
+            sum = c_minus_1 + code_drift_shifts[dst_row]
             dst_col = (sum >= samples_per_code ? sum - samples_per_code : sum) + 1
-            accumulator[fftshift_perm[r], dst_col] += abs2(col_buf[r])
+            accumulator[dst_row, dst_col] += abs2(col_buf[r])
         end
     end
 end
@@ -577,9 +583,10 @@ function _accumulate_fftshifted_power_drift_pilot_batched!(
     @inbounds for src_col in 1:size(cim, 2)
         c_minus_1 = dest_col_offset + src_col - 1
         for r in 1:num_doppler_bins
-            sum = c_minus_1 + code_drift_shifts[r]
+            dst_row = fftshift_perm[r]
+            sum = c_minus_1 + code_drift_shifts[dst_row]
             dst_col = (sum >= samples_per_code ? sum - samples_per_code : sum) + 1
-            accumulator[fftshift_perm[r], dst_col] += abs2(cim[r, src_col])
+            accumulator[dst_row, dst_col] += abs2(cim[r, src_col])
         end
     end
 end
