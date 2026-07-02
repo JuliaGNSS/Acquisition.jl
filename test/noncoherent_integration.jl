@@ -618,3 +618,68 @@ end
 
     @test peak_with_transition ≈ peak_no_transition rtol = 0.1
 end
+
+@testset "Tiled production pipeline matches materialised reference dispatcher (N_nc>1)" begin
+    # The production multistep driver `_accumulate_prn_step_tiled!` builds one
+    # column-block tile at a time and folds code drift into the destination
+    # scatter; `_accumulate_noncoherent_integration_step!` is the retained
+    # reference that materialises the full coherent matrix and runs the
+    # historical kernel → `_apply_code_drift!` → max/accumulate pipeline. Both
+    # must produce the same per-PRN accumulation matrix on every path.
+    prn = 1
+    cases = [
+        # (label, plan, accumulation_step_index)
+        # Simple path with non-zero drift (plan_b geometry from the
+        # _fill_code_drift_shifts! testset: drift rounds non-zero at step 7).
+        ("pilot+drift", plan_acquire(GPSL1CA(), 2.048e6Hz, [prn];
+            min_doppler_coverage = 12_000Hz,
+            num_coherently_integrated_code_periods = 20,
+            num_noncoherent_accumulations = 8, fft_flag = FFTW.ESTIMATE), 7),
+        # Secondary-code rotation search with drift (L5I NH10).
+        ("rotation+drift", plan_acquire(GPSL5I(), 10.24e6Hz, [prn];
+            num_coherently_integrated_code_periods = 10,
+            num_noncoherent_accumulations = 4, fft_flag = FFTW.ESTIMATE), 3),
+        # Data-bit + bit-edge search (max across alignments), no drift at step 0.
+        ("bitedge", plan_acquire(GPSL1CA(), 2.048e6Hz, [prn];
+            min_doppler_coverage = 10_000Hz,
+            num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4,
+            num_noncoherent_accumulations = 2, fft_flag = FFTW.ESTIMATE), 0),
+    ]
+    for (label, plan, step_idx) in cases
+        @testset "$label" begin
+            scratch = Acquisition._default_scratch(plan)
+            ndop = length(plan.doppler_freqs)
+            (; signal) = generate_test_signal(plan.system, prn;
+                num_samples = plan.num_coherently_integrated_code_periods * plan.samples_per_code,
+                doppler = 1300Hz, code_phase = 210.7,
+                sampling_freq = plan.sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 11)
+            plan.sig_buf .= ComplexF32.(signal)
+            Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, plan.sig_buf,
+                plan.samples_per_code, plan.num_blocks, plan.block_size,
+                plan.num_coherently_integrated_code_periods, scratch.double_block_buf,
+                plan.double_block_fft_plan)
+
+            # Production: tiled driver.
+            nim_tiled = zeros(Float32, ndop, plan.samples_per_code_eff)
+            Acquisition._accumulate_prn_step_tiled!(nim_tiled, plan, scratch, prn, step_idx)
+
+            # Reference: full CIM + materialised dispatcher.
+            cim = zeros(ComplexF32, ndop, plan.samples_per_code)
+            Acquisition._build_coherent_integration_matrix!(cim, plan.signal_block_ffts,
+                plan.prn_conj_ffts[prn], plan.samples_per_code, plan.num_blocks,
+                plan.block_size, plan.num_coherently_integrated_code_periods,
+                scratch.corr_buf, plan.double_block_bfft_plan)
+            nim_ref = zeros(Float32, ndop, plan.samples_per_code_eff)
+            Acquisition._accumulate_noncoherent_integration_step!(nim_ref, cim, plan,
+                scratch, prn, step_idx)
+
+            @test nim_tiled ≈ nim_ref
+            # Sanity: drift really fires where intended so the fold is exercised.
+            if step_idx > 0
+                shifts = zeros(Int, ndop)
+                @test Acquisition._fill_code_drift_shifts!(shifts, plan, step_idx) ==
+                    (label != "bitedge")
+            end
+        end
+    end
+end
