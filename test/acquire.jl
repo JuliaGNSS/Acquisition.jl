@@ -355,3 +355,101 @@ end
     # Sanity: signal-plus-noise is finite and non-zero
     @test all(isfinite, out.signal)
 end
+
+@testset "acquire! — GlobalMean noise estimator on the streamed N_nc=1 path" begin
+    # The streamed path computes GlobalMean noise from column sums collected on
+    # the fly (col_sums_buf is only allocated for this estimator at N_nc=1).
+    # Detection and peak location must agree with the default estimator.
+    system = GPSL1CA()
+    sampling_freq = 2.048e6Hz
+    prn = 4
+    (; signal) = generate_test_signal(system, prn;
+        num_samples = 2048, doppler = 750Hz, code_phase = 512.0,
+        sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 21)
+
+    plan_gm = plan_acquire(system, sampling_freq, [prn];
+        noise_estimator = GlobalMeanNoiseEstimator(), fft_flag = FFTW.ESTIMATE)
+    plan_or = plan_acquire(system, sampling_freq, [prn]; fft_flag = FFTW.ESTIMATE)
+    res_gm = acquire!(plan_gm, ComplexF32.(signal), prn; interm_freq = 0.0Hz)
+    res_or = acquire!(plan_or, ComplexF32.(signal), prn; interm_freq = 0.0Hz)
+
+    @test is_detected(res_gm)
+    @test res_gm.code_phase == res_or.code_phase           # same peak cell
+    @test res_gm.carrier_doppler == res_or.carrier_doppler
+    @test res_gm.noise_power != res_or.noise_power          # different estimator
+
+    # And the GlobalMean noise must equal the reference computed from the
+    # stored surface via est_signal_noise_power.
+    res_stored = acquire!(plan_gm, ComplexF32.(signal), prn;
+        interm_freq = 0.0Hz, store_power_bins = true)
+    col_sums = zeros(Float32, plan_gm.samples_per_code_eff)
+    sp, np, _, _ = Acquisition.est_signal_noise_power(res_stored.power_bins,
+        ustrip(Hz, sampling_freq), ustrip(Hz, get_code_frequency(system)),
+        col_sums, GlobalMeanNoiseEstimator())
+    @test res_stored.noise_power == Float32(np)
+end
+
+@testset "subsample_interpolation without stored bins — on-demand column recompute" begin
+    # With store_power_bins=false the streamed path recomputes the up-to-three
+    # peak-neighbour columns on demand; the interpolated result must be
+    # identical to the store_power_bins=true run (which reads the neighbours
+    # back from the stored surface). Exercised on the simple path AND the
+    # secondary-code rotation path (stage-based recompute).
+    @testset "simple path" begin
+        system = GPSL1CA()
+        sampling_freq = 2.048e6Hz
+        prn = 2
+        (; signal) = generate_test_signal(system, prn;
+            num_samples = 2048, doppler = 250Hz, code_phase = 300.7,
+            sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 5)
+        plan = plan_acquire(system, sampling_freq, [prn]; fft_flag = FFTW.ESTIMATE)
+        r_nostore = acquire!(plan, ComplexF32.(signal), prn;
+            interm_freq = 0.0Hz, subsample_interpolation = true)
+        r_store = acquire!(plan, ComplexF32.(signal), prn;
+            interm_freq = 0.0Hz, subsample_interpolation = true, store_power_bins = true)
+        @test r_nostore.code_phase ≈ r_store.code_phase
+        @test r_nostore.carrier_doppler ≈ r_store.carrier_doppler
+    end
+    @testset "rotation path (L5I NH10)" begin
+        system = GPSL5I()
+        sampling_freq = 10.24e6Hz
+        prn = 1
+        (; signal) = generate_test_signal(system, prn;
+            num_samples = 10 * 10240, doppler = 850Hz, code_phase = 5115.3,
+            sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 6)
+        plan = plan_acquire(system, sampling_freq, [prn];
+            num_coherently_integrated_code_periods = 10, fft_flag = FFTW.ESTIMATE)
+        @test plan.num_secondary_rotations == 10   # rotation search active
+        r_nostore = acquire!(plan, ComplexF32.(signal), prn;
+            interm_freq = 0.0Hz, subsample_interpolation = true)
+        r_store = acquire!(plan, ComplexF32.(signal), prn;
+            interm_freq = 0.0Hz, subsample_interpolation = true, store_power_bins = true)
+        @test is_detected(r_nostore)
+        @test r_nostore.code_phase ≈ r_store.code_phase
+        @test r_nostore.carrier_doppler ≈ r_store.carrier_doppler
+        @test r_nostore.secondary_code_phase == r_store.secondary_code_phase
+    end
+end
+
+@testset "acquire! multistep — subsample_interpolation and store_power_bins" begin
+    # Covers the N_nc>1 extraction: interpolation neighbours read from the
+    # per-PRN accumulation matrix, and the stored copy of that matrix.
+    system = GPSL1CA()
+    sampling_freq = 2.048e6Hz
+    prn = 1
+    true_cp = 700.4
+    (; signal) = generate_test_signal(system, prn;
+        num_samples = 4 * 2048, doppler = 500Hz, code_phase = true_cp,
+        sampling_freq, interm_freq = 0.0Hz, CN0 = 42, seed = 8)
+    plan = plan_acquire(system, sampling_freq, [prn];
+        num_noncoherent_accumulations = 4, fft_flag = FFTW.ESTIMATE)
+    result = acquire!(plan, ComplexF32.(signal), prn;
+        interm_freq = 0.0Hz, subsample_interpolation = true, store_power_bins = true)
+    @test is_detected(result)
+    @test result.code_phase ≈ true_cp atol = 1.0
+    @test result.power_bins isa Matrix{Float32}
+    @test size(result.power_bins) ==
+        (length(plan.doppler_freqs), plan.samples_per_code_eff)
+    # The stored surface is a copy of the accumulation matrix.
+    @test result.power_bins == plan.noncoherent_integration_matrices[1]
+end
