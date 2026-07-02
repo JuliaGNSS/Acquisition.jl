@@ -272,11 +272,17 @@ if _is_fmdbzp
     bench_min_doppler = 2000Hz
 
     for (sys_ctor, fs, label) in signal_cases
+        # Construct the signal object once and interpolate it, so PlanAcquire times
+        # `plan_acquire` and not the signal constructor. In GNSSSignals 3 the
+        # constructor builds the embedded per-signal LUT (baking any BOC/CBOC
+        # subcarrier), which dominates a per-iteration `sys_ctor()` for E1B/L1CP;
+        # real callers build the signal once and reuse it across plans.
+        sig_obj = sys_ctor()
         SUITE["PlanAcquire"][label] =
-            @benchmarkable plan_acquire($(sys_ctor)(), $fs, $bench_prns;
+            @benchmarkable plan_acquire($sig_obj, $fs, $bench_prns;
                 min_doppler_coverage = $bench_min_doppler)
 
-        plan = plan_acquire(sys_ctor(), fs, bench_prns;
+        plan = plan_acquire(sig_obj, fs, bench_prns;
             min_doppler_coverage = bench_min_doppler)
         signal = _make_signal(plan, 1)
         SUITE["AcquireSignals"][label] =
@@ -292,14 +298,15 @@ if _is_fmdbzp
         fs = 5.0e6Hz
         label = "L1CA_5MHz_Nnc8"
         N_nc = 8
-        plan = plan_acquire(GNSSSignals.GPSL1CA(), fs, bench_prns;
+        sig_obj = GNSSSignals.GPSL1CA()
+        plan = plan_acquire(sig_obj, fs, bench_prns;
             min_doppler_coverage = bench_min_doppler,
             num_noncoherent_accumulations = N_nc)
         signal = _make_signal(plan, N_nc)
         SUITE["AcquireSignals"][label] =
             @benchmarkable acquire!($plan, $signal, $bench_prns; interm_freq = 0.0Hz)
         SUITE["PlanAcquire"][label] =
-            @benchmarkable plan_acquire(GNSSSignals.GPSL1CA(), $fs, $bench_prns;
+            @benchmarkable plan_acquire($sig_obj, $fs, $bench_prns;
                 min_doppler_coverage = $bench_min_doppler,
                 num_noncoherent_accumulations = $N_nc)
     end
@@ -315,14 +322,15 @@ if _is_fmdbzp
         fs = 12.0e6Hz
         label = "L5I_12MHz_Ncoh10"
         N_coh = 10
-        plan = plan_acquire(GNSSSignals.GPSL5I(), fs, bench_prns;
+        sig_obj = GNSSSignals.GPSL5I()
+        plan = plan_acquire(sig_obj, fs, bench_prns;
             min_doppler_coverage = bench_min_doppler,
             num_coherently_integrated_code_periods = N_coh)
         signal = _make_signal(plan, 1)
         SUITE["AcquireSignals"][label] =
             @benchmarkable acquire!($plan, $signal, $bench_prns; interm_freq = 0.0Hz)
         SUITE["PlanAcquire"][label] =
-            @benchmarkable plan_acquire(GNSSSignals.GPSL5I(), $fs, $bench_prns;
+            @benchmarkable plan_acquire($sig_obj, $fs, $bench_prns;
                 min_doppler_coverage = $bench_min_doppler,
                 num_coherently_integrated_code_periods = $N_coh)
     end
