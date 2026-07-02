@@ -3,11 +3,13 @@
 
 @testset "Fused FFT+|x|²+code-drift+fftshift kernel matches unfused pipeline" begin
     # Issue #62: extends the slice-5 fusion to the multistep simple path by
-    # folding `_apply_code_drift!` into the per-column accumulator loop. Each
-    # row r writes its (c) cell into nim[fftshift_perm[r], (c + shift_r) mod spc]
-    # where shift_r is the existing _apply_code_drift! formula (which reads
-    # plan.doppler_freqs[r] — we mirror that exact behaviour, including the
-    # raw-FFT-bin vs sorted-doppler indexing convention, for bitwise parity).
+    # folding `_apply_code_drift!` into the per-column accumulator loop. Raw FFT
+    # bin r writes its (c) cell into nim[fftshift_perm[r], (c + shift) mod spc]
+    # where `shift` is the drift of the DESTINATION sorted-Doppler row —
+    # code_drift_shifts[fftshift_perm[r]], keyed on doppler_freqs[fftshift_perm[r]]
+    # (Issue #74; previously mis-keyed on the raw bin). The unfused reference
+    # therefore fftshift-scatters into sorted-Doppler order FIRST, then drifts
+    # each sorted row by its own shift — matching the sign-search path.
     Random.seed!(20260526)
     sampling_freq_hz_test = 5.0e6
     carrier_freq_hz_test = 1.57542e9  # GPS L1
@@ -44,24 +46,26 @@
         # the convention `_fill_code_drift_shifts!` writes.
         norm_shifts = [mod(s, samples_per_code) for s in raw_shifts]
 
-        # Reference: unfused pipeline (pilot accumulator → row-wise circshift → fftshift scatter)
+        # Reference: unfused pipeline (pilot accumulator → fftshift scatter into
+        # sorted-Doppler order → row-wise circshift by each sorted row's drift).
         ref_acc = zeros(Float32, num_doppler_bins, samples_per_code)
         ref_buf = zeros(Float32, num_doppler_bins, samples_per_code)
         col_buf = zeros(ComplexF32, num_doppler_bins)
         Acquisition._accumulate_noncoherent_integration_pilot!(ref_buf, copy(cim_template),
             col_buf, col_fft_plan, samples_per_code)
-        # Apply the row-wise circular shift (mirrors _apply_code_drift! body exactly).
+        Acquisition._scatter_fftshift_accumulate!(ref_acc, ref_buf, fftshift_perm, samples_per_code)
+        # Apply the row-wise circular shift in sorted-Doppler order (Issue #74):
+        # sorted row `row` drifts by its own doppler_freqs[row]-derived shift.
         if accumulation_step != 0
             row_buf = zeros(Float32, samples_per_code)
             row_shift_buf = zeros(Float32, samples_per_code)
-            for r in 1:num_doppler_bins
-                raw_shifts[r] == 0 && continue
-                row_buf .= view(ref_buf, r, :)
-                circshift!(row_shift_buf, row_buf, raw_shifts[r])
-                ref_buf[r, :] .= row_shift_buf
+            for row in 1:num_doppler_bins
+                raw_shifts[row] == 0 && continue
+                row_buf .= view(ref_acc, row, :)
+                circshift!(row_shift_buf, row_buf, raw_shifts[row])
+                ref_acc[row, :] .= row_shift_buf
             end
         end
-        Acquisition._scatter_fftshift_accumulate!(ref_acc, ref_buf, fftshift_perm, samples_per_code)
 
         # Fused: per-column path
         fused_acc = zeros(Float32, num_doppler_bins, samples_per_code)
@@ -71,6 +75,84 @@
         @test fused_acc ≈ ref_acc
 
         # Fused: batched path (only valid below the threshold)
+        if col_batch_fft_plan !== nothing
+            fused_acc_batched = zeros(Float32, num_doppler_bins, samples_per_code)
+            Acquisition._accumulate_fftshifted_power_drift_pilot_batched!(fused_acc_batched,
+                copy(cim_template), col_batch_fft_plan, samples_per_code, num_doppler_bins,
+                fftshift_perm, norm_shifts)
+            @test fused_acc_batched ≈ ref_acc
+        end
+    end
+end
+
+@testset "Fused pilot drift kernel indexes shift by destination Doppler row (Issue #74)" begin
+    # Issue #74: `code_drift_shifts` is indexed by SORTED-Doppler row (it is
+    # filled from `plan.doppler_freqs[r]`). The fused pilot kernels iterate raw
+    # FFT bins `r`, write the cell to sorted row `fftshift_perm[r]`, and so must
+    # shift by the drift of the DESTINATION row — `code_drift_shifts[perm[r]]`,
+    # whose true Doppler is `doppler_freqs[perm[r]]` — not `code_drift_shifts[r]`
+    # (the row half the searched band away). This mirrors the sign-search path
+    # (`_accumulate_sign_tile!`), which drifts in sorted-Doppler row order.
+    #
+    # Correct reference pipeline: pilot accumulator (raw order) → fftshift
+    # scatter into sorted-Doppler order → row-wise circshift by each SORTED
+    # row's own drift. Equivalent to the sign path's shift-then-scatter.
+    Random.seed!(20260702)
+    sampling_freq_hz_test = 5.0e6
+    carrier_freq_hz_test = 1.57542e9  # GPS L1
+    for (num_doppler_bins, samples_per_code, accumulation_step) in [
+        (64, 5000, 60),     # batched path, T_coh≈1ms, large-N_nc → row-dependent drift
+        (322, 5000, 120),   # per-column path (above the batch threshold)
+        (8, 5000, 60),      # L1CA 5 MHz / N_coh=1 / large-N_nc weak-signal dwell
+    ]
+        cim_template = randn(ComplexF32, num_doppler_bins, samples_per_code)
+        col_fft_plan = plan_fft!(zeros(ComplexF32, num_doppler_bins))
+        col_batch_fft_plan = if num_doppler_bins <= Acquisition.BATCH_FFT_THRESHOLD
+            plan_fft!(zeros(ComplexF32, num_doppler_bins, samples_per_code), 1)
+        else
+            nothing
+        end
+        fftshift_perm = [mod(r - 1 + num_doppler_bins ÷ 2, num_doppler_bins) + 1
+                         for r in 1:num_doppler_bins]
+
+        doppler_coverage_hz = 10_000.0
+        doppler_freqs = range(-doppler_coverage_hz / 2,
+                              step = doppler_coverage_hz / num_doppler_bins,
+                              length = num_doppler_bins)
+        coherent_duration_s = samples_per_code / sampling_freq_hz_test
+        # `code_drift_shifts[row]` is indexed by SORTED-Doppler row.
+        raw_shifts = [round(Int, doppler_freqs[row] * accumulation_step *
+                       coherent_duration_s * sampling_freq_hz_test / carrier_freq_hz_test)
+                      for row in 1:num_doppler_bins]
+        norm_shifts = [mod(s, samples_per_code) for s in raw_shifts]
+        # Guard the test's own premise: the drift must be non-zero and must
+        # differ between a raw bin and its fftshift destination (otherwise the
+        # wrong-vs-right indexing would be indistinguishable).
+        @test any(!=(0), raw_shifts)
+        @test any(r -> raw_shifts[r] != raw_shifts[fftshift_perm[r]], 1:num_doppler_bins)
+
+        # Correct reference: scatter into sorted order FIRST, then drift each
+        # sorted row by its own shift.
+        ref_buf = zeros(Float32, num_doppler_bins, samples_per_code)
+        Acquisition._accumulate_noncoherent_integration_pilot!(ref_buf, copy(cim_template),
+            zeros(ComplexF32, num_doppler_bins), col_fft_plan, samples_per_code)
+        ref_acc = zeros(Float32, num_doppler_bins, samples_per_code)
+        Acquisition._scatter_fftshift_accumulate!(ref_acc, ref_buf, fftshift_perm, samples_per_code)
+        row_buf = zeros(Float32, samples_per_code)
+        row_shift_buf = zeros(Float32, samples_per_code)
+        for row in 1:num_doppler_bins
+            raw_shifts[row] == 0 && continue
+            row_buf .= view(ref_acc, row, :)
+            circshift!(row_shift_buf, row_buf, raw_shifts[row])
+            ref_acc[row, :] .= row_shift_buf
+        end
+
+        fused_acc = zeros(Float32, num_doppler_bins, samples_per_code)
+        Acquisition._accumulate_fftshifted_power_drift_pilot!(fused_acc, copy(cim_template),
+            zeros(ComplexF32, num_doppler_bins), col_fft_plan,
+            samples_per_code, num_doppler_bins, fftshift_perm, norm_shifts)
+        @test fused_acc ≈ ref_acc
+
         if col_batch_fft_plan !== nothing
             fused_acc_batched = zeros(Float32, num_doppler_bins, samples_per_code)
             Acquisition._accumulate_fftshifted_power_drift_pilot_batched!(fused_acc_batched,
