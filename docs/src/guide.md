@@ -368,9 +368,9 @@ The reason is that acquisition has two FFT stages with opposite scaling in
   `num_doppler_bins = num_coherently_integrated_code_periods × num_blocks`.
   Total work scales as
   `samples_per_code × num_doppler_bins × log₂(num_doppler_bins)` — it grows
-  roughly *linearly* (× log) in `num_blocks`. The non-coherent accumulation
-  matrix is `num_doppler_bins × samples_per_code`, so its memory traffic
-  scales with `num_blocks` as well.
+  roughly *linearly* (× log) in `num_blocks`. The power reduction sweeps
+  `num_doppler_bins × samples_per_code` cells (streamed tile by tile), so its
+  work scales with `num_blocks` as well.
 
 A concrete comparison at 4 MHz, `num_coherently_integrated_code_periods = 1`:
 
@@ -416,7 +416,9 @@ As a rule of thumb for GPS L1 C/A:
   nearby smooth sizes.
 
 Measured per-PRN `acquire!` times on a Ryzen 7 PRO 5850U (16 threads), GPS
-L1 C/A, `min_doppler_coverage = 10 000 Hz`:
+L1 C/A, `min_doppler_coverage = 10 000 Hz` (measured before the tiled
+pipeline — absolute times are lower now, but the smooth-vs-prime ratios the
+table illustrates are unchanged):
 
 | Sampling freq | `samples_per_code` (factors) | 1 ms coherent | 20 ms coherent |
 |---|---|---|---|
@@ -549,16 +551,23 @@ result_interp = acquire(system, signal, sampling_freq, 1;
 ```
 
 The fit is only applied when the neighbouring bins exceed `√noise_power`
-(so it doesn't chase noise on non-detections), and it costs four extra
-array reads per PRN — negligible compared to the acquisition itself.
+(so it doesn't chase noise on non-detections). With `store_power_bins = true`
+the neighbour cells are read back from the stored surface; without it they are
+recomputed on demand for the up-to-three columns involved — about
+`1/block_size` of one PRN's work, once per PRN. Either way the cost is
+negligible compared to the acquisition itself.
 
 ### Storing the Power Surface
 
 Pass `store_power_bins = true` to keep the full Doppler × code-phase
 correlation matrix in the returned result. It's required for plotting
-(see [Plotting Results](#Plotting-Results)) and useful for post-hoc analysis;
-without it the `power_bins` field is `nothing` and the plan's internal buffer
-is reused across calls to keep acquisitions allocation-free.
+(see [Plotting Results](#Plotting-Results)) and useful for post-hoc analysis.
+Without it the `power_bins` field is `nothing` — and at
+`num_noncoherent_accumulations = 1` the surface is never even computed: the
+peak and noise statistics are reduced on the fly while the pipeline streams
+through the search grid one column block at a time. Opting in allocates one
+cached buffer per PRN on first use, which subsequent calls reuse in place, so
+repeated stored acquisitions stay allocation-free too.
 
 ```julia
 result = acquire!(plan, signal, [1]; store_power_bins = true)

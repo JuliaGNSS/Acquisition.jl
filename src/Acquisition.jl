@@ -54,7 +54,10 @@ Results from GNSS signal acquisition for a single PRN.
     (`peak_power / noise_power`). Compare against [`cfar_threshold`](@ref) to decide
     if a satellite is present.
   - `num_noncoherent_integrations::Int`: Number of non-coherent integrations performed
-  - `power_bins::Matrix{T}`: Correlation power over Doppler × code phase (for plotting)
+  - `power_bins::Union{Matrix{T}, Nothing}`: Correlation power over Doppler × code phase
+    (for plotting). Only populated when `acquire!` was called with
+    `store_power_bins = true`; `nothing` otherwise — by default the pipeline
+    streams the reduction and never materialises this surface.
   - `dopplers`: Doppler frequencies searched
   - `num_blocks::Int`: FM-DBZP number of blocks per code period
   - `block_size::Int`: FM-DBZP samples per block
