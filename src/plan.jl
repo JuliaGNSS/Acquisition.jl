@@ -7,34 +7,59 @@
 const BATCH_FFT_THRESHOLD = 320
 
 # Per-thread mutable scratch buffers used during acquisition.
-# Allocated once per thread in `plan_acquire` to enable multi-threaded PRN processing.
+# Allocated once per pool slot in `plan_acquire` to enable multi-threaded PRN processing.
 # Internal — not part of the public API.
+#
+# The FM-DBZP pipeline is tiled: the coherent correlation surface is produced one
+# `(num_doppler_bins, block_size)` column-block tile at a time
+# (`_build_coherent_tile!`) and reduced immediately, so NO scratch buffer scales
+# with `samples_per_code` on the hot path. The full
+# `(num_doppler_bins, samples_per_code_eff)` power surface is materialised only
+# where it is genuinely needed: the per-PRN `noncoherent_integration_matrices`
+# at `num_noncoherent_accumulations > 1` (accumulation across signal segments
+# requires the whole surface) and the per-PRN `result_buffers` when the caller
+# opts in via `store_power_bins = true`.
 struct AcquisitionScratch
     double_block_buf::Vector{ComplexF32}            # length double_block_size
     corr_buf::Vector{ComplexF32}                    # length double_block_size
-    sig_buf::Vector{ComplexF32}                     # length segment_length — downconverted signal segment (thread 1 only)
+    # One FM-DBZP column-block tile of the coherent-integration surface:
+    # (num_doppler_bins, block_size). Every consumer after the build stage is
+    # column-oriented, so the full (num_doppler_bins, samples_per_code) matrix
+    # never needs to exist — build tile → reduce tile → next tile.
+    coherent_tile::Matrix{ComplexF32}
     col_buf::Vector{ComplexF32}                     # length num_doppler_bins
-    row_buf::Vector{Float32}                        # length samples_per_code
-    row_shift_buf::Vector{Float32}                  # length samples_per_code
-    coherent_integration_matrix::Matrix{ComplexF32}         # (num_doppler_bins, samples_per_code)
-    sign_search_max_buf::Matrix{Float32}                     # (num_doppler_bins, samples_per_code) — 0x0 when simple path is taken (see plan_acquire). Running max over sign-search alignments.
-    noncoherent_integration_buf::Matrix{Float32}             # (num_doppler_bins, samples_per_code)
-    # At num_noncoherent_accumulations == 1 this matrix replaces the per-PRN
-    # `noncoherent_integration_matrices` vector: each PRN runs one build+accumulate
-    # into this per-thread buffer, then extracts its result before the next PRN
-    # overwrites it. 0x0 when N_nc > 1 (the per-PRN layout is required there).
-    noncoherent_integration_accumulator::Matrix{Float32}
-    sub_block_ffts::Matrix{ComplexF32}              # (num_doppler_bins, num_sub_blocks) — 0x0 when simple path is taken (see plan_acquire). Scratch for `_sign_search_step!`.
+    # Per-column staging for the sign-search kernels:
+    # (num_doppler_bins, num_secondary_rotations). Holds ONE code-phase column's
+    # power per rotation hypothesis, max-reduced across bit-edge alignments and
+    # data-bit polarities, before it is consumed (streamed at N_nc == 1,
+    # scattered into the per-PRN accumulator at N_nc > 1). Replaces the
+    # full-surface `noncoherent_integration_buf`/`sign_search_max_buf` pair.
+    # 0×0 when the simple/pilot path is taken.
+    stage_buf::Matrix{Float32}
+    # Streaming-reduction state at num_noncoherent_accumulations == 1: running
+    # per-row (sorted-Doppler order) power sums feeding the OppositeRow noise
+    # estimate. length num_doppler_bins; 0 on the multistep path, which reduces
+    # from the materialised per-PRN accumulator instead.
+    row_sums_buf::Vector{Float32}
+    # Single-column power scratch (length num_doppler_bins) for the on-demand
+    # column recompute used by subsample interpolation on the streamed path.
+    col_power_buf::Vector{Float32}
+    sub_block_ffts::Matrix{ComplexF32}              # (num_doppler_bins, num_sub_blocks) — 0x0 when simple path is taken (see plan_acquire). Scratch for the sign-search kernels.
     # Real/imag-split accumulator for the rotation-kernel's complex-MAC combine loop.
     # Each is length num_doppler_bins, sized 0 when the rotation kernel is not active.
     # Split storage drives Float32 SIMD on the tiled phasor inner loop —
     # ComplexF32 storage is ~3× slower because the compiler can't pack the MAC.
     combine_buf_re::Vector{Float32}
     combine_buf_im::Vector{Float32}
-    col_sums_buf::Vector{Float32}                   # length samples_per_code — scratch for est_signal_noise_power
+    # length samples_per_code_eff when per-column sums are consumed — multistep
+    # extraction via `est_signal_noise_power`, or the GlobalMean noise estimator
+    # on the streamed path. length 0 at N_nc == 1 with the (default) OppositeRow
+    # estimator, where the streaming reduction needs no column sums at all.
+    col_sums_buf::Vector{Float32}
     # Row-wise code-drift shifts pre-filled per accumulation step on the
-    # multistep simple path. length num_doppler_bins when that path is active;
-    # 0 otherwise (sequential N_nc=1 path and sign-search path don't use it).
+    # multistep path (drift is folded into the per-column destination scatter).
+    # length num_doppler_bins when N_nc > 1; 0 on the sequential path (step 0
+    # never drifts).
     code_drift_shifts::Vector{Int}
 end
 
@@ -69,10 +94,15 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     double_block_fft_plan::P1   # in-place forward FFT, size double_block_size
     double_block_bfft_plan::P2  # in-place backward FFT (unnormalised), size double_block_size
     col_fft_plan::P3            # in-place forward FFT, size num_doppler_bins = num_coherently_integrated_code_periods*num_blocks
-    col_batch_fft_plan::P4      # in-place forward FFT along dim 1 of (num_doppler_bins, samples_per_code) matrix; `nothing` when num_doppler_bins > BATCH_FFT_THRESHOLD
+    col_batch_fft_plan::P4      # in-place forward FFT along dim 1 of a (num_doppler_bins, block_size) tile; `nothing` when num_doppler_bins > BATCH_FFT_THRESHOLD
     # doppler_freqs: StepRangeLen of num_doppler_bins Hz values, sorted from -doppler_coverage_hz/2 to doppler_coverage_hz/2-doppler_bin_spacing_hz
     doppler_freqs::DS
     signal_block_ffts::Matrix{ComplexF32} # (double_block_size, num_coh*num_blocks) — precomputed once per acquire!, shared across PRNs
+    # Downconverted-segment staging (length segment_length). Filled once per
+    # accumulation step BEFORE the per-PRN parallel loop, so a single instance
+    # suffices — keeping it out of the per-thread scratch pool saves
+    # (nthreads-1) × segment_length × 8 bytes.
+    sig_buf::Vector{ComplexF32}
     noncoherent_integration_matrices::Vector{Matrix{Float32}}  # per PRN, (num_doppler_bins, samples_per_code); index i corresponds to avail_prns[i]
     fftshift_perm::Vector{Int}               # length num_doppler_bins — pre-computed fftshift row permutation
     # Per PRN: holds a copy of power_bins when the caller of `acquire!` passes
@@ -91,8 +121,11 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     # a long session when driven from `Threads.@spawn`, a risk for a 24/7 receiver.
     # All slots are built up front (the size is known here), so the plan's
     # construction footprint is its steady-state footprint — no first-`acquire!`
-    # spike. Slot 1 doubles as the ambient single-threaded scratch — see
-    # `_default_scratch`.
+    # spike. Since the pipeline is tiled, each scratch is small — its largest
+    # member is the (num_doppler_bins × block_size) tile, `num_blocks`× smaller
+    # than the coherent matrix it replaced — so the per-thread footprint no
+    # longer scales with `samples_per_code`. Slot 1 doubles as the ambient
+    # single-threaded scratch — see `_default_scratch`.
     thread_scratch::Vector{AcquisitionScratch}
     scratch_free::Vector{Int}        # indices of currently-free slots in `thread_scratch`
     scratch_lock::Threads.SpinLock   # guards `scratch_free`
@@ -208,8 +241,10 @@ Pre-compute an acquisition plan for FM-DBZP acquisition.
 
 Allocates all buffers, computes FFT plans, and pre-computes conjugated PRN FFTs.
 The returned plan can be passed to [`acquire!`](@ref) repeatedly without re-allocating.
-Per-thread scratch buffers are sized for `Threads.maxthreadid()` at the time of the call;
-start Julia with `-t N` before calling `plan_acquire` to enable multi-threaded acquisition.
+The per-thread scratch pool is sized to `min(Threads.nthreads(), num_cores)` at the
+time of the call; start Julia with `-t N` before calling `plan_acquire` to enable
+multi-threaded acquisition. Scratch buffers are tile-sized (nothing scales with
+`samples_per_code`), so extra threads cost little memory.
 
 # Arguments
 
@@ -411,8 +446,10 @@ function plan_acquire(
     # Batched column FFT plan: only allocate when num_doppler_bins is small enough
     # that the batched approach outperforms individual column FFTs (see BATCH_FFT_THRESHOLD).
     # Above the threshold, store `nothing` — the non-batched path is used instead.
+    # Sized to one (num_doppler_bins, block_size) tile — the unit the pipeline
+    # processes — not the full samples_per_code width.
     col_batch_fft_plan = if num_doppler_bins <= BATCH_FFT_THRESHOLD
-        col_batch_proto = zeros(ComplexF32, num_doppler_bins, samples_per_code)
+        col_batch_proto = zeros(ComplexF32, num_doppler_bins, block_size)
         plan_fft!(col_batch_proto, 1; flags = fft_flag)
     else
         nothing
@@ -435,11 +472,11 @@ function plan_acquire(
     # k ∈ 0..num_coh*num_blocks-1. Filled once per acquire! call before the PRN
     # loop and reused across all PRNs.
     signal_block_ffts = zeros(ComplexF32, double_block_size, num_coherently_integrated_code_periods * num_blocks)
-    # At N_nc == 1 each PRN's noncoherent matrix is written once and consumed
-    # once for result extraction; we collapse the per-PRN vector into a
-    # per-thread accumulator (see `noncoherent_integration_accumulator` in
-    # AcquisitionScratch). The multistep path (N_nc > 1) still needs the
-    # per-PRN vector because it accumulates across steps.
+    # At N_nc == 1 each cell of the power surface is produced exactly once, so
+    # the result statistics (peak, noise row/column sums) are reduced on the fly
+    # per tile and NO noncoherent power matrix exists at all — see
+    # `_acquire_prn_streamed!`. The multistep path (N_nc > 1) keeps the
+    # per-PRN vector because it accumulates across signal segments.
     # Derive the secondary-code rotation search size. No-op for signals without a
     # secondary code (L = 1) or when the user opts out.
     secondary_code_length = get_secondary_code_length(system)
@@ -462,30 +499,23 @@ function plan_acquire(
     noncoherent_integration_matrices = sequential_prn_mode ?
         Matrix{Float32}[] :
         [zeros(Float32, num_doppler_bins, samples_per_code_eff) for _ in prns]
-    accumulator_rows = sequential_prn_mode ? num_doppler_bins : 0
-    accumulator_cols = sequential_prn_mode ? samples_per_code_eff : 0
     fftshift_perm = [mod(r - 1 + num_doppler_bins ÷ 2, num_doppler_bins) + 1 for r in 1:num_doppler_bins]
     result_buffers = Union{Nothing,Matrix{Float32}}[nothing for _ in prns]
 
-    # The sign-search path in `_accumulate_noncoherent_integration_step!` runs when
-    # num_data_bits > 1, bit_edge_search_steps > 1, or the secondary-code rotation
-    # search is active. Otherwise the simple/pilot path is taken, which never reads
-    # `sign_search_max_buf` or `sub_block_ffts`.
+    # The sign-search path runs when num_data_bits > 1, bit_edge_search_steps > 1,
+    # or the secondary-code rotation search is active. Otherwise the simple/pilot
+    # path is taken, which never reads `stage_buf` or `sub_block_ffts`.
     sign_search_path_active = num_data_bits > 1 || bit_edge_search_steps > 1 ||
                               rotation_search_active
-    # `sign_search_max_buf` is the running max across bit-edge-search alignments;
-    # it only exists when more than one alignment is searched. When
-    # `bit_edge_search_steps == 1` the dispatcher writes the kernel output
-    # directly into the noncoherent integration matrix (`.+=` accumulate) and
-    # this buffer stays at 0×0 — the dominant configuration for the rotation
-    # search path on L5I (≈68 MiB/thread saved at fs=12 MHz, N_coh=10).
-    max_buf_needed = bit_edge_search_steps > 1
-    sign_search_max_rows = max_buf_needed ? num_doppler_bins      : 0
-    sign_search_max_cols = max_buf_needed ? samples_per_code_eff  : 0
+    # Per-column staging for the sign-search kernels: ONE column of power per
+    # rotation hypothesis. Bit-edge alignments and data-bit polarities are
+    # max-reduced into it column-locally, so neither search needs a buffer
+    # proportional to `samples_per_code` anymore.
+    stage_rows = sign_search_path_active ? num_doppler_bins        : 0
+    stage_cols = sign_search_path_active ? num_secondary_rotations : 0
     # The data-bit kernel needs one sub-block FFT column per data bit; the
     # rotation kernel needs one per coherent period. Size to the max so the same
-    # scratch matrix serves both code paths. The row dim is `num_doppler_bins`
-    # — independent of whether `sign_search_max_buf` is allocated.
+    # scratch matrix serves both code paths.
     sub_block_rows = sign_search_path_active ? num_doppler_bins : 0
     sub_block_cols = if sign_search_path_active
         rotation_search_active ? max(num_data_bits, num_coherently_integrated_code_periods) :
@@ -494,58 +524,55 @@ function plan_acquire(
         0
     end
 
-    # `noncoherent_integration_buf` (the |x|² intermediate) is bypassed by the
-    # fused FFT+|x|²+(code-drift)+fftshift kernel on every simple-path route:
-    # sequential N_nc==1 (slice 5) and multistep N_nc>1 (Issue #62). Only the
-    # sign-search path still consumes the buf — it reuses the buf across
-    # bit-edge-search alignments to take the cell-wise max.
-    integration_buf_needed = sign_search_path_active
-    integration_buf_rows = integration_buf_needed ? num_doppler_bins      : 0
-    integration_buf_cols = integration_buf_needed ? samples_per_code_eff  : 0
+    # Streaming-reduction state exists only on the sequential (N_nc == 1) path;
+    # the multistep path reduces from the materialised per-PRN accumulators.
+    row_sums_len = sequential_prn_mode ? num_doppler_bins : 0
+    # Column sums are consumed by multistep extraction (`est_signal_noise_power`
+    # always fills them) and by the GlobalMean estimator on the streamed path.
+    # At N_nc == 1 with the default OppositeRow estimator nothing reads them,
+    # so the (samples_per_code_eff-long) buffer is dropped entirely.
+    col_sums_len = (!sequential_prn_mode || noise_estimator isa GlobalMeanNoiseEstimator) ?
+        samples_per_code_eff : 0
 
-    # Multistep simple path uses `code_drift_shifts` (length num_doppler_bins)
-    # to precompute the per-row column shift once per accumulation step before
-    # the per-PRN parallel loop. Sequential N_nc=1 doesn't drift; sign-search
-    # uses the unfused `_apply_code_drift!` on the buf directly.
-    multistep_simple_path_active = !sequential_prn_mode && !sign_search_path_active
-    code_drift_shifts_len = multistep_simple_path_active ? num_doppler_bins : 0
+    # The multistep path folds code-drift correction into the per-column
+    # destination scatter; shifts are pre-filled once per accumulation step.
+    # The sequential path never drifts (step 0 has zero drift by definition).
+    code_drift_shifts_len = sequential_prn_mode ? 0 : num_doppler_bins
 
     # Per-thread scratch pool. Sized to the most chunks `@batch per=core` ever
     # runs at once, `min(nthreads, num_cores)`, rather than `maxthreadid()`: a
     # chunk claims a free slot per PRN (see `_claim_scratch!`) instead of indexing
     # by `threadid()`, so the footprint is hard-capped at this many scratches no
-    # matter how `acquire!` is scheduled (Issue #60). For a wide signal each
-    # scratch is large (~296 MiB for GPS L1C-P at 16 MHz), so this is the dominant
-    # plan cost. `sig_buf` lives in slot 1, the ambient single-threaded scratch
-    # `acquire!` uses for downconversion before the parallel loop. All slots are
-    # built up front (the size is known here), so the plan's construction
-    # footprint is its steady-state footprint — no first-`acquire!` spike.
+    # matter how `acquire!` is scheduled (Issue #60). The pipeline is tiled, so
+    # each scratch's largest member is the (num_doppler_bins × block_size) tile —
+    # nothing in the pool scales with `samples_per_code` (the L1C-P/16 MHz
+    # scratch that used to weigh ~296 MiB is now ~1.5 MiB). All slots are built
+    # up front (the size is known here), so the plan's construction footprint is
+    # its steady-state footprint — no first-`acquire!` spike.
     nthreads = min(Threads.nthreads(), max(1, Int(num_cores())))
     thread_scratch = [
         AcquisitionScratch(
             zeros(ComplexF32, double_block_size),
             zeros(ComplexF32, double_block_size),
-            zeros(ComplexF32, segment_length),
+            zeros(ComplexF32, num_doppler_bins, block_size),
             zeros(ComplexF32, num_doppler_bins),
-            # row_buf / row_shift_buf hold ONE primary-code-period block; drift
-            # correction shifts within each rotation block independently when
-            # the expanded buffer is in use, so per-block length suffices.
-            zeros(Float32, samples_per_code),
-            zeros(Float32, samples_per_code),
-            zeros(ComplexF32, num_doppler_bins, samples_per_code),
-            zeros(Float32, sign_search_max_rows, sign_search_max_cols),
-            zeros(Float32, integration_buf_rows, integration_buf_cols),
-            zeros(Float32, accumulator_rows, accumulator_cols),
+            zeros(Float32, stage_rows, stage_cols),
+            zeros(Float32, row_sums_len),
+            zeros(Float32, sequential_prn_mode ? num_doppler_bins : 0),
             zeros(ComplexF32, sub_block_rows, sub_block_cols),
             zeros(Float32, rotation_search_active ? num_doppler_bins : 0),
             zeros(Float32, rotation_search_active ? num_doppler_bins : 0),
-            zeros(Float32, samples_per_code_eff),
+            zeros(Float32, col_sums_len),
             zeros(Int, code_drift_shifts_len),
         )
         for _ in 1:nthreads
     ]
     scratch_free = collect(1:nthreads)
     scratch_lock = Threads.SpinLock()
+
+    # Single downconversion staging buffer — filled once per accumulation step
+    # before the per-PRN parallel loop, so one instance serves every thread.
+    sig_buf = zeros(ComplexF32, segment_length)
 
     avail_prns_vec = collect(Int, prns)
 
@@ -614,6 +641,7 @@ function plan_acquire(
         double_block_fft_plan, double_block_bfft_plan, col_fft_plan, col_batch_fft_plan,
         doppler_freqs,
         signal_block_ffts,
+        sig_buf,
         noncoherent_integration_matrices, fftshift_perm,
         result_buffers,
         avail_prns_vec,

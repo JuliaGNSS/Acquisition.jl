@@ -145,11 +145,11 @@ end
     scratch = Acquisition._default_scratch(plan)
     (; signal, code_phase) = generate_test_signal(system, 1;
         num_samples = plan.samples_per_code, sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
-    scratch.sig_buf .= ComplexF32.(signal)
+    plan.sig_buf .= ComplexF32.(signal)
     for prn_idx in eachindex(plan.avail_prns)
         fill!(plan.noncoherent_integration_matrices[prn_idx], 0f0)
     end
-    Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, scratch.sig_buf,
+    Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, plan.sig_buf,
         plan.samples_per_code, plan.num_blocks, plan.block_size,
         plan.num_coherently_integrated_code_periods, scratch.double_block_buf,
         plan.double_block_fft_plan)

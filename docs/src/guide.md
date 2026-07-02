@@ -163,6 +163,15 @@ of threads available when `plan_acquire` is called. If you create the plan and l
 run with more threads, restart Julia with the desired thread count before calling
 `plan_acquire`.
 
+The per-thread scratch is small: the acquisition pipeline is *tiled*, producing and
+reducing the correlation surface one `num_doppler_bins × block_size` column block at a
+time, so no per-thread buffer scales with `samples_per_code`. The full Doppler ×
+code-phase power surface is only materialised when you ask for it
+(`store_power_bins = true`, one cached buffer per PRN) or when
+`num_noncoherent_accumulations > 1` (one accumulation matrix per PRN, shared across
+threads). Adding threads therefore adds only tile-sized scratch, not full search
+surfaces.
+
 ## Non-coherent Integration
 
 At low CN0, accumulate power across multiple successive signal segments:

@@ -114,16 +114,14 @@ end
     nim_via_dispatch = zeros(Float32, n_dop_a, plan_a.samples_per_code)
     Acquisition._accumulate_noncoherent_integration_step!(nim_via_dispatch, copy(cim_a), plan_a, 7)
 
+    # The plan's batched FFT plan is tile-shaped (the pipeline consumes one
+    # column-block tile at a time), so the full-matrix reference uses the
+    # per-column kernel — the batched/per-column parity is asserted separately
+    # in the fused-kernel testsets above.
     nim_direct = zeros(Float32, n_dop_a, plan_a.samples_per_code)
-    if n_dop_a <= Acquisition.BATCH_FFT_THRESHOLD
-        Acquisition._accumulate_fftshifted_power_pilot_batched!(
-            nim_direct, copy(cim_a), plan_a.col_batch_fft_plan,
-            plan_a.samples_per_code, n_dop_a)
-    else
-        Acquisition._accumulate_fftshifted_power_pilot!(
-            nim_direct, copy(cim_a), Acquisition._default_scratch(plan_a).col_buf,
-            plan_a.col_fft_plan, plan_a.samples_per_code, n_dop_a)
-    end
+    Acquisition._accumulate_fftshifted_power_pilot!(
+        nim_direct, copy(cim_a), Acquisition._default_scratch(plan_a).col_buf,
+        plan_a.col_fft_plan, plan_a.samples_per_code, n_dop_a)
     @test nim_via_dispatch ≈ nim_direct
 
     # (b) non-zero drift on the per-column path
@@ -208,6 +206,8 @@ end
     plan = plan_acquire(system, sampling_freq, [prn];
         min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 20)
     scratch = Acquisition._default_scratch(plan)
+    # Full CIM materialised locally via the reference wrapper (production is tiled).
+    cim = zeros(ComplexF32, plan.num_coherently_integrated_code_periods * plan.num_blocks, plan.samples_per_code)
     doppler_bin_spacing = step(plan.doppler_freqs)
     tau_samples = round(Int, (get_code_length(system) - code_phase) * plan.samples_per_code / get_code_length(system))
 
@@ -221,12 +221,12 @@ end
         plan.samples_per_code, plan.num_blocks, plan.block_size,
         plan.num_coherently_integrated_code_periods, scratch.double_block_buf,
         plan.double_block_fft_plan)
-    Acquisition._build_coherent_integration_matrix!(scratch.coherent_integration_matrix, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
+    Acquisition._build_coherent_integration_matrix!(cim, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
         plan.samples_per_code, plan.num_blocks, plan.block_size, plan.num_coherently_integrated_code_periods,
         scratch.corr_buf, plan.double_block_bfft_plan)
 
     noncoherent_integration_matrix = zeros(Float32, plan.num_coherently_integrated_code_periods * plan.num_blocks, plan.samples_per_code)
-    Acquisition._accumulate_noncoherent_integration_pilot!(noncoherent_integration_matrix, scratch.coherent_integration_matrix, scratch.col_buf,
+    Acquisition._accumulate_noncoherent_integration_pilot!(noncoherent_integration_matrix, cim, scratch.col_buf,
         plan.col_fft_plan, plan.samples_per_code)
 
     peak_row, peak_col = Tuple(argmax(noncoherent_integration_matrix))
@@ -253,7 +253,7 @@ end
 
     # 3. Verify += accumulation: a second call should double the peak value.
     peak_value_first = noncoherent_integration_matrix[peak_row, peak_col]
-    Acquisition._accumulate_noncoherent_integration_pilot!(noncoherent_integration_matrix, scratch.coherent_integration_matrix, scratch.col_buf,
+    Acquisition._accumulate_noncoherent_integration_pilot!(noncoherent_integration_matrix, cim, scratch.col_buf,
         plan.col_fft_plan, plan.samples_per_code)
     @test noncoherent_integration_matrix[peak_row, peak_col] ≈ 2 * peak_value_first
 end
@@ -268,6 +268,8 @@ end
     plan = plan_acquire(system, sampling_freq, [prn];
         min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
     scratch = Acquisition._default_scratch(plan)
+    # Full CIM materialised locally via the reference wrapper (production is tiled).
+    cim = zeros(ComplexF32, plan.num_coherently_integrated_code_periods * plan.num_blocks, plan.samples_per_code)
     num_doppler_bins = plan.num_coherently_integrated_code_periods * plan.num_blocks  # 640
 
     code_phase = 100.0
@@ -283,7 +285,7 @@ end
         plan.samples_per_code, plan.num_blocks, plan.block_size,
         plan.num_coherently_integrated_code_periods, scratch.double_block_buf,
         plan.double_block_fft_plan)
-    Acquisition._build_coherent_integration_matrix!(scratch.coherent_integration_matrix, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
+    Acquisition._build_coherent_integration_matrix!(cim, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
         plan.samples_per_code, plan.num_blocks, plan.block_size, plan.num_coherently_integrated_code_periods,
         scratch.corr_buf, plan.double_block_bfft_plan)
 
@@ -291,7 +293,7 @@ end
     noncoherent_integration_buf = zeros(Float32, num_doppler_bins, plan.samples_per_code)
     sub_block_ffts = zeros(ComplexF32, num_doppler_bins, plan.num_data_bits)
     patterns = Acquisition.sign_patterns(nothing, 0, plan.num_data_bits, 1, plan.num_coherently_integrated_code_periods, false)
-    Acquisition._sign_search_step!(noncoherent_integration_buf, scratch.coherent_integration_matrix, scratch.col_buf,
+    Acquisition._sign_search_step!(noncoherent_integration_buf, cim, scratch.col_buf,
         plan.col_fft_plan, plan.samples_per_code, num_doppler_bins, plan.num_data_bits, 0, sub_block_ffts, patterns)
     noncoherent_integration_matrix .+= noncoherent_integration_buf
 
@@ -323,6 +325,8 @@ end
     plan = plan_acquire(system, sampling_freq, [prn];
         min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
     scratch = Acquisition._default_scratch(plan)
+    # Full CIM materialised locally via the reference wrapper (production is tiled).
+    cim = zeros(ComplexF32, plan.num_coherently_integrated_code_periods * plan.num_blocks, plan.samples_per_code)
     num_doppler_bins = plan.num_coherently_integrated_code_periods * plan.num_blocks  # 640
 
     # Generate a clean signal, then negate the second half to simulate a bit
@@ -341,19 +345,19 @@ end
         plan.samples_per_code, plan.num_blocks, plan.block_size,
         plan.num_coherently_integrated_code_periods, scratch.double_block_buf,
         plan.double_block_fft_plan)
-    Acquisition._build_coherent_integration_matrix!(scratch.coherent_integration_matrix, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
+    Acquisition._build_coherent_integration_matrix!(cim, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
         plan.samples_per_code, plan.num_blocks, plan.block_size, plan.num_coherently_integrated_code_periods,
         scratch.corr_buf, plan.double_block_bfft_plan)
 
     noncoherent_integration_data = zeros(Float32, num_doppler_bins, plan.samples_per_code)
     sub_block_ffts = zeros(ComplexF32, num_doppler_bins, plan.num_data_bits)
     patterns = Acquisition.sign_patterns(nothing, 0, plan.num_data_bits, 1, plan.num_coherently_integrated_code_periods, false)
-    Acquisition._sign_search_step!(noncoherent_integration_data, scratch.coherent_integration_matrix, scratch.col_buf,
+    Acquisition._sign_search_step!(noncoherent_integration_data, cim, scratch.col_buf,
         plan.col_fft_plan, plan.samples_per_code, num_doppler_bins, plan.num_data_bits, 0, sub_block_ffts, patterns)
 
     # Pilot path: no bit search → the two halves cancel → weaker peak
     noncoherent_integration_pilot = zeros(Float32, num_doppler_bins, plan.samples_per_code)
-    Acquisition._accumulate_noncoherent_integration_pilot!(noncoherent_integration_pilot, scratch.coherent_integration_matrix, scratch.col_buf,
+    Acquisition._accumulate_noncoherent_integration_pilot!(noncoherent_integration_pilot, cim, scratch.col_buf,
         plan.col_fft_plan, plan.samples_per_code)
 
     # Data bit search should recover a much stronger peak than naive pilot
@@ -528,6 +532,8 @@ end
     plan = plan_acquire(system, sampling_freq, [prn];
         min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
     scratch = Acquisition._default_scratch(plan)
+    # Full CIM materialised locally via the reference wrapper (production is tiled).
+    cim = zeros(ComplexF32, plan.num_coherently_integrated_code_periods * plan.num_blocks, plan.samples_per_code)
     num_doppler_bins = plan.num_coherently_integrated_code_periods * plan.num_blocks
 
     sub_block_ffts = zeros(ComplexF32, num_doppler_bins, plan.num_data_bits)
@@ -536,12 +542,12 @@ end
         plan.samples_per_code, plan.num_blocks, plan.block_size,
         plan.num_coherently_integrated_code_periods, scratch.double_block_buf,
         plan.double_block_fft_plan)
-    Acquisition._build_coherent_integration_matrix!(scratch.coherent_integration_matrix, plan.signal_block_ffts,
+    Acquisition._build_coherent_integration_matrix!(cim, plan.signal_block_ffts,
         plan.prn_conj_ffts[prn], plan.samples_per_code, plan.num_blocks, plan.block_size,
         plan.num_coherently_integrated_code_periods, scratch.corr_buf,
         plan.double_block_bfft_plan)
     noncoherent_integration_no_transition = zeros(Float32, num_doppler_bins, plan.samples_per_code)
-    Acquisition._accumulate_noncoherent_integration_pilot!(noncoherent_integration_no_transition, scratch.coherent_integration_matrix, scratch.col_buf,
+    Acquisition._accumulate_noncoherent_integration_pilot!(noncoherent_integration_no_transition, cim, scratch.col_buf,
         plan.col_fft_plan, plan.samples_per_code)
     peak_no_transition = maximum(noncoherent_integration_no_transition)
 
@@ -549,13 +555,13 @@ end
         plan.samples_per_code, plan.num_blocks, plan.block_size,
         plan.num_coherently_integrated_code_periods, scratch.double_block_buf,
         plan.double_block_fft_plan)
-    Acquisition._build_coherent_integration_matrix!(scratch.coherent_integration_matrix, plan.signal_block_ffts,
+    Acquisition._build_coherent_integration_matrix!(cim, plan.signal_block_ffts,
         plan.prn_conj_ffts[prn], plan.samples_per_code, plan.num_blocks, plan.block_size,
         plan.num_coherently_integrated_code_periods, scratch.corr_buf,
         plan.double_block_bfft_plan)
     noncoherent_integration_with_transition = zeros(Float32, num_doppler_bins, plan.samples_per_code)
     patterns = Acquisition.sign_patterns(nothing, 0, plan.num_data_bits, 1, plan.num_coherently_integrated_code_periods, false)
-    Acquisition._sign_search_step!(noncoherent_integration_with_transition, scratch.coherent_integration_matrix, scratch.col_buf, plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
+    Acquisition._sign_search_step!(noncoherent_integration_with_transition, cim, scratch.col_buf, plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
         plan.num_data_bits, 0, sub_block_ffts, patterns)
     peak_with_transition = maximum(noncoherent_integration_with_transition)
 
@@ -577,6 +583,8 @@ end
     plan = plan_acquire(system, sampling_freq, [prn];
         min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 60, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
     scratch = Acquisition._default_scratch(plan)
+    # Full CIM materialised locally via the reference wrapper (production is tiled).
+    cim = zeros(ComplexF32, plan.num_coherently_integrated_code_periods * plan.num_blocks, plan.samples_per_code)
     num_doppler_bins = plan.num_coherently_integrated_code_periods * plan.num_blocks
 
     sub_block_ffts = zeros(ComplexF32, num_doppler_bins, plan.num_data_bits)
@@ -585,12 +593,12 @@ end
         plan.samples_per_code, plan.num_blocks, plan.block_size,
         plan.num_coherently_integrated_code_periods, scratch.double_block_buf,
         plan.double_block_fft_plan)
-    Acquisition._build_coherent_integration_matrix!(scratch.coherent_integration_matrix, plan.signal_block_ffts,
+    Acquisition._build_coherent_integration_matrix!(cim, plan.signal_block_ffts,
         plan.prn_conj_ffts[prn], plan.samples_per_code, plan.num_blocks, plan.block_size,
         plan.num_coherently_integrated_code_periods, scratch.corr_buf,
         plan.double_block_bfft_plan)
     noncoherent_integration_no_transition = zeros(Float32, num_doppler_bins, plan.samples_per_code)
-    Acquisition._accumulate_noncoherent_integration_pilot!(noncoherent_integration_no_transition, scratch.coherent_integration_matrix, scratch.col_buf,
+    Acquisition._accumulate_noncoherent_integration_pilot!(noncoherent_integration_no_transition, cim, scratch.col_buf,
         plan.col_fft_plan, plan.samples_per_code)
     peak_no_transition = maximum(noncoherent_integration_no_transition)
 
@@ -598,13 +606,13 @@ end
         plan.samples_per_code, plan.num_blocks, plan.block_size,
         plan.num_coherently_integrated_code_periods, scratch.double_block_buf,
         plan.double_block_fft_plan)
-    Acquisition._build_coherent_integration_matrix!(scratch.coherent_integration_matrix, plan.signal_block_ffts,
+    Acquisition._build_coherent_integration_matrix!(cim, plan.signal_block_ffts,
         plan.prn_conj_ffts[prn], plan.samples_per_code, plan.num_blocks, plan.block_size,
         plan.num_coherently_integrated_code_periods, scratch.corr_buf,
         plan.double_block_bfft_plan)
     noncoherent_integration_with_transition = zeros(Float32, num_doppler_bins, plan.samples_per_code)
     patterns = Acquisition.sign_patterns(nothing, 0, plan.num_data_bits, 1, plan.num_coherently_integrated_code_periods, false)
-    Acquisition._sign_search_step!(noncoherent_integration_with_transition, scratch.coherent_integration_matrix, scratch.col_buf, plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
+    Acquisition._sign_search_step!(noncoherent_integration_with_transition, cim, scratch.col_buf, plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
         plan.num_data_bits, 0, sub_block_ffts, patterns)
     peak_with_transition = maximum(noncoherent_integration_with_transition)
 
