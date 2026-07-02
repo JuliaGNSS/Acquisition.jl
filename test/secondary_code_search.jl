@@ -121,7 +121,13 @@ end
         @test sum(nim)       ≈ 5.2553412608f10 rtol = 1e-4
         @test nim[1, 100]    ≈ 8.2944015625f4  rtol = 1e-4
         @test nim[end, end]  ≈ 2.318815625f4   rtol = 1e-4
-        @test argmax(nim)    == CartesianIndex(17, 1)
+        # The NH10 signs make the opt-out's naive coherent sum sign-modulated,
+        # so its Doppler spectrum is symmetric about 0 Hz: rows 17 and 25
+        # (∓400 Hz) carry an EXACT mirror-pair peak (equal in Float32). Which
+        # one argmax returns is decided by FFT last-bit noise and differs
+        # across FFTW builds/platforms — accept either, and pin the tie itself.
+        @test argmax(nim) in (CartesianIndex(17, 1), CartesianIndex(25, 1))
+        @test nim[17, 1] ≈ nim[25, 1] rtol = 1e-3
     end
 
     @testset "L5I gain recovery — use_secondary_code=true recovers ~10× peak over the opt-out" begin
