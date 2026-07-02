@@ -10,7 +10,7 @@ Each column `global_block_idx + 1` of `signal_block_ffts` (size
 PRN loop avoids redoing the same FFT for each of the (typically 32) PRNs.
 """
 function _precompute_signal_block_ffts!(
-    signal_block_ffts::Matrix{ComplexF32},  # (double_block_size, num_coh * num_blocks)
+    signal_block_ffts::AbstractMatrix{ComplexF32},  # (double_block_size, num_coh * num_blocks) — may be one segment slice of the plan's all-segment cache
     signal_f32::Vector{ComplexF32},
     samples_per_code::Int,
     num_blocks::Int,
@@ -78,7 +78,7 @@ column index `pc` (0-indexed) satisfies:
 """
 function _build_coherent_integration_matrix!(
     coherent_integration_matrix::AbstractMatrix{ComplexF32},
-    signal_block_ffts::Matrix{ComplexF32},  # (double_block_size, num_coh*num_blocks) — precomputed
+    signal_block_ffts::AbstractMatrix{ComplexF32},  # (double_block_size, num_coh*num_blocks) — precomputed
     prn_conj_fft_matrix::Matrix{ComplexF32},  # (double_block_size, num_blocks), already conjugated
     samples_per_code::Int,
     num_blocks::Int,
@@ -124,7 +124,7 @@ the column FFTs a round-trip through DRAM.
 """
 function _build_coherent_tile!(
     tile::AbstractMatrix{ComplexF32},         # (num_coh*num_blocks, block_size)
-    signal_block_ffts::Matrix{ComplexF32},    # (double_block_size, num_coh*num_blocks) — precomputed
+    signal_block_ffts::AbstractMatrix{ComplexF32},  # (double_block_size, num_coh*num_blocks) — precomputed
     prn_conj_fft_matrix::Matrix{ComplexF32},  # (double_block_size, num_blocks), already conjugated
     col_block_idx::Int,                       # 0-based column block index
     num_blocks::Int,

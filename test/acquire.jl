@@ -134,29 +134,25 @@ end
     @test r2.code_phase ≈ gen2.code_phase atol = 2.0
 end
 
-@testset "_acquire_step_threaded! — threaded path runs correctly (multistep)" begin
-    # _acquire_step_threaded! is the per-step fan-out used by the multistep
-    # (N_nc>1) path. Driven directly from the test, with a plan sized so the
-    # per-PRN noncoherent matrices exist.
+@testset "multistep acquire! — PRN-outer parallel layout" begin
+    # The multistep (N_nc>1) path is PRN-outer: each parallel chunk carries one
+    # PRN through all accumulation steps against its claimed scratch slot's
+    # accumulator. Drive it through the public API with two PRNs and verify
+    # both results are produced, the planted PRN is found, and every scratch
+    # slot returns to the pool.
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     plan = plan_acquire(system, sampling_freq, [1, 2];
         num_noncoherent_accumulations = 2, fft_flag = FFTW.ESTIMATE)
-    scratch = Acquisition._default_scratch(plan)
     (; signal, code_phase) = generate_test_signal(system, 1;
-        num_samples = plan.samples_per_code, sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
-    plan.sig_buf .= ComplexF32.(signal)
-    for prn_idx in eachindex(plan.avail_prns)
-        fill!(plan.noncoherent_integration_matrices[prn_idx], 0f0)
-    end
-    Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, plan.sig_buf,
-        plan.samples_per_code, plan.num_blocks, plan.block_size,
-        plan.num_coherently_integrated_code_periods, scratch.double_block_buf,
-        plan.double_block_fft_plan)
-    Acquisition._acquire_step_threaded!(plan, collect(plan.avail_prns), 0)
-    # PRN 1 should have a peak; just verify noncoherent matrix was filled
-    @test maximum(plan.noncoherent_integration_matrices[1]) > 0
-    @test maximum(plan.noncoherent_integration_matrices[2]) > 0
+        num_samples = 2 * plan.samples_per_code, doppler = 800Hz, code_phase = 150.0,
+        sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 13)
+    results = acquire!(plan, ComplexF32.(signal), [1, 2]; interm_freq = 0.0Hz)
+    @test length(results) == 2
+    @test is_detected(results[1])
+    @test results[1].code_phase ≈ code_phase atol = 1.5
+    @test !is_detected(results[2])   # PRN 2 is absent
+    @test length(plan.scratch_free) == length(plan.thread_scratch)
 end
 
 @testset "acquire! N_nc=1 sequential vs N_nc=2 multistep parity" begin
@@ -450,6 +446,10 @@ end
     @test result.power_bins isa Matrix{Float32}
     @test size(result.power_bins) ==
         (length(plan.doppler_freqs), plan.samples_per_code_eff)
-    # The stored surface is a copy of the accumulation matrix.
-    @test result.power_bins == plan.noncoherent_integration_matrices[1]
+    # The stored surface is reproducible: a second identical run stores the
+    # same accumulated power.
+    result2 = acquire!(plan, ComplexF32.(signal), prn;
+        interm_freq = 0.0Hz, subsample_interpolation = true, store_power_bins = true)
+    @test result2.power_bins == result.power_bins
+    @test result2.power_bins === plan.result_buffers[1]   # cached buffer reused
 end
