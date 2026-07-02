@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.3](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.5.2...v2.5.3) (2026-07-02)
+
+
+### Bug Fixes
+
+* index multistep pilot drift by destination Doppler row ([#74](https://github.com/JuliaGNSS/Acquisition.jl/issues/74)) ([455f5b6](https://github.com/JuliaGNSS/Acquisition.jl/commit/455f5b65f7dcc94fde1fe478d12908dc0deceabf)), closes [#62](https://github.com/JuliaGNSS/Acquisition.jl/issues/62)
+
 ## [2.5.2](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.5.1...v2.5.2) (2026-07-02)
 
 
