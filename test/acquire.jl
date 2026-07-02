@@ -403,8 +403,12 @@ end
             interm_freq = 0.0Hz, subsample_interpolation = true)
         r_store = acquire!(plan, ComplexF32.(signal), prn;
             interm_freq = 0.0Hz, subsample_interpolation = true, store_power_bins = true)
-        @test r_nostore.code_phase ≈ r_store.code_phase
-        @test r_nostore.carrier_doppler ≈ r_store.carrier_doppler
+        # The recompute uses the per-column FFT plan while the stored surface
+        # came from the batched tile FFT; FFTW's two algorithms differ in the
+        # last bits, so the interpolated estimates match to ~1e-7 relative,
+        # not exactly. Tolerances far below a bin still catch logic errors.
+        @test r_nostore.code_phase ≈ r_store.code_phase atol = 1e-3
+        @test abs(r_nostore.carrier_doppler - r_store.carrier_doppler) < 0.01Hz
     end
     @testset "rotation path (L5I NH10)" begin
         system = GPSL5I()
@@ -421,8 +425,9 @@ end
         r_store = acquire!(plan, ComplexF32.(signal), prn;
             interm_freq = 0.0Hz, subsample_interpolation = true, store_power_bins = true)
         @test is_detected(r_nostore)
-        @test r_nostore.code_phase ≈ r_store.code_phase
-        @test r_nostore.carrier_doppler ≈ r_store.carrier_doppler
+        # Same last-bit caveat as the simple path above.
+        @test r_nostore.code_phase ≈ r_store.code_phase atol = 1e-3
+        @test abs(r_nostore.carrier_doppler - r_store.carrier_doppler) < 0.01Hz
         @test r_nostore.secondary_code_phase == r_store.secondary_code_phase
     end
 end
