@@ -21,7 +21,7 @@ GNSSSignals.get_data_frequency(::_LongL5I)          = 0.0Hz
 GNSSSignals.get_secondary_code(::_LongL5I)          = GNSSSignals.NoSecondaryCode()
 GNSSSignals.get_secondary_code_length(::_LongL5I)   = 1
 GNSSSignals.get_code_type(::_LongL5I)               = Int16
-function GNSSSignals.gen_code!(buffer::AbstractVector, ::_LongL5I, prn::Integer,
+function GNSSSignals.gen_code!(buffer::AbstractVector{Int8}, ::_LongL5I, prn::Integer,
                                sampling_frequency::_Frequency, code_frequency::_Frequency,
                                start_phase, start_index::Integer)
     GNSSSignals.gen_code!(buffer, GPSL5I(), prn, sampling_frequency,
