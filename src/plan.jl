@@ -6,6 +6,22 @@
 # Reproduce/re-tune via `SUITE["BatchFFTCrossover"]` in benchmark/benchmarks.jl.
 const BATCH_FFT_THRESHOLD = 320
 
+# How far the FM-DBZP block count may be inflated above the ideal `min_num_blocks`
+# before the configuration is judged degenerate and `plan_acquire` falls back to the
+# generic engine. FM-DBZP must pick `num_blocks` as a divisor of `samples_per_code`;
+# when `samples_per_code` has no divisor near `min_num_blocks` (prime or near-prime, e.g.
+# 2039 → only divisor ≥ min is 2039 itself, `block_size == 1`) the smallest valid divisor
+# is forced far above the requirement, collapsing the block structure and blowing up the
+# Doppler-bin count. A factor of 2 keeps every well-supported GNSS rate on the fast path
+# (16.368 MHz, 5/10/25 MHz all land within ~1.8× of `min_num_blocks`) while routing the
+# genuinely degenerate rates to the generic circular-correlation engine.
+const FMDBZP_MAX_BLOCK_INFLATION = 2
+
+# Common supertype of the FM-DBZP `AcquisitionPlan` and the generic
+# `GenericAcquisitionPlan` (see generic_acquire.jl). Lets the single-PRN `acquire!`
+# convenience overloads and one-shot `acquire` dispatch over either engine.
+abstract type AbstractAcquisitionPlan end
+
 # Per-thread mutable scratch buffers used during acquisition.
 # Allocated once per pool slot in `plan_acquire` to enable multi-threaded PRN processing.
 # Internal — not part of the public API.
@@ -78,7 +94,8 @@ Pre-computed acquisition plan for FM-DBZP (Heckler & Garrison 2009).
 
 See [`plan_acquire`](@ref) and [`acquire`](@ref).
 """
-struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEstimator}
+struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEstimator} <:
+       AbstractAcquisitionPlan
     system::S
     sampling_freq::typeof(1.0Hz)
     samples_per_code::Int       # paper N_τ  — samples per code period
@@ -423,11 +440,32 @@ function plan_acquire(
         end
         found
     end
+
     if isnothing(num_blocks)
         throw(ArgumentError(
             "No valid num_blocks found: samples_per_code=$samples_per_code has no divisor " *
             ">= min_num_blocks=$min_num_blocks. " *
-            "This should not happen for standard GNSS sampling frequencies — please file a bug."))
+            "This usually means min_doppler_coverage exceeds what the sampling frequency " *
+            "can represent (min_num_blocks > samples_per_code). Reduce min_doppler_coverage."))
+    end
+
+    # Fallback trigger: route to the generic circular-correlation PCPS engine
+    # (`GenericAcquisitionPlan`, generic_acquire.jl) when the FM-DBZP block count this
+    # planner would pick is degenerate for the requested sampling frequency — i.e.
+    # `samples_per_code` has no divisor within `FMDBZP_MAX_BLOCK_INFLATION`× of the ideal
+    # `min_num_blocks`, forcing a collapsed block structure (prime / near-prime rates).
+    # The decision is read off the divisor FM-DBZP would actually pick, so every
+    # well-supported rate stays on the fast path byte-for-byte, while acquisition now
+    # works at any sampling frequency.
+    if num_blocks > FMDBZP_MAX_BLOCK_INFLATION * min_num_blocks
+        return _plan_generic_acquire(
+            system, sampling_freq, prns, samples_per_code;
+            min_doppler_coverage,
+            num_coherently_integrated_code_periods,
+            num_noncoherent_accumulations,
+            noise_estimator,
+            fft_flag,
+        )
     end
 
     # Validate data-channel coherent integration length.

@@ -335,7 +335,7 @@ last bin, and that bin is guaranteed to be ≥ `+min_doppler_coverage`.
 `num_blocks` must divide `samples_per_code` exactly so that each block has an
 integer number of samples (`block_size = samples_per_code ÷ num_blocks`).
 `plan_acquire` finds the smallest valid divisor automatically, but this means
-**not all sampling frequencies support all Doppler coverages**.
+the fast FM-DBZP engine does not serve *every* sampling frequency equally well.
 
 For example, at 2.048 MHz (`samples_per_code = 2048`) the valid divisors are
 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048 — so `num_blocks` will always
@@ -343,9 +343,31 @@ be a power of two and Doppler coverage is always a multiple of the bin spacing.
 At 5 MHz (`samples_per_code = 5000`) the divisors include 5, 10, 20, 25, … —
 giving more choices but potentially a larger jump to the next valid `num_blocks`.
 
-If `plan_acquire` cannot find a valid `num_blocks` for your sampling frequency and
-`min_doppler_coverage`, it throws an `ArgumentError`. Try a slightly different
-sampling frequency or reduce `min_doppler_coverage`.
+#### Automatic generic fallback
+
+When `samples_per_code` has no divisor near the ideal block count — most acutely
+for prime or near-prime `samples_per_code` (e.g. 2.039 MHz → `samples_per_code =
+2039`, prime), where the only admissible divisor is `samples_per_code` itself and
+the block structure collapses (`block_size = 1`) — `plan_acquire` transparently
+returns a `GenericAcquisitionPlan` instead. This is a plain **circular-correlation
+parallel code-phase search** (PCPS, in the spirit of Acquisition.jl v1.7.1) that
+has *no* divisibility constraint and acquires at **any** sampling frequency. It is
+slower than FM-DBZP (it runs one full-length FFT per Doppler bin) and degrades
+gracefully — no secondary-code rotation search (`secondary_code_phase` is
+`nothing`) and no bit-edge search — but it makes the package robust to arbitrary
+front-end clocks.
+
+The fallback is fully transparent: the returned plan carries the same public
+fields and is accepted by [`acquire!`](@ref), [`get_num_cells`](@ref),
+[`is_detected`](@ref) and the plotting recipe exactly like an
+[`AcquisitionPlan`](@ref). Well-supported rates (2.048/5/10/16.368/25 MHz, …)
+stay on the fast FM-DBZP path unchanged. If you would rather keep the fast engine,
+use [`recommend_sampling_freqs`](@ref) to pick a nearby FFTW-friendly rate.
+
+If `min_doppler_coverage` exceeds what the sampling frequency can represent
+(`min_num_blocks > samples_per_code`, i.e. requesting more Doppler span than the
+grid supports), `plan_acquire` still throws an `ArgumentError` — reduce
+`min_doppler_coverage`.
 
 #### Why the *smallest* valid divisor?
 

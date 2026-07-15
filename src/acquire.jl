@@ -763,7 +763,7 @@ end
 Single-PRN convenience method. Calls the multi-PRN `acquire!` and returns the single result.
 """
 function acquire!(
-    plan::AcquisitionPlan,
+    plan::AbstractAcquisitionPlan,
     signal,
     prn::Integer;
     interm_freq = 0.0Hz,
