@@ -423,6 +423,23 @@ There are two FFT stages, and they behave very differently:
   with it. The pathological case is 1.542 MHz (`1542 = 2·3·257`): the only divisor
   `≥ min_num_blocks` is 257, forcing a radix-257 column FFT.
 
+How costly is that? Measured on GPS L1 C/A, 32 PRNs, `min_doppler_coverage =
+7000Hz` (illustrative — absolute times are machine- and thread-dependent, the
+adjacent-rate ratios much less so):
+
+| Sampling freq | `num_doppler_bins` | `acquire!(1:32)` | vs. smooth neighbour |
+|:--------------|:------------------:|:----------------:|:--------------------:|
+| 1.500 MHz | 20 (`2²·5`) | 0.6 ms | — |
+| **1.542 MHz** | **257** (prime) | **21 ms** | **~35× slower** |
+| 3.000 MHz | 20 (`2²·5`) | 0.9 ms | — |
+| **3.069 MHz** | **31** (prime) | **3.0 ms** | **~3× slower** |
+
+The inner FFT is padded in every row, so the whole gap is the column FFT: a
+0.1 % change in `fs` (1.500 → 1.542 MHz) can cost ~35×. (Rates that *used* to be
+slow only because of the inner FFT — e.g. 6.138 MHz, or 16.368 MHz above — are
+no longer affected: padding handles them and `num_blocks` lands on a smooth
+value.)
+
 As a rule of thumb for GPS L1 C/A, prefer a sampling frequency whose
 `samples_per_code` (≈ `fs / 1000` in Hz, rounded up) is smooth. Powers of two
 (2.048, 4.096, 8.192, 16.384 MHz) and `2^a · 5^b` rates (2, 2.5, 5, 10.24 MHz)
