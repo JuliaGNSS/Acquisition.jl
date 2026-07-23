@@ -262,10 +262,17 @@ if _is_fmdbzp
     SUITE["AcquireSignals"] = BenchmarkGroup()
 
     signal_cases = [
-        (GNSSSignals.GPSL1CA,     5.0e6Hz,  "L1CA_5MHz"),
-        (GNSSSignals.GalileoE1B, 15.0e6Hz,  "E1B_15MHz"),
-        (GNSSSignals.GPSL5I,     25.0e6Hz,  "L5I_25MHz"),
-        (GNSSSignals.GPSL1C_P,   16.0e6Hz,  "L1CP_16MHz"),
+        (GNSSSignals.GPSL1CA,     5.0e6Hz,     "L1CA_5MHz"),
+        (GNSSSignals.GalileoE1B, 15.0e6Hz,     "E1B_15MHz"),
+        (GNSSSignals.GPSL5I,     25.0e6Hz,     "L5I_25MHz"),
+        (GNSSSignals.GPSL1C_P,   16.0e6Hz,     "L1CP_16MHz"),
+        # Non-smooth rate: 16.368 MHz (= 16 × 1.023 MHz, the canonical GNSS IF)
+        # gives samples_per_code 16368 = 2⁴·3·11·31, so the inner double-block
+        # FFT lands on a large prime. `plan_acquire` pads it to a 2·3·5·7-smooth
+        # size; this case guards that fast path (and the FFT-size regression it
+        # fixes) against future changes. The other rates above are all smooth, so
+        # padding is a no-op there.
+        (GNSSSignals.GPSL1CA,    16.368e6Hz,   "L1CA_16.368MHz"),
     ]
     bench_prns = collect(1:4)
 
