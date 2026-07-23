@@ -482,9 +482,12 @@ recommend_sampling_freqs(10_000, 36e6Hz;
 ```
 
 By default candidates are ranked by estimated FFT cost; pass
-`sort_by = :smoothness` to rank by largest prime factor of the inner FFT size
-instead. Use `max_prime` to tighten or relax the smoothness budget (default
-`7`, FFTW's "fast" regime).
+`sort_by = :smoothness` to rank by largest prime factor of `num_doppler_bins`
+(the column FFT) instead. Use `max_prime` to tighten or relax the smoothness
+budget (default `7`, FFTW's "fast" regime). Both apply to the column FFT only —
+the inner FFT is zero-padded to a fast size regardless, so a rate like
+16.368 MHz (non-smooth `samples_per_code`, but smooth `num_doppler_bins`) is now
+recommended rather than rejected.
 
 #### Filtering against an SDR's hardware constraints
 

@@ -2,9 +2,11 @@
 # Tests for recommend_sampling_freqs
 
 @testset "recommend_sampling_freqs — code_length / code_freq form" begin
-    # Worked example from the docs: fs=40 MHz, code 36 MHz × 10000 chips
-    # has samples_per_code=11112 = 2³·3·463, which violates max_prime=7.
-    # The recommender should skip 40 MHz and find smooth alternatives above it.
+    # Worked example: fs=40 MHz, code 36 MHz × 10000 chips has
+    # samples_per_code=11112 = 2³·3·463. The inner FFT is zero-padded to a fast
+    # size, so `samples_per_code`'s factorization no longer disqualifies a rate;
+    # the recommender returns candidates whose column FFT (num_doppler_bins) is
+    # 7-smooth, ranked by cost.
     rs = recommend_sampling_freqs(
         10_000, 36e6Hz;
         fs_min = 36e6Hz,
@@ -24,12 +26,14 @@
     # Every returned candidate must satisfy the smoothness budget on all three
     # FFT sizes.
     for r in rs
-        @test r.inner_max_prime <= 7
+        @test r.inner_max_prime <= 7   # padded inner FFT is always 7-smooth
         @test r.num_doppler_bins_max_prime <= 7
         # Sanity: divisibility, geometry, and coverage
         @test r.samples_per_code % r.num_blocks == 0
         @test r.block_size == r.samples_per_code ÷ r.num_blocks
-        @test r.inner_fft_size == 2 * r.block_size
+        # inner_fft_size is the padded (7-smooth) length, >= the raw 2*block_size
+        @test r.inner_fft_size == nextprod((2, 3, 5, 7), 2 * r.block_size)
+        @test r.inner_fft_size >= 2 * r.block_size
         @test r.num_doppler_bins == 36 * r.num_blocks
         @test ustrip(Hz, r.doppler_coverage) >= 2 * 10_000  # ±10 kHz minimum
     end
@@ -50,8 +54,38 @@ end
         sort_by = :smoothness,
     )
     @test !isempty(rs_smooth)
-    primes = [r.inner_max_prime for r in rs_smooth]
+    # :smoothness ranks by the column FFT (num_doppler_bins), the only stage
+    # whose smoothness still matters after inner-FFT padding.
+    primes = [r.num_doppler_bins_max_prime for r in rs_smooth]
     @test issorted(primes)
+end
+
+@testset "recommend_sampling_freqs — column FFT is the only smoothness gate" begin
+    # After inner-FFT padding, a rate is fast iff its column FFT (num_doppler_bins)
+    # is smooth — regardless of samples_per_code / inner-FFT factorization.
+    #
+    # 16.368 MHz: samples_per_code = 16368 = 2⁴·3·11·31 (NOT smooth), but at
+    # min_doppler_coverage = 7000 Hz num_blocks = 16 → num_doppler_bins = 16
+    # (smooth) and the inner FFT pads 2046 → 2048. It must now be recommended,
+    # whereas the old inner/samples_per_code smoothness gate rejected it.
+    rs = recommend_sampling_freqs(GPSL1CA();
+        fs_min = 16.36e6Hz, fs_max = 16.40e6Hz,
+        min_doppler_coverage = 7000Hz, num_alternatives = 20)
+    fss = [round(Int, ustrip(Hz, r.sampling_freq)) for r in rs]
+    @test 16_368_000 in fss
+    for r in rs
+        @test r.num_doppler_bins_max_prime <= 7        # the gate
+        @test r.inner_max_prime <= 7                   # padded, always smooth
+        @test r.inner_fft_size >= 2 * r.block_size
+    end
+
+    # 1.542 MHz: samples_per_code = 1542 = 2·3·257, whose only divisor
+    # >= min_num_blocks (at 7000 Hz) is 257 → radix-257 column FFT that padding
+    # cannot fix. It must be rejected.
+    rs2 = recommend_sampling_freqs(GPSL1CA();
+        fs_min = 1.540e6Hz, fs_max = 1.545e6Hz,
+        min_doppler_coverage = 7000Hz, num_alternatives = 20)
+    @test all(r -> round(Int, ustrip(Hz, r.sampling_freq)) != 1_542_000, rs2)
 end
 
 @testset "recommend_sampling_freqs — system convenience method" begin

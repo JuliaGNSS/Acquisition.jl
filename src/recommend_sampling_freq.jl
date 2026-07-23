@@ -13,13 +13,17 @@ A single sampling-frequency candidate from [`recommend_sampling_freqs`](@ref).
   - `num_blocks::Int`: Smallest valid `num_blocks` that meets `min_doppler_coverage`
     (= the value `plan_acquire` would pick)
   - `block_size::Int`: `samples_per_code ÷ num_blocks`
-  - `inner_fft_size::Int`: Inner double-block FFT length (`2 × block_size`)
+  - `inner_fft_size::Int`: Inner double-block FFT length actually run — `2 ×
+    block_size` zero-padded up to the next `2·3·5·7`-smooth size by
+    [`plan_acquire`](@ref), so always FFTW-fast
   - `num_doppler_bins::Int`: Column-FFT length
     (`num_coherently_integrated_code_periods × num_blocks`)
   - `doppler_coverage::typeof(1.0Hz)`: Total Doppler coverage at this configuration
-  - `inner_max_prime::Int`: Largest prime factor of `inner_fft_size` — smaller is
-    better for FFTW
+  - `inner_max_prime::Int`: Largest prime factor of `inner_fft_size` — `≤ 7` by
+    construction (the inner FFT is padded); reported for reference only
   - `num_doppler_bins_max_prime::Int`: Largest prime factor of `num_doppler_bins`
+    — the value that gates the recommendation, since the column FFT is a DFT that
+    cannot be zero-padded to a smooth size
   - `cost::Float64`: Estimated combined FFT cost
     (`inner_fft_cost + column_fft_cost`, see [`recommend_sampling_freqs`](@ref))
 """
@@ -112,7 +116,8 @@ end
 
 # Cost model matching the docstring of `recommend_sampling_freqs`.
 function _fft_cost(samples_per_code, num_blocks, num_doppler_bins, inner_fft_size)
-    # 2 (forward + inverse) × num_blocks FFTs of size inner_fft_size, each ~ N log N
+    # 2 (forward + inverse) × num_blocks FFTs of size inner_fft_size (the padded,
+    # FFTW-fast length that actually runs), each ~ N log N
     inner = 2.0 * num_blocks * inner_fft_size * log2(inner_fft_size)
     # samples_per_code column FFTs of size num_doppler_bins, each ~ N log N
     column = float(samples_per_code) * num_doppler_bins * log2(num_doppler_bins)
@@ -154,11 +159,15 @@ deduplicated — the first matching `sampling_freq` is reported.
   - `num_coherently_integrated_code_periods`: Number of code periods per coherent
     integration block. Affects `num_doppler_bins` and therefore the column-FFT cost.
   - `num_alternatives`: Maximum number of candidates to return (default `5`)
-  - `max_prime`: Reject candidates whose `samples_per_code`, `inner_fft_size`,
-    or `num_doppler_bins` contain a prime factor larger than this value
-    (default `7` — FFTW's "fast" regime)
+  - `max_prime`: Reject candidates whose `num_doppler_bins` contains a prime
+    factor larger than this value (default `7` — FFTW's "fast" regime).
+    `num_doppler_bins` is the column FFT, the only FFT whose smoothness still
+    affects speed: the inner double-block FFT is zero-padded to a fast size
+    automatically, so neither its nor `samples_per_code`'s factorization gates
+    the recommendation.
   - `sort_by`: `:cost` (default) ranks by estimated FFT FLOPs; `:smoothness`
-    ranks by largest prime factor of `inner_fft_size` (ties broken by cost)
+    ranks by largest prime factor of `num_doppler_bins` — the column FFT — (ties
+    broken by cost)
   - `fs_step`: Sampling-frequency sweep step (default `1000Hz`)
   - `sdr_clock_plan`: Optional [`AbstractSDRClockPlan`](@ref) describing
     hardware sample-rate constraints. When provided, the sweep range is
@@ -177,6 +186,8 @@ cost            = inner_fft_cost + column_fft_cost
 ```
 
 This mirrors the per-PRN per coherent-step work, ignoring constant factors.
+`inner_fft_size` is the padded (FFTW-fast) length that actually runs, not the raw
+`2 × block_size`.
 
 # See also
 
@@ -230,35 +241,39 @@ function recommend_sampling_freqs(
         samples_per_code = ceil(Int, T_code * fs_hz)
         if !(samples_per_code in seen_spc)
             push!(seen_spc, samples_per_code)
-            spc_max_prime = _largest_prime_factor(samples_per_code)
-            if spc_max_prime <= max_prime
-                bin_width = fs_hz / samples_per_code
-                # Mirror plan_acquire's geometry: the highest searched bin must reach
-                # +min_doppler_coverage. See `plan_acquire` for the derivation.
-                min_num_blocks = ceil(Int,
-                    2 * min_doppler_coverage_hz / bin_width
-                    + 2 / num_coherently_integrated_code_periods)
-                num_blocks = _smallest_valid_num_blocks(samples_per_code, min_num_blocks)
-                if num_blocks !== nothing
-                    block_size = samples_per_code ÷ num_blocks
-                    inner_fft_size = 2 * block_size
-                    num_doppler_bins = num_coherently_integrated_code_periods * num_blocks
-                    inner_max_prime = _largest_prime_factor(inner_fft_size)
-                    ndb_max_prime = _largest_prime_factor(num_doppler_bins)
-                    if inner_max_prime <= max_prime && ndb_max_prime <= max_prime
-                        push!(candidates, SamplingFreqRecommendation(
-                            fs_hz * Hz,
-                            samples_per_code,
-                            num_blocks,
-                            block_size,
-                            inner_fft_size,
-                            num_doppler_bins,
-                            (num_blocks * bin_width) * Hz,
-                            inner_max_prime,
-                            ndb_max_prime,
-                            _fft_cost(samples_per_code, num_blocks, num_doppler_bins, inner_fft_size),
-                        ))
-                    end
+            bin_width = fs_hz / samples_per_code
+            # Mirror plan_acquire's geometry: the highest searched bin must reach
+            # +min_doppler_coverage. See `plan_acquire` for the derivation.
+            min_num_blocks = ceil(Int,
+                2 * min_doppler_coverage_hz / bin_width
+                + 2 / num_coherently_integrated_code_periods)
+            num_blocks = _smallest_valid_num_blocks(samples_per_code, min_num_blocks)
+            if num_blocks !== nothing
+                block_size = samples_per_code ÷ num_blocks
+                # The inner double-block FFT is zero-padded to the next 2·3·5·7-
+                # smooth length by plan_acquire, so report that padded size and
+                # let it always meet the smoothness budget. Only the column FFT
+                # (num_doppler_bins) — a DFT that cannot be padded — gates the
+                # candidate; `samples_per_code`'s own factorization is irrelevant
+                # (e.g. 16.368 MHz has a non-smooth samples_per_code but a smooth
+                # num_doppler_bins, and is fast after padding).
+                inner_fft_size = nextprod((2, 3, 5, 7), 2 * block_size)
+                num_doppler_bins = num_coherently_integrated_code_periods * num_blocks
+                inner_max_prime = _largest_prime_factor(inner_fft_size)
+                ndb_max_prime = _largest_prime_factor(num_doppler_bins)
+                if ndb_max_prime <= max_prime
+                    push!(candidates, SamplingFreqRecommendation(
+                        fs_hz * Hz,
+                        samples_per_code,
+                        num_blocks,
+                        block_size,
+                        inner_fft_size,
+                        num_doppler_bins,
+                        (num_blocks * bin_width) * Hz,
+                        inner_max_prime,
+                        ndb_max_prime,
+                        _fft_cost(samples_per_code, num_blocks, num_doppler_bins, inner_fft_size),
+                    ))
                 end
             end
         end
@@ -266,9 +281,9 @@ function recommend_sampling_freqs(
     end
 
     if sort_by === :cost
-        sort!(candidates, by = c -> (c.cost, c.inner_max_prime))
+        sort!(candidates, by = c -> (c.cost, c.num_doppler_bins_max_prime))
     else
-        sort!(candidates, by = c -> (c.inner_max_prime, c.cost))
+        sort!(candidates, by = c -> (c.num_doppler_bins_max_prime, c.cost))
     end
 
     return first(candidates, num_alternatives)
