@@ -20,11 +20,22 @@ function _precompute_signal_block_ffts!(
     fft_plan,
 )
     double_block_size = 2 * block_size
+    # The inner FFT is run at `fft_size` (>= double_block_size) — the padded,
+    # FFTW-fast length chosen in `plan_acquire`. The output cache defines it; the
+    # buffer and FFT plan match it. The pad tail [double_block_size+1 : fft_size]
+    # carries only zeros, so the first `block_size` correlation lags recovered in
+    # `_build_coherent_tile!` are unchanged (linear-corr length 2·bs-1 <= fft_size).
+    fft_size = size(signal_block_ffts, 1)
     segment_length = num_coherently_integrated_code_periods * samples_per_code
     length(signal_f32) >= segment_length || throw(ArgumentError(
         "signal_f32 length $(length(signal_f32)) < num_coherently_integrated_code_periods*samples_per_code = $segment_length"))
 
     @inbounds for global_block_idx in 0:num_coherently_integrated_code_periods*num_blocks-1
+        # Clear the pad tail — the previous iteration's in-place FFT overwrote it.
+        # No-op when fft_size == double_block_size (unpadded / smooth size).
+        for i in double_block_size+1:fft_size
+            double_block_buf[i] = zero(ComplexF32)
+        end
         block_start = global_block_idx * block_size + 1
         next_start  = (global_block_idx + 1) * block_size + 1
         if next_start + block_size - 1 <= segment_length
@@ -38,8 +49,8 @@ function _precompute_signal_block_ffts!(
             copyto!(double_block_buf, block_size+remaining+1,  signal_f32, 1,           block_size - remaining)
         end
         mul!(double_block_buf, fft_plan, double_block_buf)
-        copyto!(signal_block_ffts, global_block_idx * double_block_size + 1,
-                double_block_buf, 1, double_block_size)
+        copyto!(signal_block_ffts, global_block_idx * fft_size + 1,
+                double_block_buf, 1, fft_size)
     end
     return signal_block_ffts
 end
@@ -133,8 +144,11 @@ function _build_coherent_tile!(
     corr_buf::Vector{ComplexF32},
     bfft_plan,
 )
-    double_block_size = 2 * block_size
-    inverse_double_block_size = 1f0 / double_block_size
+    # Normalise by the ACTUAL inverse-FFT length. corr_buf may be zero-padded to
+    # the FFTW-fast `fft_size` >= 2*block_size chosen in `plan_acquire`; dividing
+    # by that length recovers correlation values identical to the unpadded case
+    # (the standard IFFT 1/N and the N summed terms cancel to the true lag).
+    inv_fft_size = 1f0 / length(corr_buf)
 
     # No fill!: every cell of `tile` is written exactly once — the row loops
     # cover all `num_coh × num_blocks` rows and each IFFT fills a whole row.
@@ -150,7 +164,7 @@ function _build_coherent_tile!(
             # Inverse FFT (unnormalised), normalise, keep first block_size lags.
             mul!(corr_buf, bfft_plan, corr_buf)
             row = global_block_idx + 1
-            tile[row, 1:block_size] .= view(corr_buf, 1:block_size) .* inverse_double_block_size
+            tile[row, 1:block_size] .= view(corr_buf, 1:block_size) .* inv_fft_size
         end
     end
     return tile
