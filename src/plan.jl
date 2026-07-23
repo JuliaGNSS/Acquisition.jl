@@ -20,8 +20,8 @@ const BATCH_FFT_THRESHOLD = 320
 # not the PRN count) and the per-PRN `result_buffers` when the caller opts in
 # via `store_power_bins = true`.
 struct AcquisitionScratch
-    double_block_buf::Vector{ComplexF32}            # length double_block_size
-    corr_buf::Vector{ComplexF32}                    # length double_block_size
+    double_block_buf::Vector{ComplexF32}            # length fft_size (padded 2*block_size)
+    corr_buf::Vector{ComplexF32}                    # length fft_size (padded 2*block_size)
     # One FM-DBZP column-block tile of the coherent-integration surface:
     # (num_doppler_bins, block_size). Every consumer after the build stage is
     # column-oriented, so the full (num_doppler_bins, samples_per_code) matrix
@@ -95,17 +95,17 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     num_data_bits::Int          # paper N_db  — data bit periods per coherent block (1 for pilot/sub-bit)
     bit_edge_search_steps::Int          # paper N_be  — bit edge search positions (1 = disabled)
     num_noncoherent_accumulations::Int  # incoherent integration steps
-    # Conjugated PRN FFTs: prn_conj_ffts[prn] is (double_block_size, num_blocks);
-    # column k+1 = conj(FFT(zero-padded PRN sub-block k)), precomputed to avoid
-    # conjugation in the inner loop of _build_coherent_integration_matrix!
+    # Conjugated PRN FFTs: prn_conj_ffts[prn] is (fft_size, num_blocks);
+    # column k+1 = conj(FFT(PRN sub-block k zero-padded to fft_size)), precomputed
+    # to avoid conjugation in the inner loop of _build_coherent_integration_matrix!
     prn_conj_ffts::Dict{Int,Matrix{ComplexF32}}
-    double_block_fft_plan::P1   # in-place forward FFT, size double_block_size
-    double_block_bfft_plan::P2  # in-place backward FFT (unnormalised), size double_block_size
+    double_block_fft_plan::P1   # in-place forward FFT, size fft_size (padded 2*block_size)
+    double_block_bfft_plan::P2  # in-place backward FFT (unnormalised), size fft_size
     col_fft_plan::P3            # in-place forward FFT, size num_doppler_bins = num_coherently_integrated_code_periods*num_blocks
     col_batch_fft_plan::P4      # in-place forward FFT along dim 1 of a (num_doppler_bins, block_size) tile; `nothing` when num_doppler_bins > BATCH_FFT_THRESHOLD
     # doppler_freqs: StepRangeLen of num_doppler_bins Hz values, sorted from -doppler_coverage_hz/2 to doppler_coverage_hz/2-doppler_bin_spacing_hz
     doppler_freqs::DS
-    # Signal-block FFT cache: (double_block_size, num_coh*num_blocks*N_nc).
+    # Signal-block FFT cache: (fft_size, num_coh*num_blocks*N_nc).
     # Holds FFT(signal double-block k) for EVERY accumulation segment,
     # precomputed serially once per acquire! call (the same total FFT work the
     # per-segment cache used to do) and then read-only shared across the PRN
@@ -211,11 +211,12 @@ end
 end
 
 """
-    _precompute_prn_ffts!(prn_ffts, system, prn, sampling_freq, samples_per_code, num_blocks, block_size, double_block_size, fft_plan)
+    _precompute_prn_ffts!(prn_ffts, system, prn, sampling_freq, samples_per_code, num_blocks, block_size, fft_size, fft_plan)
 
-Populate `prn_ffts[prn]` with a `(double_block_size, num_blocks)` matrix.
-Column `k+1` (1-indexed) holds `FFT([code[k*block_size+1:(k+1)*block_size] ; zeros(block_size)])`,
-i.e. the FFT of PRN sub-block `k` zero-padded to `double_block_size`.
+Populate `prn_ffts[prn]` with a `(fft_size, num_blocks)` matrix.
+Column `k+1` (1-indexed) holds `FFT([code[k*block_size+1:(k+1)*block_size] ; zeros(fft_size-block_size)])`,
+i.e. the FFT of PRN sub-block `k` zero-padded to `fft_size` (the FFTW-fast inner
+FFT length chosen in `plan_acquire`, `>= 2*block_size`).
 
 ## Algorithm
 
@@ -234,12 +235,12 @@ function _precompute_prn_ffts!(
     samples_per_code::Int,
     num_blocks::Int,
     block_size::Int,
-    double_block_size::Int,
+    fft_size::Int,
     fft_plan,
 )
     prn_code = gen_code(samples_per_code, system, prn, sampling_freq, get_code_frequency(system), 0.0)
-    conj_fft_matrix = zeros(ComplexF32, double_block_size, num_blocks)
-    fft_buf = zeros(ComplexF32, double_block_size)
+    conj_fft_matrix = zeros(ComplexF32, fft_size, num_blocks)
+    fft_buf = zeros(ComplexF32, fft_size)
     for block_idx in 0:num_blocks-1
         fft_buf .= 0
         fft_buf[1:block_size] .= ComplexF32.(prn_code[block_idx*block_size+1:(block_idx+1)*block_size])
@@ -446,14 +447,25 @@ function plan_acquire(
 
     block_size = samples_per_code ÷ num_blocks
     double_block_size = 2 * block_size
+    # Inner correlation FFT length. `samples_per_code` (hence block_size) is fixed
+    # by the sampling frequency and can carry a large prime factor — e.g. at
+    # 16.368 MHz, block_size = 1023 → double_block_size = 2046 = 2·3·11·31, whose
+    # radix-31 FFT is ~11× slower than a nearby smooth size. Zero-padding the inner
+    # FFT up to the next 2·3·5·7-smooth length (FFTW's fast regime; the same
+    # `max_prime = 7` bound `recommend_sampling_freqs` uses) restores that speed
+    # WITHOUT changing num_blocks, the Doppler grid, or the result: any length
+    # >= 2·block_size preserves the first `block_size` linear-correlation lags, and
+    # the IFFT is normalised by the actual length (see `_build_coherent_tile!`).
+    # No-op when double_block_size is already 7-smooth.
+    fft_size = nextprod((2, 3, 5, 7), double_block_size)
     # num_data_bits (paper: N_db): number of full data bit periods within the coherent window.
     # 1 for pilot channels and sub-bit integration (< one bit period); bit combination search
     # is only needed when num_data_bits > 1 (multiple bits → unknown polarity transitions).
     num_data_bits = (has_data && num_coherently_integrated_code_periods >= bit_period_codes) ? num_coherently_integrated_code_periods ÷ bit_period_codes : 1
     num_doppler_bins = num_coherently_integrated_code_periods * num_blocks  # paper C_fd
 
-    # FFT plans (in-place, size double_block_size and num_doppler_bins)
-    double_block_proto = zeros(ComplexF32, double_block_size)
+    # FFT plans (in-place, size fft_size and num_doppler_bins)
+    double_block_proto = zeros(ComplexF32, fft_size)
     double_block_fft_plan = plan_fft!(double_block_proto; flags = fft_flag)
     double_block_bfft_plan = plan_bfft!(double_block_proto; flags = fft_flag)
     col_proto = zeros(ComplexF32, num_doppler_bins)
@@ -474,7 +486,7 @@ function plan_acquire(
     prn_conj_ffts = Dict{Int,Matrix{ComplexF32}}()
     for prn in prns
         _precompute_prn_ffts!(prn_conj_ffts, system, prn, sampling_freq,
-            samples_per_code, num_blocks, block_size, double_block_size, double_block_fft_plan)
+            samples_per_code, num_blocks, block_size, fft_size, double_block_fft_plan)
     end
 
     # Doppler grid (fftshift order: sorted from -doppler_coverage_hz/2)
@@ -487,7 +499,7 @@ function plan_acquire(
     # every accumulation segment (16 bytes per signal sample). Filled once per
     # acquire! call before the PRN loop and read-only shared across all PRNs —
     # see the field docstring for why all N_nc segments are cached.
-    signal_block_ffts = zeros(ComplexF32, double_block_size,
+    signal_block_ffts = zeros(ComplexF32, fft_size,
         num_coherently_integrated_code_periods * num_blocks * num_noncoherent_accumulations)
     # At N_nc == 1 each cell of the power surface is produced exactly once, so
     # the result statistics (peak, noise row/column sums) are reduced on the fly
@@ -576,8 +588,8 @@ function plan_acquire(
     nthreads = min(Threads.nthreads(), max(1, Int(num_cores())), max(1, length(prns)))
     thread_scratch = [
         AcquisitionScratch(
-            zeros(ComplexF32, double_block_size),
-            zeros(ComplexF32, double_block_size),
+            zeros(ComplexF32, fft_size),
+            zeros(ComplexF32, fft_size),
             zeros(ComplexF32, num_doppler_bins, block_size),
             zeros(ComplexF32, num_doppler_bins),
             zeros(Float32, stage_rows, stage_cols),

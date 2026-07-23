@@ -404,6 +404,25 @@ itself is `ceil(code_length × fs / code_freq)`, its prime factorization is
 decided entirely by your sampling frequency — a 0.1 % change in `fs` can make
 the inner FFT 3-5× faster.
 
+!!! note "Inner FFT is padded to a fast size automatically"
+    `plan_acquire` zero-pads the inner double-block FFT up to the next
+    `2·3·5·7`-smooth length (`fft_size = nextprod((2, 3, 5, 7), 2 × block_size)`),
+    so a `block_size` with a large prime factor no longer forces a slow inner
+    FFT. The padded transform runs in FFTW's fast regime and returns
+    **bit-identical results** — any length `≥ 2 × block_size` preserves the kept
+    correlation lags, and the inverse FFT is normalised by the actual length. For
+    example 16.368 MHz (`block_size 1023 → 2046 = 2·3·11·31`) now pads to
+    `2048 = 2¹¹` and acquires ~5× faster than it did unpadded.
+
+    Padding fixes only the **inner** FFT. A large prime in `num_blocks` (and hence
+    `num_doppler_bins`) still slows the **column** FFT, which is a genuine DFT over
+    the Doppler axis and cannot be zero-padded without changing its bins — e.g.
+    1.542 MHz, where the [`num_blocks` divisibility constraint](#The-num_blocks-Divisibility-Constraint)
+    forces `num_blocks = 257`. Choosing a smoother rate via
+    [`recommend_sampling_freqs`](@ref) remains the fix for those. The measured
+    times in the table below predate inner-FFT padding and reflect the unpadded
+    inner FFT.
+
 As a rule of thumb for GPS L1 C/A:
 
 - Prefer sampling frequencies where `samples_per_code` (≈ `fs / 1000` in Hz,
