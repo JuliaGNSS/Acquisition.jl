@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.6.1](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.6.0...v2.6.1) (2026-07-23)
+
+
+### Bug Fixes
+
+* rank recommend_sampling_freqs by the column FFT, not the inner FFT ([0347706](https://github.com/JuliaGNSS/Acquisition.jl/commit/0347706df21759a4cd42b8766c844d1c195cda6b))
+
+
+### Performance Improvements
+
+* pad inner FFT to a smooth size to remove sampling-frequency regression ([1b10d9c](https://github.com/JuliaGNSS/Acquisition.jl/commit/1b10d9cd4698137065fb3474c621ef8186313409))
+
 # [2.6.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.5.3...v2.6.0) (2026-07-02)
 
 
