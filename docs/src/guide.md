@@ -385,85 +385,50 @@ rises by ~26 %. The gap widens with longer coherent integration, because
 so every extra divisor unit costs `num_coherently_integrated_code_periods` extra
 column-FFT bins.
 
-There is one second-order effect that can invert this trade-off: the inner FFT
-size is `2 × samples_per_code / num_blocks`, so a smaller divisor can land on a
-`block_size` with a large prime factor (11, 31, 257, …) and a slow FFTW kernel
-(see [Sampling Frequency and FFT Performance](#Sampling-Frequency-and-FFT-Performance)).
-In that situation a slightly larger divisor with a smoother `block_size` may
-win — but this is sampling-frequency-specific and rare in practice. If you
-suspect you have hit such a case, benchmark both `min_doppler_coverage`
-settings explicitly.
+The inner FFT size no longer factors into this choice. It is zero-padded to an
+FFTW-fast length regardless of `block_size` (see
+[Sampling Frequency and FFT Performance](#Sampling-Frequency-and-FFT-Performance)),
+so a `block_size` with a large prime factor no longer penalises a smaller
+divisor — the smallest valid divisor is unconditionally the right default. The
+only prime-factorization concern left is the column FFT length `num_doppler_bins`,
+which the [`recommend_sampling_freqs`](@ref) helper accounts for.
 
 ### Sampling Frequency and FFT Performance
 
-Acquisition runs many in-place FFTs at size `2 × block_size`, where
-`block_size = samples_per_code ÷ num_blocks`. FFTW is very fast when those sizes
-factor into small primes (2, 3, 5, 7) and noticeably slower when they contain
-a large prime factor such as 11, 13, 31, or 257. Since `samples_per_code`
-itself is `ceil(code_length × fs / code_freq)`, its prime factorization is
-decided entirely by your sampling frequency — a 0.1 % change in `fs` can make
-the inner FFT 3-5× faster.
+Acquisition's cost is dominated by FFTs, and FFTW runs fastest when the
+transform lengths factor into small primes (2, 3, 5, 7) and slower when they
+carry a large prime (11, 13, 31, 257, …). Both lengths are ultimately set by the
+sampling frequency, since `samples_per_code = ceil(code_length × fs / code_freq)`.
+There are two FFT stages, and they behave very differently:
 
-!!! note "Inner FFT is padded to a fast size automatically"
-    `plan_acquire` zero-pads the inner double-block FFT up to the next
-    `2·3·5·7`-smooth length (`fft_size = nextprod((2, 3, 5, 7), 2 × block_size)`),
-    so a `block_size` with a large prime factor no longer forces a slow inner
-    FFT. The padded transform runs in FFTW's fast regime and returns
-    **bit-identical results** — any length `≥ 2 × block_size` preserves the kept
-    correlation lags, and the inverse FFT is normalised by the actual length. For
-    example 16.368 MHz (`block_size 1023 → 2046 = 2·3·11·31`) now pads to
-    `2048 = 2¹¹` and acquires ~5× faster than it did unpadded.
+- **Inner double-block FFT** (size `2 × block_size`) — handled automatically.
+  `plan_acquire` zero-pads it up to the next `2·3·5·7`-smooth length
+  (`fft_size = nextprod((2, 3, 5, 7), 2 × block_size)`), so a `block_size` with a
+  large prime factor no longer selects a slow FFTW kernel. The padded transform
+  runs in the fast regime and returns **bit-identical results**: any length
+  `≥ 2 × block_size` preserves the kept correlation lags, and the inverse FFT is
+  normalised by the actual length. This used to be the biggest trap — e.g.
+  16.368 MHz (= 16 × 1.023 MHz) gives `block_size 1023 → 2046 = 2·3·11·31`, whose
+  radix-31 FFT was ~5× slower than the neighbouring 16.384 MHz rate; padding to
+  `2048 = 2¹¹` closes that gap. You no longer need to avoid a rate on the inner
+  FFT's account.
 
-    Padding fixes only the **inner** FFT. A large prime in `num_blocks` (and hence
-    `num_doppler_bins`) still slows the **column** FFT, which is a genuine DFT over
-    the Doppler axis and cannot be zero-padded without changing its bins — e.g.
-    1.542 MHz, where the [`num_blocks` divisibility constraint](#The-num_blocks-Divisibility-Constraint)
-    forces `num_blocks = 257`. Choosing a smoother rate via
-    [`recommend_sampling_freqs`](@ref) remains the fix for those. The measured
-    times in the table below predate inner-FFT padding and reflect the unpadded
-    inner FFT.
+- **Column FFT** (size `num_doppler_bins = num_coherently_integrated_code_periods ×
+  num_blocks`) — **not** zero-paddable, because it is a true DFT over the Doppler
+  axis and padding would move its bins. This is the remaining sampling-frequency
+  sensitivity. `num_blocks` is the smallest divisor of `samples_per_code` that
+  meets `min_doppler_coverage` (see
+  [The `num_blocks` Divisibility Constraint](#The-num_blocks-Divisibility-Constraint)),
+  so if every admissible divisor carries a large prime the column FFT is stuck
+  with it. The pathological case is 1.542 MHz (`1542 = 2·3·257`): the only divisor
+  `≥ min_num_blocks` is 257, forcing a radix-257 column FFT.
 
-As a rule of thumb for GPS L1 C/A:
-
-- Prefer sampling frequencies where `samples_per_code` (≈ `fs / 1000` in Hz,
-  rounded up) has only small prime factors.
-- Powers of two (2.048, 4.096, 8.192, 16.384 MHz) and
-  `2^a · 5^b` rates (2, 2.5, 5, 10.24 MHz) are always fast.
-- Avoid rates whose `samples_per_code` contains a prime ≥ 11. The commonly
-  recommended 16.368 MHz (= 16 × 1.023 MHz) is a notable offender:
-  `16368 = 2^4 · 3 · 11 · 31`, and the radix-31 inner FFT is ~5× slower than
-  nearby smooth sizes.
-
-Measured per-PRN `acquire!` times on a Ryzen 7 PRO 5850U (16 threads), GPS
-L1 C/A, `min_doppler_coverage = 10 000 Hz` (measured before the tiled
-pipeline — absolute times are lower now, but the smooth-vs-prime ratios the
-table illustrates are unchanged):
-
-| Sampling freq | `samples_per_code` (factors) | 1 ms coherent | 20 ms coherent |
-|---|---|---|---|
-| **Fast** (smooth factorization): |||
-| 1.500 MHz | `1500 = 2²·3·5³` | 0.19 ms | 4.0 ms |
-| 2.000 MHz | `2000 = 2⁴·5³` | 0.21 ms | 4.5 ms |
-| 2.048 MHz | `2048 = 2¹¹` | 0.28 ms | 10.1 ms |
-| 2.500 MHz | `2500 = 2²·5⁴` | 0.34 ms | 7.5 ms |
-| 4.000 MHz | `4000 = 2⁵·5³` | 0.39 ms | 10.7 ms |
-| 4.096 MHz | `4096 = 2¹²` | 0.63 ms | 22.9 ms |
-| 5.000 MHz | `5000 = 2³·5⁴` | 0.60 ms | 17.0 ms |
-| 8.192 MHz | `8192 = 2¹³` | 1.3 ms | 50.3 ms |
-| 10.240 MHz | `10240 = 2¹¹·5` | 1.1 ms | 32.4 ms |
-| 16.384 MHz | `16384 = 2¹⁴` | 2.4 ms | 112 ms |
-| **Slow** (large prime factor): |||
-| 1.542 MHz | `1542 = 2·3·257` | **6.6 ms** | **167 ms** |
-| 3.069 MHz | `3069 = 3²·11·31` | 1.3 ms | 33 ms |
-| 6.138 MHz | `6138 = 2·3²·11·31` | 2.7 ms | 63 ms |
-| 8.184 MHz | `8184 = 2³·3·11·31` | 3.4 ms | 82 ms |
-| 16.368 MHz | `16368 = 2⁴·3·11·31` | 7.2 ms | 167 ms |
-
-Notice the near-identical-rate pairs:
-**8.192 MHz** runs at 50 ms vs. **8.184 MHz** at 82 ms (1.6× faster);
-**16.384 MHz** runs at 112 ms vs. **16.368 MHz** at 167 ms (1.5× faster).
-If you control the RF front-end clock, picking a smooth rate is usually the
-single biggest performance lever available.
+As a rule of thumb for GPS L1 C/A, prefer a sampling frequency whose
+`samples_per_code` (≈ `fs / 1000` in Hz, rounded up) is smooth. Powers of two
+(2.048, 4.096, 8.192, 16.384 MHz) and `2^a · 5^b` rates (2, 2.5, 5, 10.24 MHz)
+are always safe: every divisor is smooth, so `num_blocks` and the column FFT are
+smooth too. The inner FFT is already taken care of by padding, so the only rates
+worth avoiding now are those that force a large prime into `num_blocks`.
 
 ### Picking a Good Sampling Frequency
 

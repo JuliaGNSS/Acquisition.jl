@@ -29,11 +29,12 @@ results = acquire!(plan, signal, 1:32; interm_freq)
 ```
 
 !!! tip "Pick a fast sampling frequency"
-    Acquisition performance depends strongly on the **prime factorization** of
-    `samples_per_code`. The commonly-cited 16.368 MHz GPS L1 rate is ~3× slower
-    than the nearby 16.384 MHz because of a radix-31 inner FFT.  See
-    [Sampling Frequency and FFT Performance](@ref) for the rule of thumb and a
-    table of measured timings.
+    Acquisition performance depends on the **prime factorization** of
+    `samples_per_code`. The inner FFT is zero-padded to a fast size
+    automatically, but a rate that forces `num_blocks` onto a large prime
+    (e.g. 1.542 MHz → 257) still gives a slow column FFT. See
+    [Sampling Frequency and FFT Performance](@ref) for the rule of thumb, and
+    [`recommend_sampling_freqs`](@ref) to pick a good rate.
 
 ## Algorithm Overview
 
