@@ -213,12 +213,17 @@ end
 
 @testset "recommend_sampling_freqs — show methods" begin
     rs = recommend_sampling_freqs(GPSL1CA(); fs_min = 2e6Hz, fs_max = 5e6Hz, num_alternatives = 2)
-    # Force a wide IO so pretty_table doesn't truncate columns we want to test.
-    io = IOContext(IOBuffer(), :displaysize => (24, 200))
+    # Use a narrow, limited IO: the table must still show every column instead of
+    # cropping and emitting a "N columns omitted" summary.
+    io = IOContext(IOBuffer(), :displaysize => (24, 80), :limit => true)
     show(io, MIME"text/plain"(), rs)
     out = String(take!(io.io))
     @test occursin("Sampling freq (MHz)", out)
     @test occursin("Inner FFT size", out)
+    @test occursin("Num Doppler bins", out)
+    @test occursin("Estimated cost", out)
+    # No columns/rows may be cropped away, even in a narrow display.
+    @test !occursin("omitted", out)
     # Factorization annotation is included in the inner FFT column
     @test occursin("(", out) && occursin(")", out)
 
