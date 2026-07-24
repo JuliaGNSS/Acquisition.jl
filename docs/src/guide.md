@@ -416,12 +416,20 @@ There are two FFT stages, and they behave very differently:
 - **Column FFT** (size `num_doppler_bins = num_coherently_integrated_code_periods ×
   num_blocks`) — **not** zero-paddable, because it is a true DFT over the Doppler
   axis and padding would move its bins. This is the remaining sampling-frequency
-  sensitivity. `num_blocks` is the smallest divisor of `samples_per_code` that
-  meets `min_doppler_coverage` (see
-  [The `num_blocks` Divisibility Constraint](#The-num_blocks-Divisibility-Constraint)),
-  so if every admissible divisor carries a large prime the column FFT is stuck
-  with it. The pathological case is 1.542 MHz (`1542 = 2·3·257`): the only divisor
-  `≥ min_num_blocks` is 257, forcing a radix-257 column FFT.
+  sensitivity, and it bites in two ways at once: an unlucky `fs` inflates
+  `num_doppler_bins` *and* lands it on a large prime. `num_blocks` is the smallest
+  divisor of `samples_per_code` that meets `min_doppler_coverage` (see
+  [The `num_blocks` Divisibility Constraint](#The-num_blocks-Divisibility-Constraint)).
+  When `samples_per_code` is smooth it has divisors packed closely together, so
+  that smallest admissible divisor sits just above `min_num_blocks`; when its
+  factorization is sparse the divisors are far apart and the constraint is forced
+  to jump to the next one up, which is both larger *and* carries the large prime.
+  The pathological case is 1.542 MHz (`1542 = 2·3·257`): its only divisors are
+  `1, 2, 3, 6, 257, 514, 771, 1542`, so the smallest one `≥ min_num_blocks` leaps
+  straight from 6 to 257 — a length that is simultaneously ~13× more Doppler bins
+  than the smooth neighbour's 20 and a radix-257 kernel. (At 1.500 MHz,
+  `1500 = 2²·3·5³` has divisors every few integers, so the same constraint lands
+  on 20.)
 
 How costly is that? Measured on GPS L1 C/A, 32 PRNs, `min_doppler_coverage =
 7000Hz` (illustrative — absolute times are machine- and thread-dependent, the
@@ -435,30 +443,18 @@ adjacent-rate ratios much less so):
 | **3.069 MHz** | **31** (prime) | **3.0 ms** | **~3× slower** |
 
 The inner FFT is padded in every row, so the whole gap is the column FFT: a
-0.1 % change in `fs` (1.500 → 1.542 MHz) can cost ~35×. (Rates that *used* to be
-slow only because of the inner FFT — e.g. 6.138 MHz, or 16.368 MHz above — are
-no longer affected: padding handles them and `num_blocks` lands on a smooth
-value.)
-
-!!! note "Most of that ~35× is the bin-count jump, not the prime FFT kernel"
-    It is tempting to read the penalty as "the length-257 FFT is a slow FFTW
-    kernel," but that is the smaller effect. The dominant term is that
-    `num_doppler_bins` itself jumps **20 → 257**: you genuinely resolve 257
-    Doppler hypotheses instead of 20. From the cost model above, the power
-    reduction sweeps `num_doppler_bins × samples_per_code` cells — `(257×1542) /
-    (20×1500) ≈ 13×` more, with *zero* dependence on FFT smoothness — and the
-    column FFT stage grows by `(257·log₂257) / (20·log₂20) ≈ 24×` from size
-    alone, i.e. even if 257 were perfectly smooth. The non-smooth (prime) length
-    adds only a further ~5× on top of the FFT stage itself. So a hypothetical
-    smooth 256-bin rate would still be ~10× slower than the 20-bin neighbour:
-    the fix is a rate with a *small smooth* admissible divisor (fewer bins),
-    not merely a smooth `num_doppler_bins` of the same size.
-
-    This is also why padding the column FFT to a smooth length would not help,
-    beyond moving its bins: the exact "pad-to-smooth-then-correct" transform for
-    a prime length is the chirp-z / Bluestein (or Rader) algorithm, which FFTW
-    already applies internally for prime sizes — and it does not beat the native
-    257-point transform here, let alone recover the bin-count cost.
+0.1 % change in `fs` (1.500 → 1.542 MHz) can cost ~35×. Most of that factor is
+the bin-count jump, not the prime kernel. The power reduction sweeps
+`num_doppler_bins × samples_per_code` cells, which alone grows `(257×1542) /
+(20×1500) ≈ 13×` with no dependence on FFT smoothness, and the column FFT stage
+grows `(257·log₂257) / (20·log₂20) ≈ 24×` from size alone — i.e. even if 257 were
+smooth. The non-smooth (prime) length adds only a further ~5× on top of the FFT
+stage itself. So the remedy is a rate with a *small smooth* admissible divisor
+(fewer bins), not merely a smooth `num_doppler_bins` of the same size: a
+hypothetical smooth 256-bin rate would still be far slower than the 20-bin
+neighbour. (Rates that *used* to be slow only because of the inner FFT — e.g.
+6.138 MHz, or 16.368 MHz above — are no longer affected: padding handles them and
+`num_blocks` lands on a small smooth value.)
 
 As a rule of thumb for GPS L1 C/A, prefer a sampling frequency whose
 `samples_per_code` (≈ `fs / 1000` in Hz, rounded up) is smooth. Powers of two
