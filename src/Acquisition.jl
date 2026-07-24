@@ -174,7 +174,16 @@ function Base.show(
         TextHighlighter((_, i, j) -> j == 2 && !detected[i], foreground = :red),
     ] : TextHighlighter[]
 
-    pretty_table(io, data; column_labels = column_labels, highlighters = highlighters)
+    # Show every column and every channel rather than letting pretty_table crop
+    # to the display and emit a "N columns/rows omitted" summary.
+    pretty_table(
+        io,
+        data;
+        column_labels = column_labels,
+        highlighters = highlighters,
+        fit_table_in_display_horizontally = false,
+        fit_table_in_display_vertically = false,
+    )
 end
 
 include("est_signal_noise_power.jl")

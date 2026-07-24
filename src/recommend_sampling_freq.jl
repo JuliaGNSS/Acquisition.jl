@@ -351,5 +351,14 @@ function Base.show(
             rs,
         ),
     )
-    pretty_table(io, data; column_labels = column_labels)
+    # These tables are meant to be read in full, so show every column and every
+    # candidate rather than letting pretty_table crop to the display and emit a
+    # "N columns/rows omitted" summary.
+    pretty_table(
+        io,
+        data;
+        column_labels = column_labels,
+        fit_table_in_display_horizontally = false,
+        fit_table_in_display_vertically = false,
+    )
 end
