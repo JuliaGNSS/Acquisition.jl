@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.2](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.6.1...v2.6.2) (2026-07-24)
+
+
+### Bug Fixes
+
+* show all columns and rows in the show-method tables ([444dede](https://github.com/JuliaGNSS/Acquisition.jl/commit/444dede72da58495993a67ba27e743b147725e75))
+
 ## [2.6.1](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.6.0...v2.6.1) (2026-07-23)
 
 
