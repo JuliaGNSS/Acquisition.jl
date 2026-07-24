@@ -16,5 +16,5 @@ var DOC_VERSIONS = [
   "v0.3",
   "dev",
 ];
-var DOCUMENTER_NEWEST = "v2.6.1";
+var DOCUMENTER_NEWEST = "v2.6.2";
 var DOCUMENTER_STABLE = "stable";
