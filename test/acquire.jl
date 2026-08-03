@@ -458,3 +458,63 @@ end
     @test result2.power_bins == result.power_bins
     @test result2.power_bins === plan.result_buffers[1]   # cached buffer reused
 end
+
+@testset "CN0 is a per-Hz quantity: independent of the coherent integration length" begin
+    # C/N₀ = C / N₀ has units of Hz and describes the signal and the front end,
+    # not the search. The peak search measures an SNR, and coherent integration
+    # over `T` makes that SNR `(C/N₀)·T`, so `T` must be divided back out. It had
+    # been divided by one code period regardless of `N =
+    # num_coherently_integrated_code_periods`, which reported `10·log₁₀(N)` dB too
+    # much — 10 dB at the N = 10 a receiver uses for weak signals, enough to make
+    # a fixed dB-Hz gate mean something different at every search setting.
+    #
+    # What is asserted is INVARIANCE across `N`, not accuracy: the estimate is a
+    # lower bound on the truth, low by the residual coherent loss (frequency
+    # error inside the Doppler bin, phase noise), which is a few dB here.
+    system = GPSL1CA()
+    prn = 1
+    sampling_freq = 4e6Hz
+    true_cn0 = 45
+    lengths = (1, 2, 4, 5, 10)
+
+    reported = map(lengths) do n
+        # Average over code phases: one trial carries a dB or two of estimator
+        # noise and the point here is the systematic offset. Undetected trials are
+        # skipped rather than asserted on — at `N = 1` a 45 dBHz signal over a
+        # 25 kHz search is genuinely marginal.
+        estimates = Float64[]
+        for k = 1:8
+            (; signal) = generate_test_signal(
+                system, prn;
+                seed = 700 + k,
+                num_samples = 4000 * n + 100,
+                doppler = 1234Hz,
+                code_phase = (k - 0.5) * 1023 / 8 + 0.137,
+                sampling_freq,
+                interm_freq = 0.0Hz,
+                CN0 = true_cn0,
+            )
+            plan = plan_acquire(
+                system, sampling_freq, [prn];
+                num_coherently_integrated_code_periods = n,
+                min_doppler_coverage = 25_000Hz,
+                fft_flag = FFTW.ESTIMATE,
+            )
+            res = acquire!(plan, signal, prn; interm_freq = 0.0Hz,
+                           subsample_interpolation = true)
+            is_detected(res) && push!(estimates, res.CN0)
+        end
+        @test length(estimates) >= 5
+        sum(estimates) / length(estimates)
+    end
+
+    # Every length lands near the truth from below, and — the property that
+    # actually matters — they agree with each other instead of climbing with `N`.
+    for cn0 in reported
+        @test cn0 ≈ true_cn0 atol = 6.0
+    end
+    @test maximum(reported) - minimum(reported) < 4.0
+    # Guard the specific regression: before the fix this climbed monotonically,
+    # by ~8 dB from N = 1 to N = 10.
+    @test reported[end] - reported[1] < 2.0
+end

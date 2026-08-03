@@ -555,7 +555,28 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins, signal, inter
     )
 
     peak_to_noise = (signal_power + noise_power) / noise_power
-    CN0 = 10 * log10(signal_power / noise_power / code_period / 1.0Hz)
+    # C/N₀ is carrier power over noise power *spectral density*, so it carries
+    # units of Hz and belongs to the signal and the front end, not to the search.
+    # What the peak search measures is a signal-to-noise ratio, and coherent
+    # integration over `T` makes that ratio `(C/N₀)·T`, so `T` has to be divided
+    # back out — and `T` is the *coherent* integration time, the span the peak's
+    # `signal_power` was actually accumulated over. Dividing by one code period
+    # instead reported `10·log₁₀(N)` dB too much (10 dB at the ten-period
+    # integration used for weak-signal acquisition), which made the number vary
+    # with the search configuration and so incomparable with a tracking loop's
+    # C/N₀ or with any fixed dB-Hz threshold.
+    #
+    # Noncoherent accumulation needs no term: summing `M` power surfaces scales
+    # the signal and noise means alike, so their ratio is unchanged in
+    # expectation.
+    #
+    # The result is a lower bound on the true C/N₀. Real coherent gain is
+    # `(C/N₀)·T·L` with `L ≤ 1` absorbing residual frequency error inside the
+    # Doppler bin, oscillator phase noise, and any data-bit transition inside
+    # `T`; recovering `L` would need it estimated separately. The remaining bias
+    # is in the conservative direction for a detection or quality gate.
+    coherent_integration_time = plan.num_coherently_integrated_code_periods * code_period
+    CN0 = 10 * log10(signal_power / noise_power / coherent_integration_time / 1.0Hz)
 
     # On the rotation path the cp axis is expanded to
     # `samples_per_code * num_secondary_rotations` and the peak col encodes
@@ -676,7 +697,9 @@ function _extract_result_streamed!(plan, scratch, prn,
     signal_power = peak_power - noise_power
 
     peak_to_noise = (signal_power + noise_power) / noise_power
-    CN0 = 10 * log10(signal_power / noise_power / code_period / 1.0Hz)
+    # See the first call site for why this is the coherent integration time.
+    coherent_integration_time = plan.num_coherently_integrated_code_periods * code_period
+    CN0 = 10 * log10(signal_power / noise_power / coherent_integration_time / 1.0Hz)
 
     # Decode the effective-cp-axis peak column into (cp_within, rotation) — see
     # `_extract_result!` for the layout.
