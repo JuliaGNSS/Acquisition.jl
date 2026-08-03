@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.3](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.6.2...v2.6.3) (2026-08-03)
+
+
+### Bug Fixes
+
+* divide C/N0 by the coherent integration time, not one code period ([f708f1a](https://github.com/JuliaGNSS/Acquisition.jl/commit/f708f1a6b40448bb1bb6520953f12ebed7ed5e3e)), closes [JuliaGNSS/GNSSReceiver.jl#107](https://github.com/JuliaGNSS/GNSSReceiver.jl/issues/107)
+
 ## [2.6.2](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.6.1...v2.6.2) (2026-07-24)
 
 
