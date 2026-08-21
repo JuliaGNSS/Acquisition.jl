@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.4](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.6.3...v2.6.4) (2026-08-21)
+
+
+### Bug Fixes
+
+* **deps:** allow GNSSSignals v4 ([38db88b](https://github.com/JuliaGNSS/Acquisition.jl/commit/38db88bb9a7e3b305560e0e5f7fddfc0fdf80e42))
+
 ## [2.6.3](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.6.2...v2.6.3) (2026-08-03)
 
 
