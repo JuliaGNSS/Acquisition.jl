@@ -13,6 +13,13 @@
 # compiled Julia code does. Every signal costs ~3 s of compilation here.
 using PrecompileTools: @setup_workload, @compile_workload
 
+# Galileo E5b, E6 and the E5a pilot's QP component only exist from GNSSSignals 4
+# on, while this package supports `GNSSSignals = "3, 4"`. Naming one that the
+# resolved version does not define would make this workload — and with it the
+# whole package — fail to precompile, so they are included only when present.
+_precompile_optional(name) =
+    isdefined(GNSSSignals, name) ? (getfield(GNSSSignals, name)(),) : ()
+
 const _PRECOMPILE_SIGNALS = (
     GPSL1CA(),
     GPSL1C_D(),
@@ -29,11 +36,11 @@ const _PRECOMPILE_SIGNALS = (
     GalileoE1C_BOC11(),
     GalileoE5aI(),
     GalileoE5aQ(),
-    GalileoE5aQP(),
-    GalileoE5bI(),
-    GalileoE5bQ(),
-    GalileoE6B(),
-    GalileoE6C(),
+    _precompile_optional(:GalileoE5aQP)...,
+    _precompile_optional(:GalileoE5bI)...,
+    _precompile_optional(:GalileoE5bQ)...,
+    _precompile_optional(:GalileoE6B)...,
+    _precompile_optional(:GalileoE6C)...,
     BeiDouB1I(),
     BeiDouB1C_D(),
     BeiDouB1C_P(),
