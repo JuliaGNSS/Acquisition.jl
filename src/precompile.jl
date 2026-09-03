@@ -16,19 +16,44 @@ using PrecompileTools: @setup_workload, @compile_workload
     sampling_freq = 2.048e6Hz
     one_period = 2048
     (; signal) = generate_test_signal(
-        system, 1;
-        num_samples = 2one_period, sampling_freq, interm_freq = 0.0Hz, CN0 = 45,
+        system,
+        1;
+        num_samples = 2one_period,
+        sampling_freq,
+        interm_freq = 0.0Hz,
+        CN0 = 45,
         unit_noise_power = true,
     )
     signal_f32 = ComplexF32.(signal)
     signal_i16 = Complex{Int16}.(round.(signal .* 64))
     @compile_workload begin
-        acquire(system, signal_i16[1:one_period], sampling_freq, [1, 2]; fft_flag = FFTW.ESTIMATE)
-        acquire(system, signal_f32[1:one_period], sampling_freq, 1; fft_flag = FFTW.ESTIMATE)
-        acquire(system, view(signal_f32, 1:one_period), sampling_freq, 1; fft_flag = FFTW.ESTIMATE)
+        acquire(
+            system,
+            signal_i16[1:one_period],
+            sampling_freq,
+            [1, 2];
+            fft_flag = FFTW.ESTIMATE,
+        )
+        acquire(
+            system,
+            signal_f32[1:one_period],
+            sampling_freq,
+            1;
+            fft_flag = FFTW.ESTIMATE,
+        )
+        acquire(
+            system,
+            view(signal_f32, 1:one_period),
+            sampling_freq,
+            1;
+            fft_flag = FFTW.ESTIMATE,
+        )
         plan = plan_acquire(
-            system, sampling_freq, [1, 2];
-            num_coherently_integrated_code_periods = 2, fft_flag = FFTW.ESTIMATE,
+            system,
+            sampling_freq,
+            [1, 2];
+            num_coherently_integrated_code_periods = 2,
+            fft_flag = FFTW.ESTIMATE,
         )
         results = acquire!(plan, signal_i16, [1, 2])
         acquire!(plan, signal_f32, [1])
