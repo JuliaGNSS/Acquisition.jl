@@ -1,5 +1,13 @@
 # Changelog
 
+# [2.7.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.6.4...v2.7.0) (2026-09-03)
+
+
+### Features
+
+* precompile acquire for every signal GNSSSignals defines ([b2711ee](https://github.com/JuliaGNSS/Acquisition.jl/commit/b2711ee5d2199527e48cd114894803657fdec350))
+* precompile the common acquire shapes ([8afdf26](https://github.com/JuliaGNSS/Acquisition.jl/commit/8afdf26ab5fb0e68a47a87b31b0fc4f781accf42)), closes [GNSSReceiver.jl#107](https://github.com/GNSSReceiver.jl/issues/107)
+
 ## [2.6.4](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.6.3...v2.6.4) (2026-08-21)
 
 
