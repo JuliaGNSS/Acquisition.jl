@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.1](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.7.0...v2.7.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* do not name GNSSSignals 4-only signals in the precompile workload ([6853798](https://github.com/JuliaGNSS/Acquisition.jl/commit/685379837b97c8f5b05850e8b9ed994db955f537)), closes [#85](https://github.com/JuliaGNSS/Acquisition.jl/issues/85)
+
 # [2.7.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.6.4...v2.7.0) (2026-09-03)
 
 
