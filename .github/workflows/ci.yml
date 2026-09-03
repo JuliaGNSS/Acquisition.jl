@@ -10,6 +10,10 @@ jobs:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
+      # Nightly is informational: a crash inside Julia itself (e.g. Pkg's
+      # resolver segfaulting on a 1.14-dev build) must not cancel the release
+      # jobs that actually gate the PR.
+      fail-fast: false
       matrix:
         version:
           - '1.10'
