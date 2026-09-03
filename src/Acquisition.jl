@@ -197,4 +197,5 @@ include("plot.jl")
 include("generate_test_signal.jl")
 include("sdr_clock_plans.jl")
 include("recommend_sampling_freq.jl")
+include("precompile.jl")
 end
