@@ -125,15 +125,15 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     # opt-in call per PRN; subsequent calls reuse the same matrix in-place.
     result_buffers::Vector{Union{Nothing,Matrix{Float32}}}
     avail_prns::Vector{Int}
-    # Hard-capped per-thread scratch pool. The per-PRN work runs under
-    # `@batch per=core`, which executes at most `min(nthreads, num_cores)` chunks
-    # concurrently, so `thread_scratch` holds exactly that many scratches and a
-    # chunk claims a free slot for the duration of each PRN (via `scratch_free` /
-    # `scratch_lock`) rather than indexing by `Threads.threadid()`. That bounds
-    # the footprint at a constant `min(nthreads, num_cores)` scratches no matter
-    # how `acquire!` is scheduled (Issue #60); a `threadid()` index would instead
-    # need one slot per thread `acquire!` ever runs on — which drifts upward over
-    # a long session when driven from `Threads.@spawn`, a risk for a 24/7 receiver.
+    # Hard-capped per-thread scratch pool. The per-PRN work runs as
+    # `min(nthreads, num_cores)` spawned chunk tasks, so `thread_scratch` holds
+    # exactly that many scratches and a chunk claims a free slot for the duration
+    # of each PRN (via `scratch_free` / `scratch_lock`) rather than indexing by
+    # `Threads.threadid()`. That bounds the footprint at a constant
+    # `min(nthreads, num_cores)` scratches no matter how `acquire!` is scheduled
+    # (Issue #60); a `threadid()` index would instead need one slot per thread
+    # `acquire!` ever runs on — which drifts upward over a long session as the
+    # chunk tasks land on different threads, a risk for a 24/7 receiver.
     # All slots are built up front (the size is known here), so the plan's
     # construction footprint is its steady-state footprint — no first-`acquire!`
     # spike. Since the pipeline is tiled, each scratch is small — its largest
@@ -183,11 +183,13 @@ _default_scratch(plan::AcquisitionPlan) = plan.thread_scratch[1]
 # Claim an exclusive scratch slot from the pool. Returns `(scratch, slot)`; the
 # caller MUST return the slot via `_release_scratch!` (use try/finally).
 #
-# Under the supported contract — one `acquire!` per plan at a time — the
-# `@batch per=core` loop runs at most as many chunks as there are slots, so the
-# free list is never empty and this is just a pop. The spin is a non-allocating
-# safety net for accidental concurrent use of one plan: it waits for a slot to
-# free rather than allocating beyond the pool, preserving the hard cap.
+# Under the supported contract — one `acquire!` per plan at a time — the PRN
+# loop spawns at most as many chunks as there are slots, so the free list is
+# never empty and this is just a pop. The retry loop is a safety net for
+# accidental concurrent use of one plan: it waits for a slot to free rather than
+# allocating beyond the pool, preserving the hard cap. It yields rather than
+# spins, so a waiting task hands its thread back instead of denying it to the
+# chunk that is about to release the slot.
 @inline function _claim_scratch!(plan::AcquisitionPlan)
     idx = 0
     while true
@@ -198,7 +200,7 @@ _default_scratch(plan::AcquisitionPlan) = plan.thread_scratch[1]
             break
         end
         unlock(plan.scratch_lock)
-        GC.safepoint()  # only reached under unsupported concurrent use of one plan
+        yield()  # only reached under unsupported concurrent use of one plan
     end
     return (@inbounds plan.thread_scratch[idx]), idx
 end
@@ -571,12 +573,12 @@ function plan_acquire(
     # The sequential path never drifts (step 0 has zero drift by definition).
     code_drift_shifts_len = sequential_prn_mode ? 0 : num_doppler_bins
 
-    # Per-thread scratch pool. Sized to the most chunks `@batch per=core` ever
-    # runs at once — `min(nthreads, num_cores, num_prns)` (the PRN loop never
-    # has more concurrent chunks than PRNs) — rather than `maxthreadid()`: a
-    # chunk claims a free slot per PRN (see `_claim_scratch!`) instead of indexing
-    # by `threadid()`, so the footprint is hard-capped at this many scratches no
-    # matter how `acquire!` is scheduled (Issue #60). The pipeline is tiled, so
+    # Per-thread scratch pool. Sized to the most chunks the PRN loop ever runs at
+    # once — `min(nthreads, num_cores, num_prns)` (the loop never spawns more
+    # chunks than PRNs) — rather than `maxthreadid()`: a chunk claims a free slot
+    # per PRN (see `_claim_scratch!`) instead of indexing by `threadid()`, so the
+    # footprint is hard-capped at this many scratches no matter how `acquire!` is
+    # scheduled (Issue #60). The pipeline is tiled, so
     # at N_nc == 1 each scratch's largest member is the (num_doppler_bins ×
     # block_size) tile — nothing in the pool scales with `samples_per_code`
     # (the L1C-P/16 MHz scratch that used to weigh ~296 MiB is now ~1.5 MiB).
