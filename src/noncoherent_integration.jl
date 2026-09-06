@@ -807,6 +807,7 @@ function _accumulate_prn_step_tiled!(
         else
             _accumulate_sign_tile!(nim, tile, col_block_idx, plan, scratch, prn, has_drift)
         end
+        _maybe_yield_block(plan, col_block_idx)
     end
     return nim
 end

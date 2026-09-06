@@ -173,6 +173,48 @@ PRN-outer, so only `min(threads, cores, #PRNs)` accumulation surfaces exist, nev
 one per PRN. The multistep path additionally caches the signal-block FFTs of all
 segments (16 bytes per signal sample) so no work is recomputed across PRNs.
 
+### Acquiring next to a real-time loop
+
+Julia's scheduler is cooperative: it never takes a thread away from a running task.
+The PRN loop spawns one chunk per scratch slot, so while an `acquire!` is in flight
+every thread is inside a chunk that will not yield until it has finished all of its
+PRNs. Anything else in the process — a tracking loop servicing a hardware correlator,
+say — waits for a whole chunk. At 8 threads and 32 PRNs that is about 1 ms of GPS
+L1 C/A at 2.048 MHz, which is the entire epoch budget of a 1 kHz loop.
+
+`max_blocking_time` bounds that wait. The per-PRN kernels then yield every few
+FM-DBZP code blocks, so acquisition stays preemptible without holding any thread out
+of the search:
+
+```julia
+import Unitful: Hz, µs
+
+plan = plan_acquire(GPSL1CA(), 2.048e6Hz, 1:32; max_blocking_time = 100µs)
+```
+
+`plan_acquire` times one PRN pass to convert the bound into a block stride, so the
+same setting means the same thing at a different sampling rate, Doppler grid or
+machine. Measured with a 1 kHz tracking loop (1 ms epoch, ~120 µs of correlator
+servicing) as an ordinary task alongside a continuous 32-PRN `acquire!`, 8 threads:
+
+| `max_blocking_time` | p99 wake lateness | acquisitions/s |
+|---|---|---|
+| `nothing` (default) | 0.753 ms | 845 |
+| `270µs` (one PRN)   | 0.218 ms | 878 |
+| `70µs`              | 0.078 ms | 895 |
+| `35µs`              | 0.040 ms | 881 |
+| `8µs` (one block)   | 0.009 ms | 755 |
+
+The observed p99 tracks the requested bound closely. It is a target rather than a
+guarantee, though: `plan_acquire` derives the stride from a timing measurement, so
+verify against your own loop if the deadline is hard.
+
+Each yield costs on the order of 250 ns, so the throughput cost grows with how many
+the bound implies. Down to roughly an eighth of a PRN pass it stays within run-to-run
+noise; only the one-block extreme is visibly expensive (a solo `acquire!` goes from
+1.016 ms to 1.250 ms here). The default is `nothing`, which yields nowhere and
+behaves exactly as before, and results never depend on the setting.
+
 ## Non-coherent Integration
 
 At low CN0, accumulate power across multiple successive signal segments:
