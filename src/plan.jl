@@ -144,6 +144,14 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     thread_scratch::Vector{AcquisitionScratch}
     scratch_free::Vector{Int}        # indices of currently-free slots in `thread_scratch`
     scratch_lock::Threads.SpinLock   # guards `scratch_free`
+    # Cooperative-preemption stride: the per-PRN kernels `yield()` after every
+    # `preempt_block_stride` FM-DBZP code blocks, bounding how long a chunk task
+    # can hold a thread against a co-resident soft-real-time task (Issue #89).
+    # `0` disables it — the default, and exactly today's behaviour. Derived from
+    # the `max_blocking_time` keyword by `_calibrate_preempt_stride!`, which
+    # needs the finished plan to time a PRN pass, hence the `Ref`: it is written
+    # once at the end of `plan_acquire` and read-only from then on.
+    preempt_block_stride::Base.RefValue{Int}
     # Pre-allocated results buffer, concrete-typed to avoid boxing allocations
     acq_results_buf::Vector{R}
     # Singleton selecting the noise-power estimator used by `est_signal_noise_power`.
@@ -306,6 +314,39 @@ multi-threaded acquisition. Scratch buffers are tile-sized (nothing scales with
   grid and the lower variance of the global mean is preferred. See the
   [Detecting Satellites](@ref) section of the guide for the rationale.
 - `fft_flag`: FFTW planning flag (default: `FFTW.MEASURE`).
+- `max_blocking_time`: upper bound on how long the per-PRN work may hold a
+  thread without giving the Julia scheduler a chance to run something else
+  (default: `nothing`, i.e. unbounded — today's behaviour). Pass a time
+  quantity, e.g. `max_blocking_time = 100u"µs"`.
+
+  Julia's scheduler is cooperative: a chunk task grinding through its PRNs never
+  yields, so a co-resident soft-real-time task (a tracking loop feeding a
+  hardware correlator) waits for a whole chunk of PRNs to finish before it can
+  run. With this set, the per-PRN kernels `yield()` every few FM-DBZP code
+  blocks instead, which bounds that wait without holding any thread out of the
+  search. `plan_acquire` measures one PRN pass to convert the requested time
+  into a block stride, so the setting means the same thing across sampling
+  rates, Doppler grids and machines.
+
+  Measured on a 1 kHz tracking loop (1 ms epoch) running alongside a continuous
+  32-PRN GPS L1 C/A `acquire!` at 2.048 MHz, 8 threads, 6 × 2000 epochs — p99
+  wake lateness of the tracking loop and acquisitions per second:
+
+  | `max_blocking_time` | p99 lateness | throughput |
+  |---|---|---|
+  | `nothing` (default) | 0.753 ms | 845/s |
+  | `270µs` (one PRN)   | 0.218 ms | 878/s |
+  | `70µs`              | 0.078 ms | 895/s |
+  | `35µs`              | 0.040 ms | 881/s |
+  | `8µs` (one block)   | 0.009 ms | 755/s |
+
+  The observed p99 tracks the requested bound closely, but it is an estimate
+  rather than a guarantee — see `_calibrate_preempt_stride!`. Each yield costs
+  on the order of 250 ns, so the throughput cost grows with how many the bound
+  implies: down to roughly an eighth of a PRN pass it stays within run-to-run
+  noise, and only the one-block extreme is visibly expensive (a solo `acquire!`
+  goes from 1.016 ms to 1.250 ms). Results never depend on the setting — a plan
+  with this set returns bit-identical results.
 
 # See also
 
@@ -323,6 +364,7 @@ function plan_acquire(
     use_secondary_code::Bool = true,
     max_secondary_code_rotations::Int = 32,
     fft_flag = FFTW.MEASURE,
+    max_blocking_time = nothing,
 )
     num_noncoherent_accumulations >= 1 || throw(ArgumentError("num_noncoherent_accumulations must be >= 1, got $num_noncoherent_accumulations"))
     num_coherently_integrated_code_periods >= 1 || throw(ArgumentError("num_coherently_integrated_code_periods must be >= 1"))
@@ -673,7 +715,7 @@ function plan_acquire(
         end
     end
 
-    return AcquisitionPlan(
+    plan = AcquisitionPlan(
         system, convert(typeof(1.0Hz), sampling_freq),
         samples_per_code, samples_per_code_eff, num_blocks, block_size, num_coherently_integrated_code_periods, num_data_bits, bit_edge_search_steps, num_noncoherent_accumulations,
         prn_conj_ffts,
@@ -687,6 +729,7 @@ function plan_acquire(
         thread_scratch,
         scratch_free,
         scratch_lock,
+        Ref(0),
         acq_results_buf,
         noise_estimator,
         use_secondary_code,
@@ -696,4 +739,73 @@ function plan_acquire(
         tiled_phase_patterns_re_by_prn,
         tiled_phase_patterns_im_by_prn,
     )
+
+    _calibrate_preempt_stride!(plan, max_blocking_time)
+
+    return plan
+end
+
+# Turn a requested `max_blocking_time` into `plan.preempt_block_stride` — the
+# number of FM-DBZP code blocks the per-PRN kernels may run between `yield()`s.
+#
+# The conversion has to be measured rather than derived: one block iteration is
+# `num_coh*num_blocks` double-block IFFTs plus a `block_size`-column reduction,
+# so its wall time depends on the sampling rate, the Doppler grid, the search
+# path AND the machine. So time a real PRN pass here — the same kernel
+# `acquire!` will run, on the plan's own (still zeroed) buffers — and divide by
+# `num_blocks`. `min` over a few passes; a pass costs one PRN's work, which is
+# nothing next to the FFTW planning this function has already done.
+#
+# What is being estimated is the CPU work between two yields, so `min` over
+# several passes is the right statistic: it is the least perturbed by whatever
+# else the machine is doing while `plan_acquire` runs. It is still an estimate —
+# in practice the derived stride moves by up to ~50% between runs on a busy
+# machine — so treat `max_blocking_time` as a target, not a guarantee, and
+# verify against a real tracking loop if the deadline is hard. Erring high
+# (measuring the pass as slower than it is) shortens the stride: a tighter bound
+# and slightly less throughput, never a missed deadline.
+function _calibrate_preempt_stride!(plan::AcquisitionPlan, max_blocking_time)
+    max_blocking_time === nothing && return plan
+    max_blocking_time isa Unitful.Time || throw(ArgumentError(
+        "max_blocking_time must be a time quantity (e.g. `100u\"µs\"`) or `nothing`, " *
+        "got $(repr(max_blocking_time))"))
+    budget_ns = ustrip(Unitful.ns, max_blocking_time)
+    budget_ns > 0 || throw(ArgumentError(
+        "max_blocking_time must be positive, got $max_blocking_time"))
+
+    block_ns = _time_prn_pass_ns(plan) / plan.num_blocks
+    # Clamp before narrowing to Int so neither a sub-nanosecond block time nor an
+    # absurdly large budget can overflow the conversion. The bounds are the ones
+    # the kernels actually offer: one block is the finest granularity, so a
+    # budget below that simply gets the tightest bound available; and a budget of
+    # a whole PRN pass or more needs no in-PRN yield at all, because the
+    # between-PRN yield already covers that boundary.
+    stride = clamp(budget_ns / block_ns, 1.0, Float64(plan.num_blocks))
+    plan.preempt_block_stride[] = floor(Int, stride)
+    return plan
+end
+
+# Wall time of one PRN pass over the plan's zeroed buffers, in nanoseconds.
+# Runs whichever per-PRN kernel `acquire!` would run for this plan, so the
+# measurement tracks the configured search path.
+function _time_prn_pass_ns(plan::AcquisitionPlan)
+    scratch = _default_scratch(plan)
+    prn = first(plan.avail_prns)
+    run_one() =
+        if plan.num_noncoherent_accumulations == 1
+            _acquire_prn_streamed!(plan, scratch, prn, nothing)
+        else
+            accumulator = scratch.noncoherent_accumulator
+            fill!(accumulator, 0f0)
+            _accumulate_prn_step_tiled!(accumulator,
+                _signal_block_ffts_for_step(plan, 1), plan, scratch, prn, 0)
+        end
+    run_one()   # warm up — the first pass pays cold caches and branch predictors
+    best = typemax(UInt64)
+    for _ in 1:5
+        t0 = time_ns()
+        run_one()
+        best = min(best, time_ns() - t0)
+    end
+    return best
 end

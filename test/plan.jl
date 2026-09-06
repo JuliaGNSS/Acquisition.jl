@@ -481,3 +481,70 @@ end
     @test materialised(plan) == cap
     @test length(plan.scratch_free) == cap
 end
+
+@testset "max_blocking_time — cooperative preemption stride (#89)" begin
+    system = GPSL1CA()
+    sampling_freq = 2.048e6Hz
+    prns = collect(1:4)
+    base = (min_doppler_coverage = 10_000Hz, use_secondary_code = false,
+            fft_flag = FFTW.ESTIMATE)
+
+    # Default is off: today's behaviour, no yields anywhere.
+    plan = plan_acquire(system, sampling_freq, prns; base...)
+    @test plan.preempt_block_stride[] == 0
+
+    # A bound is converted to a block stride, always within the loop it guards.
+    for t in (1u"µs", 35u"µs", 70u"µs", 1u"ms")
+        p = plan_acquire(system, sampling_freq, prns; base..., max_blocking_time = t)
+        @test 1 <= p.preempt_block_stride[] <= p.num_blocks
+    end
+
+    # Monotone in the requested bound, and a bound of a whole PRN pass or more
+    # needs no in-PRN yield (the between-PRN yield covers that boundary).
+    strides = [plan_acquire(system, sampling_freq, prns; base...,
+                            max_blocking_time = t).preempt_block_stride[]
+               for t in (1u"µs", 20u"µs", 100u"µs", 1u"ms")]
+    @test issorted(strides)
+    @test strides[1] == 1              # below one block → tightest available
+    @test strides[end] == plan.num_blocks
+
+    @test_throws ArgumentError plan_acquire(system, sampling_freq, prns; base...,
+        max_blocking_time = 0u"µs")
+    @test_throws ArgumentError plan_acquire(system, sampling_freq, prns; base...,
+        max_blocking_time = -1u"µs")
+    # Not a time quantity.
+    @test_throws ArgumentError plan_acquire(system, sampling_freq, prns; base...,
+        max_blocking_time = 100)
+    @test_throws ArgumentError plan_acquire(system, sampling_freq, prns; base...,
+        max_blocking_time = 100Hz)
+end
+
+@testset "max_blocking_time does not change results (#89)" begin
+    system = GPSL1CA()
+    sampling_freq = 2.048e6Hz
+    prns = collect(1:4)
+    # Both per-PRN kernels: streamed (N_nc == 1) and multistep (N_nc > 1).
+    for n_nc in (1, 3)
+        base = (min_doppler_coverage = 10_000Hz, use_secondary_code = false,
+                num_noncoherent_accumulations = n_nc, fft_flag = FFTW.ESTIMATE)
+        plain = plan_acquire(system, sampling_freq, prns; base...)
+        # Stride 1 — a yield after every single code block, the most disruptive
+        # setting the knob can produce.
+        preempt = plan_acquire(system, sampling_freq, prns; base...,
+            max_blocking_time = 1u"ns")
+        @test preempt.preempt_block_stride[] == 1
+
+        Random.seed!(42)
+        signal = ComplexF32.(randn(ComplexF64, plain.samples_per_code * n_nc))
+        a = deepcopy(acquire!(plain, signal, prns; subsample_interpolation = true))
+        b = acquire!(preempt, signal, prns; subsample_interpolation = true)
+        @test all(x.carrier_doppler == y.carrier_doppler for (x, y) in zip(a, b))
+        @test all(x.code_phase == y.code_phase for (x, y) in zip(a, b))
+        @test all(x.CN0 == y.CN0 for (x, y) in zip(a, b))
+        @test all(x.noise_power == y.noise_power for (x, y) in zip(a, b))
+        @test all(x.peak_to_noise_ratio == y.peak_to_noise_ratio for (x, y) in zip(a, b))
+        # Slots are still released even though the block-level yield fires while
+        # the task holds one.
+        @test length(preempt.scratch_free) == length(preempt.thread_scratch)
+    end
+end

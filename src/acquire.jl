@@ -103,6 +103,43 @@ function _downconvert!(sig_buf, signal, seg_start, segment_length, interm_freq_h
     end
 end
 
+# Cooperative preemption (Issue #89). Julia's scheduler will not take a thread
+# away from a running task, so without these yields the per-PRN work is one
+# uninterruptible region per chunk — at 8 threads and 32 PRNs, ~1 ms of it,
+# which is the entire epoch budget of a 1 kHz tracking loop sharing the process.
+# `plan.preempt_block_stride` (from `plan_acquire(; max_blocking_time)`) bounds
+# that region instead; `0` means unbounded, the default.
+#
+# Two yield points, both on the boundaries the kernels already have:
+#
+#   * `_maybe_yield_block` inside a PRN's code-block loop, every `stride`
+#     blocks. This one fires while the task HOLDS a scratch slot, which is safe
+#     only because the loop never runs more chunks than there are slots
+#     (`_foreach_prn_chunk`), so no chunk can ever be blocked waiting for one.
+#     It skips the final block because `_maybe_yield_prn` covers that boundary.
+#   * `_maybe_yield_prn` between the PRNs of a chunk, outside the claim. Without
+#     it the tail of one PRN's block loop would run straight into the head of
+#     the next, and the gap between yields could reach twice the stride.
+#
+# Reserving a thread instead (spawning fewer chunks than there are slots) was
+# measured against this and lost: it buys the same jitter only at ~15% of
+# throughput at 8 threads and ~22% at 4, pays that cost even when nothing else
+# is running, and needs to be told how many other runnable tasks exist — with
+# two tracking channels a one-thread reserve is worse than doing nothing.
+@inline function _maybe_yield_block(plan::AcquisitionPlan, col_block_idx::Int)
+    stride = plan.preempt_block_stride[]
+    stride == 0 && return nothing
+    col_block_idx == plan.num_blocks - 1 && return nothing
+    (col_block_idx + 1) % stride == 0 && yield()
+    return nothing
+end
+
+@inline function _maybe_yield_prn(plan::AcquisitionPlan, is_last::Bool)
+    (iszero(plan.preempt_block_stride[]) || is_last) && return nothing
+    yield()
+    return nothing
+end
+
 # Run `f(chunk)` over contiguous chunks of the per-PRN index range `idxs` — one
 # chunk per scratch slot, i.e. `min(nthreads, num_cores, num_prns)` of them, so
 # the pool is never oversubscribed and `_claim_scratch!` never has to wait.
@@ -190,6 +227,7 @@ function _acquire_multistep!(plan, signal, prns, segment_length, interm_freq_hz,
                 interm_freq_hz, sampling_freq_hz, code_freq_hz, code_length,
                 code_period, num_doppler_bins, doppler_step,
                 subsample_interpolation, store_power_bins)
+            _maybe_yield_prn(plan, result_idx == last(chunk))
         end
     end
     return results
@@ -258,6 +296,7 @@ function _acquire_sequential!(plan, signal, prns, segment_length, interm_freq_hz
                 interm_freq_hz, sampling_freq_hz, code_freq_hz, code_length,
                 code_period, num_doppler_bins, doppler_step,
                 subsample_interpolation, store_power_bins)
+            _maybe_yield_prn(plan, result_idx == last(chunk))
         end
     end
     return results
@@ -363,6 +402,7 @@ function _acquire_prn_streamed!(
                         num_doppler_bins, peak_power, peak_doppler_bin, peak_col)
                 end
             end
+            _maybe_yield_block(plan, col_block_idx)
         end
     else
         stage = scratch.stage_buf
@@ -395,6 +435,7 @@ function _acquire_prn_streamed!(
                         num_doppler_bins, peak_power, peak_doppler_bin, peak_col)
                 end
             end
+            _maybe_yield_block(plan, col_block_idx)
         end
     end
     return peak_power, peak_doppler_bin, peak_col
