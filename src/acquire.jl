@@ -103,9 +103,9 @@ function _downconvert!(sig_buf, signal, seg_start, segment_length, interm_freq_h
     end
 end
 
-# Contiguous chunk ranges over `idxs` for the per-PRN parallel loop — one chunk
-# per scratch slot, i.e. `min(nthreads, num_cores, num_prns)` of them, so the
-# pool is never oversubscribed and `_claim_scratch!` never has to spin.
+# Run `f(chunk)` over contiguous chunks of the per-PRN index range `idxs` — one
+# chunk per scratch slot, i.e. `min(nthreads, num_cores, num_prns)` of them, so
+# the pool is never oversubscribed and `_claim_scratch!` never has to wait.
 #
 # The loop is driven by `Threads.@spawn` rather than Polyester's `@batch
 # per=core`. Polyester parks its workers as sticky tasks pinned to thread ids
@@ -115,14 +115,37 @@ end
 # soft-real-time loop (e.g. tracking feeding a hardware correlator) for as long
 # as the acquisition runs, and conversely lets such a loop stall `@batch` by
 # occupying one of the threads it is waiting on. Ordinary tasks are scheduled
-# cooperatively with everything else, at a cost of ~10-15us per `acquire!`.
-@inline function _prn_chunks(plan::AcquisitionPlan, idxs)
+# cooperatively with everything else.
+#
+# The LAST chunk runs inline on the calling task, as `@batch per=core` did with
+# the calling thread. That is not just a saved spawn: the caller has, just
+# before this, filled `sig_buf` and the signal-block FFT cache, so running a
+# chunk on it keeps that cache hot in the same core. Handing every chunk to
+# another thread instead costs ~10% on single-PRN calls, growing with the cache
+# (2 ms on a 20 ms coherent acquire! at 5 MHz), because the correlation then
+# pulls the whole cache across cores. At one chunk this degenerates to a plain
+# inline call — no task, no `@sync`, no allocation.
+@inline function _foreach_prn_chunk(f::F, plan::AcquisitionPlan, idxs) where {F}
     n = length(idxs)
-    nchunks = min(length(plan.thread_scratch), n)
-    chunk_len = cld(n, nchunks)
+    n == 0 && return nothing
+    chunk_len = cld(n, min(length(plan.thread_scratch), n))
+    nchunks = cld(n, chunk_len)
     lo = first(idxs)
-    return (lo + (c - 1) * chunk_len : min(lo + c * chunk_len - 1, last(idxs))
-            for c in 1:cld(n, chunk_len))
+    # Single chunk (one PRN, one slot, or a single-threaded process): run it
+    # here. Skipping `@sync` too keeps this path allocation-free.
+    if isone(nchunks)
+        f(lo:last(idxs))
+        return nothing
+    end
+    @sync begin
+        for c in 1:(nchunks - 1)
+            let chunk = (lo + (c - 1) * chunk_len):(lo + c * chunk_len - 1)
+                Threads.@spawn f(chunk)
+            end
+        end
+        f((lo + (nchunks - 1) * chunk_len):last(idxs))
+    end
+    return nothing
 end
 
 # Multistep path (N_nc > 1), PRN-outer: the per-segment signal-block FFTs are
@@ -161,8 +184,8 @@ function _acquire_multistep!(plan, signal, prns, segment_length, interm_freq_hz,
     code_period = code_length / get_code_frequency(plan.system)
     num_doppler_bins = length(plan.doppler_freqs)
     doppler_step = step(plan.doppler_freqs)
-    @sync for chunk in _prn_chunks(plan, eachindex(prns))
-        Threads.@spawn for result_idx in chunk
+    _foreach_prn_chunk(plan, eachindex(prns)) do chunk
+        for result_idx in chunk
             _acquire_one_multistep!(plan, results, prns, result_idx, signal,
                 interm_freq_hz, sampling_freq_hz, code_freq_hz, code_length,
                 code_period, num_doppler_bins, doppler_step,
@@ -229,8 +252,8 @@ function _acquire_sequential!(plan, signal, prns, segment_length, interm_freq_hz
     num_doppler_bins = length(plan.doppler_freqs)
     doppler_step = step(plan.doppler_freqs)
 
-    @sync for chunk in _prn_chunks(plan, eachindex(prns))
-        Threads.@spawn for result_idx in chunk
+    _foreach_prn_chunk(plan, eachindex(prns)) do chunk
+        for result_idx in chunk
             _acquire_one_sequential!(plan, results, prns, result_idx, signal,
                 interm_freq_hz, sampling_freq_hz, code_freq_hz, code_length,
                 code_period, num_doppler_bins, doppler_step,
