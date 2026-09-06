@@ -41,3 +41,29 @@ jobs:
           disable_search: true
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  # `julia-runtest` defaults to a single thread, which leaves the threaded
+  # per-PRN loop untested: the scratch pool is sized
+  # `min(nthreads, num_cores, num_prns)`, so at one thread it holds one slot,
+  # the loop runs as a single inline chunk, and the spawn/join path is never
+  # entered. Run the suite once with real threads so both paths are covered.
+  test-threaded:
+    name: Julia 1 - ubuntu-latest - 4 threads
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v3
+      - uses: julia-actions/julia-runtest@v1
+        env:
+          JULIA_NUM_THREADS: '4'
+      - uses: julia-actions/julia-processcoverage@v1
+      - uses: codecov/codecov-action@v7
+        with:
+          files: lcov.info
+          plugins: noop
+          disable_search: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
