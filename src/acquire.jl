@@ -103,6 +103,28 @@ function _downconvert!(sig_buf, signal, seg_start, segment_length, interm_freq_h
     end
 end
 
+# Contiguous chunk ranges over `idxs` for the per-PRN parallel loop — one chunk
+# per scratch slot, i.e. `min(nthreads, num_cores, num_prns)` of them, so the
+# pool is never oversubscribed and `_claim_scratch!` never has to spin.
+#
+# The loop is driven by `Threads.@spawn` rather than Polyester's `@batch
+# per=core`. Polyester parks its workers as sticky tasks pinned to thread ids
+# 2..nthreads() (`jl_set_task_tid`) that spin without yielding, outside Julia's
+# threadpools entirely. Those threads are then unavailable to every other task
+# in the process for the duration of an `acquire!` — which starves a co-resident
+# soft-real-time loop (e.g. tracking feeding a hardware correlator) for as long
+# as the acquisition runs, and conversely lets such a loop stall `@batch` by
+# occupying one of the threads it is waiting on. Ordinary tasks are scheduled
+# cooperatively with everything else, at a cost of ~10-15us per `acquire!`.
+@inline function _prn_chunks(plan::AcquisitionPlan, idxs)
+    n = length(idxs)
+    nchunks = min(length(plan.thread_scratch), n)
+    chunk_len = cld(n, nchunks)
+    lo = first(idxs)
+    return (lo + (c - 1) * chunk_len : min(lo + c * chunk_len - 1, last(idxs))
+            for c in 1:cld(n, chunk_len))
+end
+
 # Multistep path (N_nc > 1), PRN-outer: the per-segment signal-block FFTs are
 # precomputed once for ALL segments (same total FFT work as the former
 # per-segment cache — no recompute anywhere), then each parallel chunk carries
@@ -139,27 +161,42 @@ function _acquire_multistep!(plan, signal, prns, segment_length, interm_freq_hz,
     code_period = code_length / get_code_frequency(plan.system)
     num_doppler_bins = length(plan.doppler_freqs)
     doppler_step = step(plan.doppler_freqs)
-    @batch per=core for result_idx in eachindex(prns)
-        prn = @inbounds prns[result_idx]
-        prn_idx = findfirst(==(prn), plan.avail_prns)
-        scratch, slot = _claim_scratch!(plan)
-        try
-            accumulator = scratch.noncoherent_accumulator
-            fill!(accumulator, 0f0)
-            for step_idx in 1:plan.num_noncoherent_accumulations
-                _accumulate_prn_step_tiled!(accumulator,
-                    _signal_block_ffts_for_step(plan, step_idx),
-                    plan, scratch, prn, step_idx - 1)
-            end
-            results[result_idx] = _extract_result!(plan, scratch, prn, prn_idx, accumulator,
-                signal, interm_freq_hz,
-                sampling_freq_hz, code_freq_hz, code_length, code_period,
-                num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
-        finally
-            _release_scratch!(plan, slot)
+    @sync for chunk in _prn_chunks(plan, eachindex(prns))
+        Threads.@spawn for result_idx in chunk
+            _acquire_one_multistep!(plan, results, prns, result_idx, signal,
+                interm_freq_hz, sampling_freq_hz, code_freq_hz, code_length,
+                code_period, num_doppler_bins, doppler_step,
+                subsample_interpolation, store_power_bins)
         end
     end
     return results
+end
+
+# One PRN of the multistep path: claim a scratch slot, accumulate every
+# non-coherent step into its accumulator, extract, release. Kept out of the
+# spawned chunk task's body so that body stays a plain function call.
+function _acquire_one_multistep!(plan, results, prns, result_idx, signal,
+        interm_freq_hz, sampling_freq_hz, code_freq_hz, code_length, code_period,
+        num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
+    prn = @inbounds prns[result_idx]
+    prn_idx = findfirst(==(prn), plan.avail_prns)
+    scratch, slot = _claim_scratch!(plan)
+    try
+        accumulator = scratch.noncoherent_accumulator
+        fill!(accumulator, 0f0)
+        for step_idx in 1:plan.num_noncoherent_accumulations
+            _accumulate_prn_step_tiled!(accumulator,
+                _signal_block_ffts_for_step(plan, step_idx),
+                plan, scratch, prn, step_idx - 1)
+        end
+        results[result_idx] = _extract_result!(plan, scratch, prn, prn_idx, accumulator,
+            signal, interm_freq_hz,
+            sampling_freq_hz, code_freq_hz, code_length, code_period,
+            num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
+    finally
+        _release_scratch!(plan, slot)
+    end
+    return nothing
 end
 
 # Sequential path used when num_noncoherent_accumulations == 1: per PRN, the
@@ -192,26 +229,40 @@ function _acquire_sequential!(plan, signal, prns, segment_length, interm_freq_hz
     num_doppler_bins = length(plan.doppler_freqs)
     doppler_step = step(plan.doppler_freqs)
 
-    @batch per=core for result_idx in eachindex(prns)
-        prn = @inbounds prns[result_idx]
-        prn_idx = findfirst(==(prn), plan.avail_prns)
-        scratch, slot = _claim_scratch!(plan)
-        try
-            store_buf = store_power_bins ? _get_result_buffer!(plan, prn_idx) : nothing
-
-            peak_power, peak_doppler_bin, peak_col =
-                _acquire_prn_streamed!(plan, scratch, prn, store_buf)
-
-            results[result_idx] = _extract_result_streamed!(plan, scratch, prn,
-                peak_power, peak_doppler_bin, peak_col, store_buf,
-                signal, interm_freq_hz,
-                sampling_freq_hz, code_freq_hz, code_length, code_period,
-                num_doppler_bins, doppler_step, subsample_interpolation)
-        finally
-            _release_scratch!(plan, slot)
+    @sync for chunk in _prn_chunks(plan, eachindex(prns))
+        Threads.@spawn for result_idx in chunk
+            _acquire_one_sequential!(plan, results, prns, result_idx, signal,
+                interm_freq_hz, sampling_freq_hz, code_freq_hz, code_length,
+                code_period, num_doppler_bins, doppler_step,
+                subsample_interpolation, store_power_bins)
         end
     end
     return results
+end
+
+# One PRN of the sequential (N_nc == 1) path. Kept out of the spawned chunk
+# task's body so that body stays a plain function call.
+function _acquire_one_sequential!(plan, results, prns, result_idx, signal,
+        interm_freq_hz, sampling_freq_hz, code_freq_hz, code_length, code_period,
+        num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
+    prn = @inbounds prns[result_idx]
+    prn_idx = findfirst(==(prn), plan.avail_prns)
+    scratch, slot = _claim_scratch!(plan)
+    try
+        store_buf = store_power_bins ? _get_result_buffer!(plan, prn_idx) : nothing
+
+        peak_power, peak_doppler_bin, peak_col =
+            _acquire_prn_streamed!(plan, scratch, prn, store_buf)
+
+        results[result_idx] = _extract_result_streamed!(plan, scratch, prn,
+            peak_power, peak_doppler_bin, peak_col, store_buf,
+            signal, interm_freq_hz,
+            sampling_freq_hz, code_freq_hz, code_length, code_period,
+            num_doppler_bins, doppler_step, subsample_interpolation)
+    finally
+        _release_scratch!(plan, slot)
+    end
+    return nothing
 end
 
 # Fetch (allocating on first use) the cached per-PRN power-surface buffer used

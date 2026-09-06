@@ -2,7 +2,7 @@ module Acquisition
 
 using DocStringExtensions,
     GNSSSignals, RecipesBase, FFTW, LinearAlgebra, Unitful,
-    SpecialFunctions, Random, Polyester
+    SpecialFunctions, Random
 
 import Unitful: Hz
 using Unitful: ustrip
