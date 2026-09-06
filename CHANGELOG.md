@@ -1,5 +1,12 @@
 # Changelog
 
+# [2.8.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.7.2...v2.8.0) (2026-09-06)
+
+
+### Features
+
+* bound how long the PRN loop can hold a thread ([36d5098](https://github.com/JuliaGNSS/Acquisition.jl/commit/36d509861c464ca3bed53a30dd4c9d4b4e308da1)), closes [#89](https://github.com/JuliaGNSS/Acquisition.jl/issues/89)
+
 ## [2.7.2](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.7.1...v2.7.2) (2026-09-06)
 
 
