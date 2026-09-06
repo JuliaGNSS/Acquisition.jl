@@ -499,14 +499,22 @@ end
         @test 1 <= p.preempt_block_stride[] <= p.num_blocks
     end
 
-    # Monotone in the requested bound, and a bound of a whole PRN pass or more
-    # needs no in-PRN yield (the between-PRN yield covers that boundary).
+    # The stride is derived from a timing measurement, so its value in between is
+    # a property of the machine, not of the code. Only the two clamp endpoints
+    # are machine-independent — no code block takes less than a nanosecond, and
+    # none takes a whole second — so pin the ends there and assert nothing
+    # sharper in the middle than "inside the loop, and grows with the budget".
+    @test plan_acquire(system, sampling_freq, prns; base...,
+        max_blocking_time = 1u"ns").preempt_block_stride[] == 1
+    @test plan_acquire(system, sampling_freq, prns; base...,
+        max_blocking_time = 1u"s").preempt_block_stride[] == plan.num_blocks
+
+    # Budgets decades apart, so calibration noise cannot reorder them.
     strides = [plan_acquire(system, sampling_freq, prns; base...,
                             max_blocking_time = t).preempt_block_stride[]
-               for t in (1u"µs", 20u"µs", 100u"µs", 1u"ms")]
+               for t in (1u"ns", 10u"µs", 1u"s")]
+    @test all(s -> 1 <= s <= plan.num_blocks, strides)
     @test issorted(strides)
-    @test strides[1] == 1              # below one block → tightest available
-    @test strides[end] == plan.num_blocks
 
     @test_throws ArgumentError plan_acquire(system, sampling_freq, prns; base...,
         max_blocking_time = 0u"µs")
