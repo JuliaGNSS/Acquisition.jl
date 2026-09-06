@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.7.2](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.7.1...v2.7.2) (2026-09-06)
+
+
+### Bug Fixes
+
+* drive the per-PRN loop with Threads.[@spawn](https://github.com/spawn) instead of Polyester [@batch](https://github.com/batch) ([be4fc14](https://github.com/JuliaGNSS/Acquisition.jl/commit/be4fc146dfa25e7e72fb50821b86816a4a6b58bf)), closes [#60](https://github.com/JuliaGNSS/Acquisition.jl/issues/60)
+
+
+### Performance Improvements
+
+* run the last PRN chunk on the calling task ([5b668b6](https://github.com/JuliaGNSS/Acquisition.jl/commit/5b668b6eb9f99d9dc4d0a66f4203596f0a01c365))
+
 ## [2.7.1](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.7.0...v2.7.1) (2026-09-03)
 
 
