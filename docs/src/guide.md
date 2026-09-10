@@ -215,6 +215,82 @@ noise; only the one-block extreme is visibly expensive (a solo `acquire!` goes f
 1.016 ms to 1.250 ms here). The default is `nothing`, which yields nowhere and
 behaves exactly as before, and results never depend on the setting.
 
+## Streaming Results as They Finish
+
+The PRNs of one `acquire!` are searched in parallel, but the vector it returns is only
+complete once the *last* PRN is done — a satellite found in the first tenth of a
+millisecond of a 32-PRN search still waits for the other 31. Pass a channel and each
+result is `put!` onto it the moment its own PRN finishes, so a consumer can start
+tracking that satellite while the rest of the search is still running:
+
+```julia
+results_channel = Channel{AcquisitionResults}(32)
+
+consumer = Threads.@spawn for result in results_channel
+    is_detected(result) && start_tracking(result)
+end
+
+acquire!(plan, signal, 1:32; interm_freq, results_channel)
+close(results_channel)
+wait(consumer)
+```
+
+Nothing has to consume it concurrently, though — the channel is simply where the
+results are published, and can be read after the call like any other:
+
+```@example guide
+results_channel = Channel{AcquisitionResults}(3)
+
+results = acquire!(plan, signal, 1:3; interm_freq, results_channel)
+close(results_channel)
+
+[r.prn for r in results_channel]   # completion order
+```
+
+### What it buys
+
+A 32-PRN GPS L1 C/A search at 2.048 MHz, 4 threads, medians over 180 runs (times
+relative to the start of the `acquire!` call):
+
+|  | first result available | last result | whole call |
+|---|---|---|---|
+| without a channel | 0.72 ms | 0.72 ms | 0.72 ms |
+| with a channel | **0.09 ms** | 1.00 ms | 1.00 ms |
+
+The first result is readable **8× earlier**, and the rest stream out as their PRNs
+finish — result 8 at 0.25 ms, result 16 at 0.43 ms. The gain scales with how many PRNs
+share a chunk, so it grows with the PRN count and shrinks as threads are added: at 8
+PRNs on 8 threads every chunk holds a single PRN, they all finish together, and
+streaming buys only 1.5×. Throughput is unchanged — the same call with and without a
+channel measures within run-to-run noise at 1, 8 and 32 PRNs.
+
+### What to keep in mind
+
+  - **Results arrive in completion order**, not in the order of `prns` — which is the
+    point, but it does mean a consumer must read the PRN off the result rather than
+    infer it from position. The returned vector is still ordered by `prns` and holds
+    the same objects, so the batch and streaming views can be mixed freely.
+  - **The channel must tolerate concurrent `put!`s.** Each chunk of the PRN loop
+    publishes its own results, so several tasks put into the channel at once.
+    `Base.Channel` is built for that. A single-producer/single-consumer queue is not,
+    and would be corrupted rather than merely slowed.
+  - **The channel is yours**: `acquire!` never closes it, so the same channel can carry
+    the results of successive `acquire!` calls over a whole recording.
+  - **A full channel applies backpressure.** The chunk whose `put!` blocks waits for
+    the consumer — holding no scratch buffer while it waits, so the other chunks keep
+    searching — but a consumer that stops reading altogether will eventually stall the
+    search. Size the channel for the burst you want to absorb, or keep taking from it.
+  - **`store_power_bins = true` aliases plan-owned memory.** Each result's
+    `power_bins` is a buffer the next `acquire!` for that PRN overwrites, so a
+    consumer that keeps the surface must copy it before the next call. This is true of
+    the batch API too, but a streaming consumer is far more likely to still be holding
+    a result when the next `acquire!` starts.
+
+If the consumer has a deadline of its own, combine this with `max_blocking_time` (see
+[Acquiring next to a real-time loop](@ref)): the PRN chunks occupy every thread while
+they run, and that setting bounds how long they can keep another task in the process
+waiting.
+
 ## Non-coherent Integration
 
 At low CN0, accumulate power across multiple successive signal segments:

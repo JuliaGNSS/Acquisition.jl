@@ -518,3 +518,130 @@ end
     # by ~8 dB from N = 1 to N = 10.
     @test reported[end] - reported[1] < 2.0
 end
+
+# Wraps a channel and counts how often each result was published. The PRN
+# chunks `put!` concurrently, so this also exercises a `put!` implementation of
+# the caller's own.
+struct CountingChannel{T}
+    inner::Channel{T}
+    lock::ReentrantLock
+    counts::Dict{Int,Int}
+end
+CountingChannel{T}(capacity) where {T} =
+    CountingChannel(Channel{T}(capacity), ReentrantLock(), Dict{Int,Int}())
+function Base.put!(channel::CountingChannel, result)
+    @lock channel.lock channel.counts[result.prn] = get(channel.counts, result.prn, 0) + 1
+    put!(channel.inner, result)
+end
+
+# `results_channel` — the streaming API. A result is `put!` as soon as its own
+# PRN is finished instead of only being readable once every PRN is done.
+#
+# The chunk count, i.e. the thread count of the test process, decides how many
+# tasks publish: at one scratch slot the whole loop is a single inline chunk on
+# the calling task, above that the spawned chunks `put!` concurrently. CI runs
+# the suite both ways.
+@testset "acquire! — results_channel" begin
+    system = GPSL1CA()
+    sampling_freq = 2.048e6Hz
+    prns = collect(1:8)
+
+    (; signal, code_phase, interm_freq) = generate_test_signal(
+        system, 1;
+        num_samples = 2048, doppler = 1000Hz, code_phase = 200.0,
+        sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 21,
+    )
+    plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTW.ESTIMATE)
+
+    # Reference: the same call without a channel.
+    batch = acquire!(plan, signal, prns; interm_freq)
+    reference = [(r.prn, r.code_phase, r.CN0, r.peak_to_noise_ratio) for r in batch]
+
+    @testset "streams every result, and the same ones the batch API returns" begin
+        channel = Channel{eltype(batch)}(length(prns))
+        returned = acquire!(plan, signal, prns; interm_freq, results_channel = channel)
+        close(channel)
+        streamed = collect(channel)
+
+        @test length(streamed) == length(prns)
+        # Completion order, not `prns` order — so compare as a set of PRNs.
+        @test sort(getfield.(streamed, :prn)) == prns
+        # The returned vector keeps `prns` order and holds the same results.
+        @test getfield.(returned, :prn) == prns
+        for r in streamed
+            @test (r.prn, r.code_phase, r.CN0, r.peak_to_noise_ratio) ==
+                reference[findfirst(==(r.prn), prns)]
+        end
+        @test is_detected(only(filter(r -> r.prn == 1, streamed)))
+        @test only(filter(r -> r.prn == 1, streamed)).code_phase ≈ code_phase atol = 1.0
+        @test length(plan.scratch_free) == length(plan.thread_scratch)
+    end
+
+    @testset "results are consumable while the call is still running" begin
+        # A capacity-1 channel with no consumer blocks the second `put!`, so an
+        # `acquire!` that only published at the end could never hand out a
+        # result here: taking one proves incremental delivery, and the call
+        # still being unfinished proves it was not just fast.
+        channel = Channel{eltype(batch)}(1)
+        acquiring = Threads.@spawn acquire!(plan, signal, prns; interm_freq,
+            results_channel = channel)
+        first_result = take!(channel)
+        @test first_result.prn in prns
+        @test !istaskdone(acquiring)   # ≥5 PRNs cannot fit in a capacity-1 channel
+        rest = [take!(channel) for _ in 2:length(prns)]
+        wait(acquiring)
+        @test sort(getfield.(vcat(first_result, rest), :prn)) == prns
+    end
+
+    @testset "every result is published exactly once" begin
+        # The chunks publish concurrently, so this is the invariant that the
+        # per-chunk `put!` has to keep: no result dropped, none published twice.
+        channel = CountingChannel{eltype(batch)}(length(prns))
+        acquire!(plan, signal, prns; interm_freq, results_channel = channel)
+        close(channel.inner)
+
+        @test length(collect(channel.inner)) == length(prns)
+        @test channel.counts == Dict(prn => 1 for prn in prns)
+    end
+
+    @testset "multistep path (N_nc > 1)" begin
+        plan_ms = plan_acquire(system, sampling_freq, prns;
+            num_noncoherent_accumulations = 2, fft_flag = FFTW.ESTIMATE)
+        long_signal = generate_test_signal(system, 1;
+            num_samples = 2 * 2048, doppler = 800Hz, code_phase = 150.0,
+            sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 13).signal
+
+        channel = Channel{eltype(batch)}(length(prns))
+        acquire!(plan_ms, ComplexF32.(long_signal), prns; interm_freq = 0.0Hz,
+            results_channel = channel)
+        close(channel)
+        streamed = collect(channel)
+
+        @test sort(getfield.(streamed, :prn)) == prns
+        @test is_detected(only(filter(r -> r.prn == 1, streamed)))
+        @test length(plan_ms.scratch_free) == length(plan_ms.thread_scratch)
+    end
+
+    @testset "a broken channel surfaces, with every chunk joined" begin
+        # `put!` into a closed channel throws. `@sync` joins every chunk before
+        # rethrowing and the scratch claim is released in a `finally`, so the
+        # plan stays usable.
+        channel = Channel{eltype(batch)}(1)
+        close(channel)
+        @test_throws Exception acquire!(plan, signal, prns; interm_freq,
+            results_channel = channel)
+        @test length(plan.scratch_free) == length(plan.thread_scratch)
+        @test getfield.(acquire!(plan, signal, prns; interm_freq), :prn) == prns
+    end
+
+    @testset "convenience overloads forward the channel" begin
+        channel = Channel{eltype(batch)}(2)
+        single = acquire!(plan, signal, 1; interm_freq, results_channel = channel)
+        @test take!(channel).prn == single.prn == 1
+
+        from_acquire = acquire(system, signal, sampling_freq, [1, 2];
+            interm_freq, fft_flag = FFTW.ESTIMATE, results_channel = channel)
+        @test sort([take!(channel).prn, take!(channel).prn]) == [1, 2]
+        @test getfield.(from_acquire, :prn) == [1, 2]
+    end
+end
