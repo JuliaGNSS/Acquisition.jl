@@ -374,15 +374,20 @@ end
     @test res_gm.carrier_doppler == res_or.carrier_doppler
     @test res_gm.noise_power != res_or.noise_power          # different estimator
 
-    # And the GlobalMean noise must equal the reference computed from the
-    # stored surface via est_signal_noise_power.
+    # And the GlobalMean noise must match the reference computed from the
+    # stored surface via est_signal_noise_power. The two sum the same cells in
+    # the same order, but only one of the loops is vectorised, so the Float32
+    # column sums can reassociate and land one ULP apart — on which surfaces
+    # that happens shifts with the FFTW plan, so an exact `==` here fails a few
+    # runs in ten. One ULP of headroom still pins the estimator; anything
+    # actually wrong is orders of magnitude away.
     res_stored = acquire!(plan_gm, ComplexF32.(signal), prn;
         interm_freq = 0.0Hz, store_power_bins = true)
     col_sums = zeros(Float32, plan_gm.samples_per_code_eff)
     sp, np, _, _ = Acquisition.est_signal_noise_power(res_stored.power_bins,
         ustrip(Hz, sampling_freq), ustrip(Hz, get_code_frequency(system)),
         col_sums, GlobalMeanNoiseEstimator())
-    @test res_stored.noise_power == Float32(np)
+    @test res_stored.noise_power ≈ Float32(np) rtol = 4eps(Float32)
 end
 
 @testset "subsample_interpolation without stored bins — on-demand column recompute" begin
