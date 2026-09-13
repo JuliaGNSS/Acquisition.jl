@@ -523,30 +523,25 @@ end
     # by ~8 dB from N = 1 to N = 10.
     @test reported[end] - reported[1] < 2.0
 end
-
-# Wraps a channel and counts how often each result was published. The PRN
-# chunks `put!` concurrently, so this also exercises a `put!` implementation of
-# the caller's own.
-struct CountingChannel{T}
-    inner::Channel{T}
-    lock::ReentrantLock
-    counts::Dict{Int,Int}
+# A signal that throws the moment a sample is read: the simplest way to make the
+# search fail on its own task, where a real failure would come from a bug in the
+# correlation rather than from the caller.
+struct FaultySignal <: AbstractVector{ComplexF32}
+    inner::Vector{ComplexF32}
 end
-CountingChannel{T}(capacity) where {T} =
-    CountingChannel(Channel{T}(capacity), ReentrantLock(), Dict{Int,Int}())
-function Base.put!(channel::CountingChannel, result)
-    @lock channel.lock channel.counts[result.prn] = get(channel.counts, result.prn, 0) + 1
-    put!(channel.inner, result)
-end
+Base.size(signal::FaultySignal) = size(signal.inner)
+Base.IndexStyle(::Type{FaultySignal}) = IndexLinear()
+Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
 
-# `results_channel` — the streaming API. A result is `put!` as soon as its own
-# PRN is finished instead of only being readable once every PRN is done.
+# `acquire_stream!` — the streaming API. The call returns a channel before any PRN is
+# done and each result is `put!` onto it as soon as its own PRN is finished, instead of
+# only being readable once every PRN is done. The channel belongs to the call: it is
+# closed when the search finishes, or closed with the exception when it fails.
 #
-# The chunk count, i.e. the thread count of the test process, decides how many
-# tasks publish: at one scratch slot the whole loop is a single inline chunk on
-# the calling task, above that the spawned chunks `put!` concurrently. CI runs
-# the suite both ways.
-@testset "acquire! — results_channel" begin
+# The chunk count, i.e. the thread count of the test process, decides how many tasks
+# publish: at one scratch slot the whole loop is a single inline chunk, above that the
+# spawned chunks `put!` concurrently. CI runs the suite both ways.
+@testset "acquire_stream!" begin
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prns = collect(1:8)
@@ -558,55 +553,61 @@ end
     )
     plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTW.ESTIMATE)
 
-    # Reference: the same call without a channel.
+    # Reference: the same search through the batch API.
     batch = acquire!(plan, signal, prns; interm_freq)
     reference = [(r.prn, r.code_phase, r.CN0, r.peak_to_noise_ratio) for r in batch]
 
     @testset "streams every result, and the same ones the batch API returns" begin
-        channel = Channel{eltype(batch)}(length(prns))
-        returned = acquire!(plan, signal, prns; interm_freq, results_channel = channel)
-        close(channel)
-        streamed = collect(channel)
+        streamed = collect(acquire_stream!(plan, signal, prns; interm_freq))
 
         @test length(streamed) == length(prns)
-        # Completion order, not `prns` order — so compare as a set of PRNs.
+        # Completion order, not `prns` order — so compare as a set of PRNs. Sorting a
+        # result per PRN with nothing left over is also what rules out a duplicate
+        # publish, the invariant the concurrently publishing chunks have to keep.
         @test sort(getfield.(streamed, :prn)) == prns
-        # The returned vector keeps `prns` order and holds the same results.
-        @test getfield.(returned, :prn) == prns
         for r in streamed
             @test (r.prn, r.code_phase, r.CN0, r.peak_to_noise_ratio) ==
                 reference[findfirst(==(r.prn), prns)]
         end
         @test is_detected(only(filter(r -> r.prn == 1, streamed)))
         @test only(filter(r -> r.prn == 1, streamed)).code_phase ≈ code_phase atol = 1.0
-        @test length(plan.scratch_free) == length(plan.thread_scratch)
     end
 
-    @testset "results are consumable while the call is still running" begin
-        # A capacity-1 channel with no consumer blocks the second `put!`, so an
-        # `acquire!` that only published at the end could never hand out a
-        # result here: taking one proves incremental delivery, and the call
-        # still being unfinished proves it was not just fast.
-        channel = Channel{eltype(batch)}(1)
-        acquiring = Threads.@spawn acquire!(plan, signal, prns; interm_freq,
-            results_channel = channel)
+    @testset "the channel is concretely typed, and the call is type stable" begin
+        channel = @inferred acquire_stream!(plan, signal, prns; interm_freq)
+        @test channel isa Channel{eltype(batch)}
+        @test isconcretetype(eltype(channel))
+        collect(channel)
+    end
+
+    @testset "closes itself when the search is done, and frees the plan" begin
+        channel = acquire_stream!(plan, signal, prns; interm_freq)
+        # No `close` from the caller, no counting of results: the loop ends because
+        # the channel does.
+        count = 0
+        for _ in channel
+            count += 1
+        end
+        @test count == length(prns)
+        @test !isopen(channel)
+        # Iteration ending means the search task is done, so the plan is free again
+        # and can be handed straight to the next call.
+        @test length(plan.scratch_free) == length(plan.thread_scratch)
+        @test getfield.(acquire!(plan, signal, prns; interm_freq), :prn) == prns
+    end
+
+    @testset "results are consumable while the search is still running" begin
+        # `buffer_size = 1` with no consumer blocks the second `put!`, so a search
+        # that only published at the end could never hand out a result here: taking
+        # one proves incremental delivery. And with one result taken at most two can
+        # have been published, so ≥5 of the 8 PRNs are still outstanding — the search
+        # cannot have finished, which is what an open channel then means.
+        channel = acquire_stream!(plan, signal, prns; interm_freq, buffer_size = 1)
         first_result = take!(channel)
         @test first_result.prn in prns
-        @test !istaskdone(acquiring)   # ≥5 PRNs cannot fit in a capacity-1 channel
+        @test isopen(channel)
         rest = [take!(channel) for _ in 2:length(prns)]
-        wait(acquiring)
         @test sort(getfield.(vcat(first_result, rest), :prn)) == prns
-    end
-
-    @testset "every result is published exactly once" begin
-        # The chunks publish concurrently, so this is the invariant that the
-        # per-chunk `put!` has to keep: no result dropped, none published twice.
-        channel = CountingChannel{eltype(batch)}(length(prns))
-        acquire!(plan, signal, prns; interm_freq, results_channel = channel)
-        close(channel.inner)
-
-        @test length(collect(channel.inner)) == length(prns)
-        @test channel.counts == Dict(prn => 1 for prn in prns)
     end
 
     @testset "multistep path (N_nc > 1)" begin
@@ -616,37 +617,50 @@ end
             num_samples = 2 * 2048, doppler = 800Hz, code_phase = 150.0,
             sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 13).signal
 
-        channel = Channel{eltype(batch)}(length(prns))
-        acquire!(plan_ms, ComplexF32.(long_signal), prns; interm_freq = 0.0Hz,
-            results_channel = channel)
-        close(channel)
-        streamed = collect(channel)
+        streamed = collect(acquire_stream!(plan_ms, ComplexF32.(long_signal), prns;
+            interm_freq = 0.0Hz))
 
         @test sort(getfield.(streamed, :prn)) == prns
         @test is_detected(only(filter(r -> r.prn == 1, streamed)))
         @test length(plan_ms.scratch_free) == length(plan_ms.thread_scratch)
     end
 
-    @testset "a broken channel surfaces, with every chunk joined" begin
-        # `put!` into a closed channel throws. `@sync` joins every chunk before
-        # rethrowing and the scratch claim is released in a `finally`, so the
-        # plan stays usable.
-        channel = Channel{eltype(batch)}(1)
-        close(channel)
-        @test_throws Exception acquire!(plan, signal, prns; interm_freq,
-            results_channel = channel)
+    @testset "bad arguments throw at the call site" begin
+        # Checked before the search is spawned, so the caller sees them where they
+        # were made instead of out of the channel.
+        @test_throws ArgumentError acquire_stream!(plan, signal, [1, 99]; interm_freq)
+        @test_throws ArgumentError acquire_stream!(plan, signal[1:100], prns; interm_freq)
+    end
+
+    @testset "a failed search closes the channel with its exception" begin
+        # Without this the consumer would wait forever on a channel nothing is ever
+        # going to fill. `FaultySignal` fails inside the search task, the way a bug
+        # in the correlation would.
+        channel = acquire_stream!(plan, FaultySignal(ComplexF32.(signal)), prns;
+            interm_freq)
+        @test_throws Exception collect(channel)
+        @test !isopen(channel)
         @test length(plan.scratch_free) == length(plan.thread_scratch)
         @test getfield.(acquire!(plan, signal, prns; interm_freq), :prn) == prns
     end
 
-    @testset "convenience overloads forward the channel" begin
-        channel = Channel{eltype(batch)}(2)
-        single = acquire!(plan, signal, 1; interm_freq, results_channel = channel)
-        @test take!(channel).prn == single.prn == 1
+    @testset "closing the channel early unwinds the search" begin
+        # Cancellation: the next `put!` throws, `@sync` joins every chunk before the
+        # exception leaves the loop, and the scratch claim is released in a `finally`,
+        # so the plan is left whole and usable. The search may still be unwinding when
+        # `close` returns, hence the wait on the pool rather than an immediate check.
+        channel = acquire_stream!(plan, signal, prns; interm_freq, buffer_size = 1)
+        take!(channel)
+        close(channel)
+        @test timedwait(
+            () -> length(plan.scratch_free) == length(plan.thread_scratch), 10.0) === :ok
+        @test getfield.(acquire!(plan, signal, prns; interm_freq), :prn) == prns
+    end
 
-        from_acquire = acquire(system, signal, sampling_freq, [1, 2];
-            interm_freq, fft_flag = FFTW.ESTIMATE, results_channel = channel)
-        @test sort([take!(channel).prn, take!(channel).prn]) == [1, 2]
-        @test getfield.(from_acquire, :prn) == [1, 2]
+    @testset "acquire_stream plans and streams in one call" begin
+        streamed = collect(acquire_stream(system, signal, sampling_freq, [1, 2];
+            interm_freq, fft_flag = FFTW.ESTIMATE))
+        @test sort(getfield.(streamed, :prn)) == [1, 2]
+        @test is_detected(only(filter(r -> r.prn == 1, streamed)))
     end
 end
