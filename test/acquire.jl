@@ -657,6 +657,70 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
         @test getfield.(acquire!(plan, signal, prns; interm_freq), :prn) == prns
     end
 
+    @testset "one plan serves any number of streams, one after another" begin
+        # Sequential reuse is the normal way to acquire over a recording: the plan's
+        # buffers are rewritten by each search, so what has to hold is that a stream
+        # leaves the plan exactly as it found it — and that results already handed out
+        # are snapshots, unaffected by the searches that follow. (Concurrent streams on
+        # one plan are a different matter and are not supported: they would write the
+        # same buffers at the same time.)
+        segments = [
+            (1, 200.0, 1000Hz),
+            (5, 700.0, -500Hz),
+            (3, 42.0, 250Hz),
+        ]
+        kept = eltype(batch)[]
+        for (prn, expected_code_phase, doppler) in segments
+            segment = generate_test_signal(
+                system, prn;
+                num_samples = 2048, doppler, code_phase = expected_code_phase,
+                sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 21,
+            ).signal
+            expected = acquire!(plan, segment, prns; interm_freq)
+            expected_fields = [(r.prn, r.code_phase, r.CN0) for r in expected]
+
+            streamed = collect(acquire_stream!(plan, segment, prns; interm_freq))
+
+            @test sort(getfield.(streamed, :prn)) == prns
+            for r in streamed
+                @test (r.prn, r.code_phase, r.CN0) ==
+                    expected_fields[findfirst(==(r.prn), prns)]
+            end
+            @test is_detected(only(filter(r -> r.prn == prn, streamed)))
+            @test length(plan.scratch_free) == length(plan.thread_scratch)
+            append!(kept, streamed)
+        end
+        # Every result from every stream still reads as it did when it was published.
+        for (i, (prn, expected_code_phase, _)) in enumerate(segments)
+            window = kept[(i - 1) * length(prns) + 1:i * length(prns)]
+            @test only(filter(r -> r.prn == prn, window)).code_phase ≈
+                expected_code_phase atol = 1.0
+        end
+    end
+
+    @testset "a finished but unread stream survives the next search" begin
+        # `put!` copies the result struct into the channel, so a channel left unread is
+        # a snapshot and not a view of the plan's results buffer — which is what lets
+        # the next search start before the previous results have been looked at.
+        other = generate_test_signal(
+            system, 5;
+            num_samples = 2048, doppler = -500Hz, code_phase = 700.0,
+            sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 21,
+        ).signal
+
+        first_channel = acquire_stream!(plan, signal, prns; interm_freq)
+        # Default `buffer_size` holds every result, so the search finishes — and closes
+        # the channel — without anything being taken from it.
+        @test timedwait(() -> !isopen(first_channel), 10.0) === :ok
+        second = collect(acquire_stream!(plan, other, prns; interm_freq))
+        first = collect(first_channel)   # read only now, one search later
+
+        @test only(filter(r -> r.prn == 1, first)).code_phase ≈ code_phase atol = 1.0
+        @test only(filter(r -> r.prn == 5, second)).code_phase ≈ 700.0 atol = 1.0
+        @test sort(getfield.(first, :prn)) == prns
+        @test sort(getfield.(second, :prn)) == prns
+    end
+
     @testset "acquire_stream plans and streams in one call" begin
         streamed = collect(acquire_stream(system, signal, sampling_freq, [1, 2];
             interm_freq, fft_flag = FFTW.ESTIMATE))
