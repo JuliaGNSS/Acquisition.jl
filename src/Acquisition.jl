@@ -11,6 +11,8 @@ using CPUSummary: num_cores
 
 export acquire,
     acquire!,
+    acquire_stream,
+    acquire_stream!,
     plan_acquire,
     AcquisitionPlan,
     AcquisitionResults,

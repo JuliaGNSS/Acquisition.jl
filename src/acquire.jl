@@ -21,7 +21,7 @@ end
 end
 
 """
-    acquire!(plan::AcquisitionPlan, signal, prns; interm_freq=0.0Hz, subsample_interpolation=false, store_power_bins=false, results_channel=nothing) -> Vector{AcquisitionResults}
+    acquire!(plan::AcquisitionPlan, signal, prns; interm_freq=0.0Hz, subsample_interpolation=false, store_power_bins=false) -> Vector{AcquisitionResults}
 
 Perform FM-DBZP acquisition using a pre-computed [`AcquisitionPlan`](@ref).
 
@@ -42,32 +42,16 @@ pass.
   - `store_power_bins`: When `true`, copy the full Doppler × code-phase correlation
     power matrix into each result's `power_bins` field (required for plotting).
     When `false`, `power_bins` is `nothing` and no extra copy is made (default: `false`)
-  - `results_channel`: A `Channel` (or anything with a thread-safe `put!`) that each
-    [`AcquisitionResults`](@ref) is `put!` onto as soon as its own PRN is finished,
-    instead of only being readable from the returned vector once every PRN is done
-    (default: `nothing`).
-
-      + Results arrive in **completion order**, not in the order of `prns`. The returned
-        vector is still ordered by `prns`, and holds the same objects.
-      + The PRNs are searched on several tasks and each publishes its own results, so
-        `put!` is called concurrently. `Base.Channel` handles that; a
-        single-producer queue does not.
-      + `acquire!` does not `close` the channel — the caller owns it and may reuse it
-        across calls.
-      + A full channel applies backpressure: the chunk whose `put!` blocks waits for
-        the consumer (holding no scratch buffer while it does), so a consumer that
-        stops reading eventually stalls the search.
-      + With `store_power_bins = true` each result's `power_bins` aliases a plan-owned
-        buffer that the next `acquire!` for the same PRN overwrites, so a consumer that
-        needs it must copy before the next call.
 
 # Returns
 
-`Vector{AcquisitionResults}`, one entry per PRN in `prns`.
+`Vector{AcquisitionResults}`, one entry per PRN in `prns`, ordered by `prns`. The call
+returns once the *last* PRN is done; use [`acquire_stream!`](@ref) to consume each
+result as soon as its own PRN finishes.
 
 # See also
 
-[`acquire`](@ref), [`plan_acquire`](@ref)
+[`acquire_stream!`](@ref), [`acquire`](@ref), [`plan_acquire`](@ref)
 """
 function acquire!(
     plan::AcquisitionPlan,
@@ -76,8 +60,17 @@ function acquire!(
     interm_freq = 0.0Hz,
     subsample_interpolation::Bool = false,
     store_power_bins::Bool = false,
-    results_channel = nothing,
 )
+    segment_length = _validate_acquire_inputs(plan, signal, prns)
+    _acquire!(plan, signal, prns, segment_length, interm_freq, subsample_interpolation,
+        store_power_bins, nothing)
+end
+
+# Argument checking shared by `acquire!` and `acquire_stream!`; returns the segment
+# length both paths go on to use. Split out because `acquire_stream!` runs the search
+# on another task: validating here, on the caller's task, makes a bad PRN or a too
+# short signal throw at the call site rather than surface later out of the channel.
+function _validate_acquire_inputs(plan::AcquisitionPlan, signal, prns)
     all(prn -> prn in plan.avail_prns, prns) ||
         throw(ArgumentError("All requested PRNs must be in plan.avail_prns. Got: $prns, available: $(plan.avail_prns)"))
 
@@ -89,7 +82,15 @@ function acquire!(
             "Signal has $(length(signal)) samples → $num_segments full segments of $segment_length, " *
             "but plan.num_noncoherent_accumulations=$(plan.num_noncoherent_accumulations). " *
             "Provide a longer signal."))
+    return segment_length
+end
 
+# The search itself. `results_channel === nothing` is the batch API; otherwise each
+# PRN's result is published as it finishes (see `_foreach_prn_chunk`). Only
+# `acquire_stream!` passes a channel — it is never part of the public keyword set,
+# so there is exactly one way to stream and it is the one that owns the channel.
+function _acquire!(plan::AcquisitionPlan, signal, prns, segment_length, interm_freq,
+                   subsample_interpolation::Bool, store_power_bins::Bool, results_channel)
     interm_freq_hz = ustrip(Hz, interm_freq)
     sampling_freq_hz = ustrip(Hz, plan.sampling_freq)
 
@@ -105,6 +106,107 @@ function acquire!(
         _acquire_multistep!(plan, signal, prns, segment_length, interm_freq_hz,
             sampling_freq_hz, subsample_interpolation, store_power_bins, results_channel)
     end
+end
+
+"""
+    acquire_stream!(plan::AcquisitionPlan, signal, prns; interm_freq=0.0Hz, subsample_interpolation=false, store_power_bins=false, buffer_size=length(prns)) -> Channel{AcquisitionResults}
+
+Streaming counterpart of [`acquire!`](@ref): start the search on its own task and
+return the `Channel` its results are published on *immediately*, before any PRN is
+done.
+
+Each [`AcquisitionResults`](@ref) is `put!` onto the channel the moment its own PRN is
+finished — one result per entry, in completion order — so a consumer can start tracking
+a satellite while the remaining PRNs are still being searched:
+
+```julia
+for result in acquire_stream!(plan, signal, 1:32; interm_freq)
+    is_detected(result) && start_tracking(result)
+end
+```
+
+The channel belongs to the call, not to the caller:
+
+  - It is **closed once the last PRN has been published**, so the loop above ends on
+    its own — a consumer never has to count results to know the search is over.
+  - If the search throws, the channel is closed *with* that exception, which is raised
+    out of the iteration. A failed search surfaces in the consumer instead of hanging
+    it on a channel nothing will ever fill.
+  - Its element type is the plan's concrete result type, so the call is type stable and
+    the channel holds no boxed values.
+
+On a 32-PRN GPS L1 C/A search at 2.048 MHz with 4 threads the first result reaches the
+consumer after 0.09 ms instead of the 0.72 ms the whole search takes, at no measurable
+cost to throughput.
+
+# Arguments
+
+  - `plan`: Pre-computed [`AcquisitionPlan`](@ref) (from [`plan_acquire`](@ref))
+  - `signal`: Complex baseband signal samples. Read by the search task after this
+    function has returned, so it must stay unmodified until the channel closes.
+  - `prns`: PRN numbers to search (must be a subset of `plan.avail_prns`)
+
+# Keyword Arguments
+
+`interm_freq`, `subsample_interpolation` and `store_power_bins` are exactly as in
+[`acquire!`](@ref). In addition:
+
+  - `buffer_size`: Capacity of the returned channel (default: `length(prns)` — every
+    result fits, so the search never waits for the consumer). A smaller buffer applies
+    backpressure: the chunk whose `put!` blocks waits for the consumer, holding no
+    scratch buffer while it does, so the other chunks keep searching. A consumer that
+    stops reading altogether will then eventually stall the search.
+
+# Returns
+
+`Channel{AcquisitionResults{...}}`, one entry per PRN in `prns`, in completion order.
+[`acquire!`](@ref) returns the same results as a `Vector` ordered by `prns` instead.
+
+# Notes
+
+  - **The plan is in use until the channel closes.** The search writes into the plan's
+    buffers on another task, so `plan` must not be passed to another `acquire!` /
+    `acquire_stream!` until this stream has finished — as it has whenever iteration
+    over the channel ends normally.
+  - **Abandoning a stream early**: `close` the channel and the search unwinds at its
+    next publish (its chunks are joined first, so the plan is left whole), but it may
+    still be unwinding when `close` returns — the one case where a closed channel does
+    not yet mean a free plan. Draining the channel is the tidy way to stop.
+  - With `store_power_bins = true` each result's `power_bins` aliases a plan-owned
+    buffer that the next `acquire!` for the same PRN overwrites, so a consumer that
+    keeps the surface must copy it before the next call.
+
+# See also
+
+[`acquire!`](@ref), [`acquire_stream`](@ref), [`plan_acquire`](@ref)
+"""
+function acquire_stream!(
+    plan::AcquisitionPlan,
+    signal,
+    prns::AbstractVector{<:Integer};
+    interm_freq = 0.0Hz,
+    subsample_interpolation::Bool = false,
+    store_power_bins::Bool = false,
+    buffer_size::Int = length(prns),
+)
+    # Copied because the search task reads `prns` after this call has returned; the
+    # caller must be free to reuse the vector it passed.
+    prns_vec = collect(Int, prns)
+    # Validated here rather than in the task so that a bad PRN or a too short signal
+    # throws at the call site, like it does for `acquire!`.
+    segment_length = _validate_acquire_inputs(plan, signal, prns_vec)
+    # Concrete element type: `plan.acq_results_buf` is the plan's own results buffer,
+    # so this is the exact type the search produces — no boxing, and the return type
+    # follows from the type of `plan`.
+    channel = Channel{eltype(plan.acq_results_buf)}(buffer_size)
+    search = Threads.@spawn _acquire!(plan, signal, prns_vec, segment_length,
+        interm_freq, subsample_interpolation, store_power_bins, channel)
+    # `bind` is what makes the channel the call's rather than the caller's: it closes
+    # the channel when the search task finishes, and closes it *with* the exception if
+    # the search failed, so the consumer sees the failure instead of an empty channel
+    # that never closes.
+    bind(channel, search)
+    return channel
 end
 
 # Fill `sig_buf` with one downconverted code segment starting at `seg_start`.
@@ -190,10 +292,12 @@ end
 #
 # `channel === nothing` is the batch API: nothing is published while the loop
 # runs and the caller reads `results` after the last chunk has joined. With a
-# channel, each chunk `put!`s its own results as it finishes them — several
-# chunks therefore publish concurrently, which is why the channel has to be a
-# thread-safe multi-producer queue (`Base.Channel` is; a
-# single-producer/single-consumer ring buffer is not).
+# channel (`acquire_stream!`), each chunk `put!`s its own results as it finishes
+# them — several chunks therefore publish concurrently, which is why the channel
+# is a `Base.Channel`: it is a thread-safe multi-producer queue, where a
+# single-producer/single-consumer ring buffer would be corrupted rather than
+# merely slowed. `acquire_stream!` constructs it, so that cannot be got wrong
+# from the outside.
 @inline function _foreach_prn_chunk(
     f::F,
     plan::AcquisitionPlan,
@@ -984,10 +1088,9 @@ function acquire!(
     interm_freq = 0.0Hz,
     subsample_interpolation::Bool = false,
     store_power_bins::Bool = false,
-    results_channel = nothing,
 )
     only(acquire!(plan, signal, [prn]; interm_freq, subsample_interpolation,
-        store_power_bins, results_channel))
+        store_power_bins))
 end
 
 """
@@ -1020,36 +1123,15 @@ Convenience wrapper: calls [`plan_acquire`](@ref) then [`acquire!`](@ref).
   - `subsample_interpolation`: Enable parabolic interpolation (default: `false`)
   - `store_power_bins`: Retain the full correlation power surface in each result
     for plotting (default: `false`)
-  - `results_channel`: Channel to `put!` each result onto as soon as its PRN is
-    finished, so a consumer can act on it without waiting for the remaining PRNs
-    (default: `nothing`). See [`acquire!`](@ref) for the semantics.
 
 # Returns
 
-`Vector{AcquisitionResults}`, one per PRN.
-
-# Example
-
-Consume results as they become available:
-
-```julia
-results_channel = Channel{AcquisitionResults}(32)
-consumer = Threads.@spawn for result in results_channel
-    is_detected(result) && start_tracking(result)
-end
-acquire(system, signal, sampling_freq, 1:32; interm_freq, results_channel)
-close(results_channel)
-wait(consumer)
-```
-
-Measured on a 32-PRN GPS L1 C/A search at 2.048 MHz with 4 threads, the first result
-reaches a consumer after 0.09 ms instead of the 0.72 ms the whole call takes — the
-rest follow as their PRNs finish. Throughput is unchanged (within run-to-run noise);
-see the usage guide.
+`Vector{AcquisitionResults}`, one per PRN. Use [`acquire_stream`](@ref) to consume
+each result as soon as its own PRN finishes instead.
 
 # See also
 
-[`plan_acquire`](@ref), [`acquire!`](@ref)
+[`acquire_stream`](@ref), [`plan_acquire`](@ref), [`acquire!`](@ref)
 """
 function acquire(
     system::AbstractGNSSSignal,
@@ -1066,7 +1148,6 @@ function acquire(
     fft_flag = FFTW.MEASURE,
     subsample_interpolation::Bool = false,
     store_power_bins::Bool = false,
-    results_channel = nothing,
 )
     plan = plan_acquire(
         system,
@@ -1081,7 +1162,65 @@ function acquire(
         fft_flag,
     )
     acquire!(plan, signal, collect(Int, prns); interm_freq, subsample_interpolation,
-        store_power_bins, results_channel)
+        store_power_bins)
+end
+
+"""
+    acquire_stream(system, signal, sampling_freq, prns; kwargs...) -> Channel{AcquisitionResults}
+
+Convenience wrapper: calls [`plan_acquire`](@ref) then [`acquire_stream!`](@ref), so
+each result can be consumed as soon as its own PRN is finished:
+
+```julia
+for result in acquire_stream(system, signal, sampling_freq, 1:32; interm_freq)
+    is_detected(result) && start_tracking(result)
+end
+```
+
+Takes the same keyword arguments as [`acquire`](@ref), plus `buffer_size` (see
+[`acquire_stream!`](@ref)). The channel is closed when the last PRN has been published,
+or with the exception if the search fails.
+
+Planning happens before the channel is returned, so the `FFTW.MEASURE` default is paid
+by the caller, not by the first result. Pass `fft_flag = FFTW.ESTIMATE` for a one-shot
+search, or hoist the plan out with [`plan_acquire`](@ref) and use
+[`acquire_stream!`](@ref) when acquiring repeatedly.
+
+# See also
+
+[`acquire_stream!`](@ref), [`acquire`](@ref), [`plan_acquire`](@ref)
+"""
+function acquire_stream(
+    system::AbstractGNSSSignal,
+    signal,
+    sampling_freq,
+    prns::AbstractVector{<:Integer};
+    interm_freq = 0.0Hz,
+    min_doppler_coverage = 7000Hz,
+    num_coherently_integrated_code_periods::Int = 1,
+    bit_edge_search_steps::Int = 1,
+    num_noncoherent_accumulations::Int = 1,
+    use_secondary_code::Bool = true,
+    max_secondary_code_rotations::Int = 32,
+    fft_flag = FFTW.MEASURE,
+    subsample_interpolation::Bool = false,
+    store_power_bins::Bool = false,
+    buffer_size::Int = length(prns),
+)
+    plan = plan_acquire(
+        system,
+        sampling_freq,
+        collect(Int, prns);
+        min_doppler_coverage,
+        num_coherently_integrated_code_periods,
+        bit_edge_search_steps,
+        num_noncoherent_accumulations,
+        use_secondary_code,
+        max_secondary_code_rotations,
+        fft_flag,
+    )
+    acquire_stream!(plan, signal, collect(Int, prns); interm_freq,
+        subsample_interpolation, store_power_bins, buffer_size)
 end
 
 """

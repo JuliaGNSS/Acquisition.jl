@@ -5,6 +5,8 @@
 ```@docs
 acquire
 acquire!
+acquire_stream
+acquire_stream!
 plan_acquire
 cfar_threshold
 is_detected
