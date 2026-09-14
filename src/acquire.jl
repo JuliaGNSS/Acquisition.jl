@@ -62,8 +62,15 @@ function acquire!(
     store_power_bins::Bool = false,
 )
     segment_length = _validate_acquire_inputs(plan, signal, prns)
-    _acquire!(plan, signal, prns, segment_length, interm_freq, subsample_interpolation,
-        store_power_bins, nothing)
+    # Exclusive for the duration of the call. Throws rather than corrupting if an
+    # `acquire_stream!` on this plan is still running — see `PlanInUseError`.
+    _claim_plan!(plan)
+    try
+        _acquire!(plan, signal, prns, segment_length, ustrip(Hz, interm_freq),
+            subsample_interpolation, store_power_bins, nothing)
+    finally
+        _release_plan!(plan)
+    end
 end
 
 # Argument checking shared by `acquire!` and `acquire_stream!`; returns the segment
@@ -89,9 +96,8 @@ end
 # PRN's result is published as it finishes (see `_foreach_prn_chunk`). Only
 # `acquire_stream!` passes a channel — it is never part of the public keyword set,
 # so there is exactly one way to stream and it is the one that owns the channel.
-function _acquire!(plan::AcquisitionPlan, signal, prns, segment_length, interm_freq,
+function _acquire!(plan::AcquisitionPlan, signal, prns, segment_length, interm_freq_hz,
                    subsample_interpolation::Bool, store_power_bins::Bool, results_channel)
-    interm_freq_hz = ustrip(Hz, interm_freq)
     sampling_freq_hz = ustrip(Hz, plan.sampling_freq)
 
     # The N_nc==1 case streams build → reduce → extract per PRN: result
@@ -120,10 +126,20 @@ finished — one result per entry, in completion order — so a consumer can sta
 a satellite while the remaining PRNs are still being searched:
 
 ```julia
-for result in acquire_stream!(plan, signal, 1:32; interm_freq)
-    is_detected(result) && start_tracking(result)
+acquire_stream!(plan, signal, 1:32; interm_freq) do results
+    for result in results
+        is_detected(result) && start_tracking(result)
+    end
 end
 ```
+
+**Use the `do`-block form above unless you have a reason not to.** It shuts the search
+down however the block is left, which the channel-returning form cannot do: a `for`
+loop does not close the channel it iterates, so a plain `break` out of
+`for result in acquire_stream!(...)` leaves the search running and holding this plan.
+The next search on it then throws [`PlanInUseError`](@ref) — loud rather than corrupt,
+but still not what you wanted. Reach for the bare channel only when the consumer
+genuinely outlives the block, and then drain it or `close` it yourself.
 
 The channel belongs to the call, not to the caller:
 
@@ -164,14 +180,17 @@ cost to throughput.
 
 # Notes
 
-  - **The plan is in use until the channel closes.** The search writes into the plan's
-    buffers on another task, so `plan` must not be passed to another `acquire!` /
-    `acquire_stream!` until this stream has finished — as it has whenever iteration
-    over the channel ends normally.
-  - **Abandoning a stream early**: `close` the channel and the search unwinds at its
-    next publish (its chunks are joined first, so the plan is left whole), but it may
-    still be unwinding when `close` returns — the one case where a closed channel does
-    not yet mean a free plan. Draining the channel is the tidy way to stop.
+  - **The plan is in use until the search finishes.** The search writes into the
+    plan's buffers on another task, so `plan` cannot serve another `acquire!` /
+    `acquire_stream!` until this stream is done — attempting it throws
+    [`PlanInUseError`](@ref) rather than letting two searches share the buffers.
+    Iterating the channel to completion is what normally ends the search; the
+    `do`-block form additionally ends it on `break`, `return` and exceptions.
+  - **Abandoning a stream early** (channel-returning form only): `close` the channel
+    and the search unwinds at its next publish, but it may still be unwinding when
+    `close` returns — a closed channel does not yet mean a free plan, and there is no
+    handle here to wait on. Drain the channel instead, or use the `do`-block form,
+    which waits for you.
   - With `store_power_bins = true` each result's `power_bins` aliases a plan-owned
     buffer that the next `acquire!` for the same PRN overwrites, so a consumer that
     keeps the surface must copy it before the next call.
@@ -189,24 +208,136 @@ function acquire_stream!(
     store_power_bins::Bool = false,
     buffer_size::Int = length(prns),
 )
+    channel, _ = _start_acquire_stream(plan, signal, prns; interm_freq,
+        subsample_interpolation, store_power_bins, buffer_size)
+    return channel
+end
+
+# Shared by both `acquire_stream!` forms. Returns the channel *and* the search task:
+# the `do`-block form needs the task to join on, while the channel-returning form
+# above drops it (its caller shuts the search down by closing the channel).
+function _start_acquire_stream(
+    plan::AcquisitionPlan,
+    signal,
+    prns::AbstractVector{<:Integer};
+    interm_freq = 0.0Hz,
+    subsample_interpolation::Bool = false,
+    store_power_bins::Bool = false,
+    buffer_size::Int = length(prns),
+)
     # Copied because the search task reads `prns` after this call has returned; the
     # caller must be free to reuse the vector it passed.
     prns_vec = collect(Int, prns)
     # Validated here rather than in the task so that a bad PRN or a too short signal
-    # throws at the call site, like it does for `acquire!`.
+    # throws at the call site, like it does for `acquire!`. Unitful conversion too:
+    # otherwise a unitless `interm_freq` — an easy slip — would return a channel
+    # happily and only fail later, out of the iteration.
     segment_length = _validate_acquire_inputs(plan, signal, prns_vec)
-    # Concrete element type: `plan.acq_results_buf` is the plan's own results buffer,
-    # so this is the exact type the search produces — no boxing, and the return type
-    # follows from the type of `plan`.
-    channel = Channel{eltype(plan.acq_results_buf)}(buffer_size)
-    search = Threads.@spawn _acquire!(plan, signal, prns_vec, segment_length,
-        interm_freq, subsample_interpolation, store_power_bins, channel)
-    # `bind` is what makes the channel the call's rather than the caller's: it closes
-    # the channel when the search task finishes, and closes it *with* the exception if
-    # the search failed, so the consumer sees the failure instead of an empty channel
-    # that never closes.
-    bind(channel, search)
-    return channel
+    interm_freq_hz = ustrip(Hz, interm_freq)
+    # Held until the search task finishes, not until this call returns.
+    _claim_plan!(plan)
+    try
+        # Concrete element type: `plan.acq_results_buf` is the plan's own results
+        # buffer, so this is the exact type the search produces — no boxing, and the
+        # return type follows from the type of `plan`.
+        channel = Channel{eltype(plan.acq_results_buf)}(buffer_size)
+        search = Threads.@spawn try
+            _acquire!(plan, signal, prns_vec, segment_length, interm_freq_hz,
+                subsample_interpolation, store_power_bins, channel)
+        finally
+            _release_plan!(plan)
+        end
+        # `bind` is what makes the channel the call's rather than the caller's: it
+        # closes the channel when the search task finishes, and closes it *with* the
+        # exception if the search failed, so the consumer sees the failure instead of
+        # an empty channel that never closes.
+        bind(channel, search)
+        return channel, search
+    catch
+        # Nothing was spawned, so nothing will release the claim — e.g. a negative
+        # `buffer_size` throwing out of the `Channel` constructor.
+        _release_plan!(plan)
+        rethrow()
+    end
+end
+
+"""
+    acquire_stream!(f::Function, plan::AcquisitionPlan, signal, prns; kwargs...)
+
+Scoped form of [`acquire_stream!`](@ref): runs `f(results)` with `results` the channel
+the search publishes on, and shuts the search down when `f` returns — however it
+returns.
+
+```julia
+acquire_stream!(plan, signal, 1:32; interm_freq) do results
+    for result in results
+        is_detected(result) && break     # the search is stopped, the plan is free
+    end
+end
+```
+
+This is the recommended way to consume a stream, and the only one that is safe to
+leave early. The channel-returning form hands back a live search that a plain `break`
+does not stop — a `for` loop does not close the channel it iterates — leaving the
+search holding the plan's buffers. (It will not corrupt anything: the next search on
+that plan throws [`PlanInUseError`](@ref) rather than writing the same buffers twice.
+But it will not have been stopped either.)
+
+Returns whatever `f` returns. Takes the same keyword arguments as the channel-returning
+[`acquire_stream!`](@ref).
+
+# See also
+
+[`acquire_stream!`](@ref), [`acquire_stream`](@ref), [`acquire!`](@ref)
+"""
+function acquire_stream!(
+    f::Function,
+    plan::AcquisitionPlan,
+    signal,
+    prns::AbstractVector{<:Integer};
+    interm_freq = 0.0Hz,
+    subsample_interpolation::Bool = false,
+    store_power_bins::Bool = false,
+    buffer_size::Int = length(prns),
+)
+    channel, search = _start_acquire_stream(plan, signal, prns; interm_freq,
+        subsample_interpolation, store_power_bins, buffer_size)
+    completed = false
+    try
+        result = f(channel)
+        completed = true
+        return result
+    finally
+        _stop_acquire_stream!(plan, channel, search, completed)
+    end
+end
+
+# Shut a stream down and wait for the plan to be free again.
+#
+# Cancellation is a flag rather than a thrown exception: the PRN loop checks it
+# between PRNs and returns normally, so the search task finishes cleanly and `wait`
+# below has nothing to unwrap. Draining is what makes that work — a chunk blocked in
+# `put!` on a full channel cannot see the flag until its `put!` completes, so the
+# results still in flight have to be taken off the channel. They are discarded: the
+# consumer has already stopped caring, and `bind` closes the channel once the search
+# task exits, which ends the drain.
+#
+# `propagate` is false when the scope is unwinding from an exception thrown by the
+# consumer. That exception is the one worth reporting, so a failure surfacing from the
+# search as we tear it down must not replace it.
+function _stop_acquire_stream!(plan::AcquisitionPlan, channel::Channel, search::Task,
+                               propagate::Bool)
+    plan.cancelled[] = true
+    try
+        for _ in channel
+        end
+        wait(search)
+    catch
+        propagate && rethrow()
+    end
+    # The flag is cleared by the next `_claim_plan!`, so a plan reused after a
+    # cancelled stream starts clean without this having to race the search task.
+    return nothing
 end
 
 # Fill `sig_buf` with one downconverted code segment starting at `seg_start`.
@@ -312,17 +443,21 @@ end
     lo = first(idxs)
     stride = plan.preempt_block_stride[]
     emit = _prn_emitter(results, channel)
+    # Passed by value for the same reason as `stride`: a chunk body that captured
+    # `plan` would inline the whole struct into every spawn. `cancelled` is a
+    # heap-allocated `Atomic`, so this captures one pointer.
+    cancelled = plan.cancelled
     # Single chunk (one PRN, one slot, or a single-threaded process): run it
     # here. Skipping `@sync` too keeps this path allocation-free.
     if isone(nchunks)
-        _run_prn_chunk(f, emit, stride, lo:last(idxs))
+        _run_prn_chunk(f, emit, stride, cancelled, lo:last(idxs))
         return nothing
     end
     local inline_err = nothing
     @sync begin
         for c in 1:(nchunks - 1)
             let chunk = (lo + (c - 1) * chunk_len):(lo + c * chunk_len - 1)
-                Threads.@spawn _run_prn_chunk(f, emit, stride, chunk)
+                Threads.@spawn _run_prn_chunk(f, emit, stride, cancelled, chunk)
             end
         end
         # Throwing out of a `@sync` block skips its own join, which would leave
@@ -332,7 +467,7 @@ end
         # instead of throwing, and it is rethrown below once `sync_end` has
         # joined every chunk. An `emit` into a closed channel is the reachable
         # way in; before, only a bug in the correlation itself could get here.
-        inline_err = _run_prn_chunk_catching(f, emit, stride,
+        inline_err = _run_prn_chunk_catching(f, emit, stride, cancelled,
             (lo + (nchunks - 1) * chunk_len):last(idxs))
     end
     # A spawned chunk that failed has already surfaced out of `sync_end` above.
@@ -340,9 +475,9 @@ end
     return nothing
 end
 
-_run_prn_chunk_catching(f::F, emit::E, stride::Int, chunk) where {F,E} =
+_run_prn_chunk_catching(f::F, emit::E, stride::Int, cancelled, chunk) where {F,E} =
     try
-        _run_prn_chunk(f, emit, stride, chunk)
+        _run_prn_chunk(f, emit, stride, cancelled, chunk)
         nothing
     catch err
         err
@@ -355,8 +490,17 @@ _run_prn_chunk_catching(f::F, emit::E, stride::Int, chunk) where {F,E} =
 # `emit` runs outside the scratch claim `f` makes and releases, so a `put!` that
 # blocks on a full channel never holds a scratch slot — the other chunks keep
 # running, and `_claim_scratch!` still never has to wait.
-@inline function _run_prn_chunk(f::F, emit::E, preempt_block_stride::Int, chunk) where {F,E}
+#
+# The cancellation check is BEFORE `f`, not after `emit`: a stream abandoned by its
+# consumer should stop at the next PRN boundary, not run one more full PRN search
+# first. A chunk already blocked in `put!` cannot see the flag until that `put!`
+# completes, which is why `_stop_acquire_stream!` drains the channel rather than
+# relying on the flag alone. For the batch API the flag is never set, so this is one
+# relaxed atomic load per PRN against a ~90 µs search.
+@inline function _run_prn_chunk(f::F, emit::E, preempt_block_stride::Int, cancelled,
+                                chunk) where {F,E}
     for result_idx in chunk
+        cancelled[] && break
         f(result_idx)
         emit(result_idx)
         _maybe_yield_prn(preempt_block_stride, result_idx == last(chunk))
@@ -368,7 +512,11 @@ end
 # singleton the specialisation compiles away — no closure, nothing captured.
 _no_emit(::Int) = nothing
 _prn_emitter(results, ::Nothing) = _no_emit
-_prn_emitter(results, channel) = result_idx -> put!(channel, @inbounds results[result_idx])
+# Bounds-checked deliberately: `results` is `plan.acq_results_buf`, which the next
+# search `resize!`s. One checked read per PRN is free against the search itself, and
+# turns any future lifetime bug here into a `BoundsError` rather than a wild load of
+# a pointer-bearing struct.
+_prn_emitter(results, channel) = result_idx -> put!(channel, results[result_idx])
 
 # Multistep path (N_nc > 1), PRN-outer: the per-segment signal-block FFTs are
 # precomputed once for ALL segments (same total FFT work as the former
@@ -1220,6 +1368,61 @@ function acquire_stream(
         fft_flag,
     )
     acquire_stream!(plan, signal, collect(Int, prns); interm_freq,
+        subsample_interpolation, store_power_bins, buffer_size)
+end
+
+"""
+    acquire_stream(f::Function, system, signal, sampling_freq, prns; kwargs...)
+
+Scoped form of [`acquire_stream`](@ref): plans, streams, runs `f(results)` and shuts
+the search down when `f` returns — however it returns.
+
+```julia
+acquire_stream(system, signal, sampling_freq, 1:32; interm_freq) do results
+    for result in results
+        is_detected(result) && break
+    end
+end
+```
+
+Prefer this over the channel-returning form whenever the consumer may stop early; see
+the `do`-block [`acquire_stream!`](@ref) for why. Returns whatever `f` returns.
+
+# See also
+
+[`acquire_stream`](@ref), [`acquire_stream!`](@ref)
+"""
+function acquire_stream(
+    f::Function,
+    system::AbstractGNSSSignal,
+    signal,
+    sampling_freq,
+    prns::AbstractVector{<:Integer};
+    interm_freq = 0.0Hz,
+    min_doppler_coverage = 7000Hz,
+    num_coherently_integrated_code_periods::Int = 1,
+    bit_edge_search_steps::Int = 1,
+    num_noncoherent_accumulations::Int = 1,
+    use_secondary_code::Bool = true,
+    max_secondary_code_rotations::Int = 32,
+    fft_flag = FFTW.MEASURE,
+    subsample_interpolation::Bool = false,
+    store_power_bins::Bool = false,
+    buffer_size::Int = length(prns),
+)
+    plan = plan_acquire(
+        system,
+        sampling_freq,
+        collect(Int, prns);
+        min_doppler_coverage,
+        num_coherently_integrated_code_periods,
+        bit_edge_search_steps,
+        num_noncoherent_accumulations,
+        use_secondary_code,
+        max_secondary_code_rotations,
+        fft_flag,
+    )
+    acquire_stream!(f, plan, signal, collect(Int, prns); interm_freq,
         subsample_interpolation, store_power_bins, buffer_size)
 end
 

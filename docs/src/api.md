@@ -22,6 +22,7 @@ sample_rate_range
 ```@docs
 AcquisitionResults
 AcquisitionPlan
+PlanInUseError
 SamplingFreqRecommendation
 AbstractSDRClockPlan
 AD9361ClockPlan

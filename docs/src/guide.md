@@ -225,8 +225,10 @@ each result the moment its own PRN finishes, so a consumer can start tracking th
 satellite while the rest of the search is still running:
 
 ```julia
-for result in acquire_stream!(plan, signal, 1:32; interm_freq)
-    is_detected(result) && start_tracking(result)
+acquire_stream!(plan, signal, 1:32; interm_freq) do results
+    for result in results
+        is_detected(result) && start_tracking(result)
+    end
 end
 ```
 
@@ -234,8 +236,23 @@ That is the whole API: no channel to construct, no task to spawn, nothing to clo
 The channel belongs to the call and carries **one result per entry**, so the loop
 above sees satellites, not batches.
 
-Nothing has to consume it concurrently, though — the channel is simply where the
-results are published, and can be read after the fact like any other:
+The `do` block is a scope, not a callback queue — it runs on the calling task, and the
+search is shut down when the block is left, *however* it is left: a normal return, a
+`break`, or an exception. That is what makes it safe to stop early, which is the whole
+reason to stream in the first place:
+
+```@example guide
+acquire_stream!(plan, signal, 1:3; interm_freq) do results
+    for result in results
+        is_detected(result) && return result.prn   # stop at the first hit
+    end
+    return nothing
+end
+```
+
+Nothing has to consume the results concurrently, though. `acquire_stream!` without a
+block hands back the bare channel, which can be read after the fact like any other —
+as long as it is read to the end:
 
 ```@example guide
 channel = acquire_stream!(plan, signal, 1:3; interm_freq)
@@ -243,11 +260,23 @@ channel = acquire_stream!(plan, signal, 1:3; interm_freq)
 [result.prn for result in channel]   # completion order
 ```
 
+Note the `buffer_size` default of `length(prns)` is what makes that safe: every result
+fits, so the search finishes whether or not anyone is reading. With a smaller buffer,
+a channel nobody drains will stall the search instead.
+
 The comprehension terminates because the channel does: `acquire_stream!` closes it once
 the last PRN has been published. A consumer never has to know how many PRNs were
 searched, and a search that *fails* closes the channel with its exception, so the
 failure is raised out of the loop instead of leaving the consumer waiting on a channel
-nothing will ever fill.
+nothing will ever fill. (The exception reaches the consumer wrapped in a
+`TaskFailedException`, since it was raised on the search task — the original is at
+`err.task`.)
+
+Leaving a *bare-channel* stream early is the one case that needs care: a `for` loop
+does not close the channel it iterates, so a plain `break` leaves the search running
+and still holding the plan. Nothing is corrupted — the next search on that plan raises
+`PlanInUseError` — but nothing is stopped either. Use the `do`-block form, or `close`
+the channel and drain it yourself.
 
 [`acquire_stream`](@ref) is the same thing one level up — it plans and streams in a
 single call, like [`acquire`](@ref) does for the batch API.
@@ -275,20 +304,23 @@ measures within run-to-run noise at 1, 8 and 32 PRNs.
     point, but it does mean a consumer must read the PRN off the result rather than
     infer it from position. `acquire!` still returns the same results as a vector
     ordered by `prns`, so the batch and streaming views can be mixed freely.
-  - **The plan is in use until the channel closes.** The search writes into the plan's
-    buffers from another task, so the same `plan` must not be handed to a second
-    `acquire!` or `acquire_stream!` until the stream has finished — as it has whenever
-    iteration over the channel ends normally. The `signal` must stay unmodified for the
-    same span.
+  - **The plan is in use until the search finishes.** The search writes into the plan's
+    buffers from another task, so the same `plan` cannot serve a second `acquire!` or
+    `acquire_stream!` until the stream is done — trying raises `PlanInUseError` rather
+    than letting two searches share one set of buffers. Iterating the channel to
+    completion ends the search; the `do`-block form also ends it on `break`, `return`
+    and exceptions. The `signal` must stay unmodified for the same span.
   - **`buffer_size` sets the backpressure.** It defaults to `length(prns)`, so every
     result fits and the search never waits for the consumer. A smaller channel makes
     the chunk whose `put!` blocks wait — holding no scratch buffer while it does, so
     the other chunks keep searching — and a consumer that stops reading altogether will
     eventually stall the search.
-  - **Abandoning a stream**: `close` the channel and the search unwinds at its next
-    publish, joining its chunks first so the plan is left whole. It may still be
-    unwinding when `close` returns, which is the one case where the plan is not free
-    the moment the channel is. Draining the channel is the tidy way to stop.
+  - **Abandoning a stream**: the `do`-block form handles this — it cancels the search,
+    discards whatever was in flight and waits for the plan to be free before the block
+    returns. With the bare channel you have to do it yourself: `close` it and the
+    search unwinds at its next publish, joining its chunks first so the plan is left
+    whole, but it may still be unwinding when `close` returns and there is no handle
+    here to wait on. Draining the channel is the tidy way to stop.
   - **`store_power_bins = true` aliases plan-owned memory.** Each result's
     `power_bins` is a buffer the next `acquire!` for that PRN overwrites, so a
     consumer that keeps the surface must copy it before the next call. This is true of
