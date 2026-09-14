@@ -1,5 +1,17 @@
 # Changelog
 
+# [2.9.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.8.0...v2.9.0) (2026-09-14)
+
+
+### Bug Fixes
+
+* give a stream's consumer a way to stop the search ([67ed6e8](https://github.com/JuliaGNSS/Acquisition.jl/commit/67ed6e855be3fee39952b286e9604f4e58d75dae))
+
+
+### Features
+
+* publish each acquisition result as its PRN finishes ([9827eaf](https://github.com/JuliaGNSS/Acquisition.jl/commit/9827eafc50b52e0df6d8ee3a2878f1fcb217623b)), closes [#8](https://github.com/JuliaGNSS/Acquisition.jl/issues/8) [#16](https://github.com/JuliaGNSS/Acquisition.jl/issues/16)
+
 # [2.8.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.7.2...v2.8.0) (2026-09-06)
 
 
