@@ -63,8 +63,10 @@ each result on it as soon as its own PRN finishes, so a satellite can be handed 
 tracking while the rest of the search is still running:
 
 ```julia
-for result in acquire_stream!(plan, signal, 1:32; interm_freq)
-    is_detected(result) && start_tracking(result)
+acquire_stream!(plan, signal, 1:32; interm_freq) do results
+    for result in results
+        is_detected(result) && start_tracking(result)
+    end
 end
 ```
 
@@ -73,6 +75,13 @@ the loop ends on its own — and closed with the exception if the search fails, 
 failure surfaces in the consumer instead of hanging it. One result per entry, in
 completion order; `acquire!` still returns the same results as a vector ordered by
 `prns`.
+
+The `do` block is what makes stopping early safe: it shuts the search down whether the
+block returns, `break`s or throws. `acquire_stream!` without a block hands back the
+bare channel instead, which is fine when the consumer runs to completion — but a
+`break` out of `for result in acquire_stream!(...)` does *not* close the channel, and
+leaves the search running and still holding the plan. (It cannot corrupt anything: the
+next search on that plan raises `PlanInUseError`.)
 
 On a 32-PRN GPS L1 C/A search at 2.048 MHz with 4 threads, the first result arrives
 after 0.09 ms instead of the 0.72 ms the whole call takes, at no measurable cost to

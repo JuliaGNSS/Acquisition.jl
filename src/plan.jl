@@ -144,6 +144,19 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     thread_scratch::Vector{AcquisitionScratch}
     scratch_free::Vector{Int}        # indices of currently-free slots in `thread_scratch`
     scratch_lock::Threads.SpinLock   # guards `scratch_free`
+    # One search per plan at a time — the contract `_claim_scratch!` describes,
+    # here as an enforced invariant rather than a comment. `acquire!` holds this
+    # for its own duration; `acquire_stream!` holds it from the call until the
+    # search task finishes, which may be long after the call returned. A second
+    # search on a plan that is still in use throws `PlanInUseError` instead of
+    # quietly writing the same buffers from two tasks.
+    in_use::Threads.Atomic{Bool}
+    # Cooperative cancellation for `acquire_stream!`: set when a consumer stops
+    # early, read by the PRN loop between PRNs (`_run_prn_chunk`). Lives on the
+    # plan because the plan hosts exactly one search at a time, so there is
+    # nowhere else it would have to be threaded through to. Reset by
+    # `_claim_plan!`, so every search starts uncancelled.
+    cancelled::Threads.Atomic{Bool}
     # Cooperative-preemption stride: the per-PRN kernels `yield()` after every
     # `preempt_block_stride` FM-DBZP code blocks, bounding how long a chunk task
     # can hold a thread against a co-resident soft-real-time task (Issue #89).
@@ -181,6 +194,50 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     tiled_phase_patterns_im_by_prn::Dict{Int,Array{Float32,3}}
 end
 
+"""
+    PlanInUseError <: Exception
+
+Thrown when a search is started on an [`AcquisitionPlan`](@ref) that is still serving
+an earlier one. A plan owns the buffers the search writes into, so exactly one search
+may use it at a time.
+
+The usual cause is a stream that was abandoned without being shut down — `break`ing out
+of `for result in acquire_stream!(...)` leaves the search running, because a `for` loop
+does not close the channel it iterates. Use the `do`-block form of
+[`acquire_stream!`](@ref), which shuts the search down however the block is left.
+"""
+struct PlanInUseError <: Exception end
+
+function Base.showerror(io::IO, ::PlanInUseError)
+    print(io, """
+        PlanInUseError: this AcquisitionPlan is still in use by an earlier search.
+
+        A plan owns the buffers a search writes into, so only one search may use it at
+        a time. If you stopped consuming an `acquire_stream!` early — a `break` out of
+        `for result in acquire_stream!(...)`, say — the search is still running: a
+        `for` loop does not close the channel it iterates. The `do`-block form shuts
+        the search down however the block is left:
+
+            acquire_stream!(plan, signal, prns) do results
+                for result in results
+                    is_detected(result) && break
+                end
+            end
+        """)
+end
+
+# Take exclusive ownership of the plan for one search. `acquire!` holds it for the
+# duration of the call; `acquire_stream!` from the call until its search task is done.
+# Also clears the cancellation flag, so a plan reused after a cancelled stream starts
+# from a clean slate.
+function _claim_plan!(plan::AcquisitionPlan)
+    Threads.atomic_cas!(plan.in_use, false, true) === false || throw(PlanInUseError())
+    plan.cancelled[] = false
+    return nothing
+end
+
+_release_plan!(plan::AcquisitionPlan) = (plan.in_use[] = false; nothing)
+
 # Slot 1 of the pool is the ambient single-threaded scratch reused by `acquire!`
 # (downconversion + signal-block FFT precompute happen before the per-PRN parallel
 # loop) and by test/REPL call sites that drive the kernels directly. Naming this
@@ -191,13 +248,14 @@ _default_scratch(plan::AcquisitionPlan) = plan.thread_scratch[1]
 # Claim an exclusive scratch slot from the pool. Returns `(scratch, slot)`; the
 # caller MUST return the slot via `_release_scratch!` (use try/finally).
 #
-# Under the supported contract — one `acquire!` per plan at a time — the PRN
-# loop spawns at most as many chunks as there are slots, so the free list is
-# never empty and this is just a pop. The retry loop is a safety net for
-# accidental concurrent use of one plan: it waits for a slot to free rather than
-# allocating beyond the pool, preserving the hard cap. It yields rather than
-# spins, so a waiting task hands its thread back instead of denying it to the
-# chunk that is about to release the slot.
+# One search per plan at a time is enforced by `_claim_plan!`, and the PRN loop
+# spawns at most as many chunks as there are slots, so the free list is never
+# empty and this is just a pop. The retry loop is therefore unreachable; it is
+# kept as a belt-and-braces guard that waits for a slot rather than allocating
+# beyond the pool, preserving the hard cap if a future caller ever drives the
+# kernels outside `acquire!`. It yields rather than spins, so a waiting task
+# hands its thread back instead of denying it to the chunk that is about to
+# release the slot.
 @inline function _claim_scratch!(plan::AcquisitionPlan)
     idx = 0
     while true
@@ -729,6 +787,8 @@ function plan_acquire(
         thread_scratch,
         scratch_free,
         scratch_lock,
+        Threads.Atomic{Bool}(false),
+        Threads.Atomic{Bool}(false),
         Ref(0),
         acq_results_buf,
         noise_estimator,

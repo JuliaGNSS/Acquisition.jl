@@ -648,12 +648,17 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
         # Cancellation: the next `put!` throws, `@sync` joins every chunk before the
         # exception leaves the loop, and the scratch claim is released in a `finally`,
         # so the plan is left whole and usable. The search may still be unwinding when
-        # `close` returns, hence the wait on the pool rather than an immediate check.
+        # `close` returns, hence the wait rather than an immediate check.
+        #
+        # The wait is on `plan.in_use`, NOT on the scratch pool: a slot is released in
+        # the per-PRN `finally`, before the chunk publishes and long before `@sync`
+        # joins, so a full pool does not mean the search is over. `in_use` is cleared
+        # by the search task itself on its way out, so it does.
         channel = acquire_stream!(plan, signal, prns; interm_freq, buffer_size = 1)
         take!(channel)
         close(channel)
-        @test timedwait(
-            () -> length(plan.scratch_free) == length(plan.thread_scratch), 10.0) === :ok
+        @test timedwait(() -> !plan.in_use[], 10.0) === :ok
+        @test length(plan.scratch_free) == length(plan.thread_scratch)
         @test getfield.(acquire!(plan, signal, prns; interm_freq), :prn) == prns
     end
 
@@ -726,5 +731,134 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
             interm_freq, fft_flag = FFTW.ESTIMATE))
         @test sort(getfield.(streamed, :prn)) == [1, 2]
         @test is_detected(only(filter(r -> r.prn == 1, streamed)))
+    end
+
+    # ------------------------------------------------------------------
+    # Plan ownership. A stream keeps the plan for as long as its search runs — which
+    # outlives the call that started it. These pin that the plan is never shared by
+    # two searches, and that the `do`-block form always hands it back.
+    # ------------------------------------------------------------------
+
+    @testset "a second search on a plan still streaming throws" begin
+        # Before this was enforced, the two searches wrote the same buffers and the
+        # batch call returned results for the wrong PRNs — silently.
+        channel = acquire_stream!(plan, signal, prns; interm_freq, buffer_size = 1)
+        @test_throws PlanInUseError acquire!(plan, signal, prns; interm_freq)
+        @test_throws PlanInUseError acquire_stream!(plan, signal, prns; interm_freq)
+        for _ in channel
+        end
+        @test timedwait(() -> !plan.in_use[], 10.0) === :ok
+        @test getfield.(acquire!(plan, signal, prns; interm_freq), :prn) == prns
+    end
+
+    @testset "an abandoned bare-channel stream is loud, not corrupting" begin
+        # `break` out of `for result in acquire_stream!(...)` does NOT close the
+        # channel, so the search is still running and still owns the plan. The point
+        # is that the next call says so instead of interleaving with it.
+        own_plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTW.ESTIMATE)
+        channel = acquire_stream!(own_plan, signal, prns; interm_freq, buffer_size = 1)
+        for _ in channel
+            break
+        end
+        @test_throws PlanInUseError acquire!(own_plan, signal, prns; interm_freq)
+    end
+
+    @testset "the do-block form frees the plan however the block is left" begin
+        # `break`, an early `return`, and a throw all have to reach the same teardown:
+        # cancel, drain what is in flight, join the search.
+        own_plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTW.ESTIMATE)
+
+        acquire_stream!(own_plan, signal, prns; interm_freq, buffer_size = 1) do results
+            for _ in results
+                break
+            end
+        end
+        @test !own_plan.in_use[]
+        @test length(own_plan.scratch_free) == length(own_plan.thread_scratch)
+        @test getfield.(acquire!(own_plan, signal, prns; interm_freq), :prn) == prns
+
+        # Early return out of the consuming function.
+        first_detected(p) = acquire_stream!(p, signal, prns; interm_freq,
+                                            buffer_size = 1) do results
+            for r in results
+                is_detected(r) && return r.prn
+            end
+            return nothing
+        end
+        @test first_detected(own_plan) in prns
+        @test !own_plan.in_use[]
+
+        # A consumer that throws: its exception is the one that surfaces, not anything
+        # from tearing the search down behind it.
+        @test_throws "consumer failed" acquire_stream!(own_plan, signal, prns;
+                                                       interm_freq, buffer_size = 1) do results
+            for _ in results
+                error("consumer failed")
+            end
+        end
+        @test !own_plan.in_use[]
+        @test getfield.(acquire!(own_plan, signal, prns; interm_freq), :prn) == prns
+    end
+
+    @testset "the do-block form returns the block's value and still streams fully" begin
+        own_plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTW.ESTIMATE)
+        got = acquire_stream!(own_plan, signal, prns; interm_freq) do results
+            sort([r.prn for r in results])
+        end
+        @test got == prns
+        @test !own_plan.in_use[]
+
+        # And the convenience wrapper that plans for you.
+        scoped = acquire_stream(system, signal, sampling_freq, [1, 2];
+                                interm_freq, fft_flag = FFTW.ESTIMATE) do results
+            sort([r.prn for r in results])
+        end
+        @test scoped == [1, 2]
+    end
+
+    @testset "a failed search still frees the plan" begin
+        own_plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTW.ESTIMATE)
+        channel = acquire_stream!(own_plan, FaultySignal(ComplexF32.(signal)), prns;
+            interm_freq)
+        @test_throws Exception collect(channel)
+        @test timedwait(() -> !own_plan.in_use[], 10.0) === :ok
+        @test getfield.(acquire!(own_plan, signal, prns; interm_freq), :prn) == prns
+    end
+
+    @testset "bad arguments leave the plan free" begin
+        # The claim is taken before the channel is built, so anything that throws
+        # between the two has to hand it back — otherwise one bad call would brick
+        # the plan for good.
+        own_plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTW.ESTIMATE)
+        @test_throws ArgumentError acquire_stream!(own_plan, signal, [1, 99]; interm_freq)
+        @test !own_plan.in_use[]
+        @test_throws Exception acquire_stream!(own_plan, signal, prns; interm_freq,
+            buffer_size = -1)
+        @test !own_plan.in_use[]
+        # A unitless `interm_freq` is an easy slip; it has to throw here, not later out
+        # of the iteration on another task.
+        @test_throws Unitful.DimensionError acquire_stream!(own_plan, signal, prns;
+            interm_freq = 5.0)
+        @test !own_plan.in_use[]
+        @test getfield.(acquire!(own_plan, signal, prns; interm_freq), :prn) == prns
+    end
+
+    @testset "cancellation stops the search at the next PRN boundary" begin
+        # The flag is checked before each PRN, so a cancelled stream does not run a
+        # further full PRN search per chunk on its way out. With a capacity-1 channel
+        # over 8 PRNs, stopping after the first result must leave most PRNs unsearched.
+        own_plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTW.ESTIMATE)
+        published = 0
+        acquire_stream!(own_plan, signal, prns; interm_freq, buffer_size = 1) do results
+            for _ in results
+                published += 1
+                break
+            end
+        end
+        @test published == 1
+        @test !own_plan.in_use[]
+        # Whatever was in flight was discarded by the drain, and the plan is clean.
+        @test length(own_plan.scratch_free) == length(own_plan.thread_scratch)
+        @test getfield.(acquire!(own_plan, signal, prns; interm_freq), :prn) == prns
     end
 end
