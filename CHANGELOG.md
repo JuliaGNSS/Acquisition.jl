@@ -1,5 +1,7 @@
 # Changelog
 
+# [3.0.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.9.0...v3.0.0) (2026-09-29)
+
 # [2.9.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.8.0...v2.9.0) (2026-09-14)
 
 
