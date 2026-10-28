@@ -711,6 +711,11 @@ The window spans whole bit periods. Two constraints apply:
 The algorithm searches all `2^(num_bits - 1)` sign-flip combinations across
 the bits in the window.
 
+A BeiDou B1I or B3I GEO satellite broadcasts D2 bits every 2 ms, where the
+other satellites broadcast D1 every 20 ms (`get_code_blocks_per_bit(system, prn)`).
+A plan whose window spans more than one D2 bit therefore needs the GEO PRNs
+planned separately; `plan_acquire` throws if they are mixed.
+
 **Pilot channels** (e.g. GPS L5-Q, Galileo E1-C): no bit constraint; set
 `num_coherently_integrated_code_periods` freely.
 

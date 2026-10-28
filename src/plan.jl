@@ -318,6 +318,26 @@ function _precompute_prn_ffts!(
     prn_conj_ffts[prn] = conj_fft_matrix
 end
 
+# Number of full bit periods in the coherent window, validating its length against
+# `code_blocks_per_bit` (0 for a pilot, which broadcasts no bits and imposes no
+# constraint). Sub-bit integration (N < code_blocks_per_bit) is always valid — a
+# bit boundary may still fall within the window (bit edge search handles this), but
+# there can be at most one transition, so num_bits = 1 and no bit combination search
+# is needed. Multi-bit integration (N >= code_blocks_per_bit) requires the window to
+# span a whole number of bit periods so the FM-DBZP sub-block structure is consistent.
+function _num_bits(code_blocks_per_bit, num_coherently_integrated_code_periods,
+                      bit_edge_search_steps)
+    if code_blocks_per_bit == 0 || num_coherently_integrated_code_periods < code_blocks_per_bit
+        return 1
+    end
+    num_coherently_integrated_code_periods % code_blocks_per_bit == 0 || throw(ArgumentError(
+        "num_coherently_integrated_code_periods=$num_coherently_integrated_code_periods must be divisible by " *
+        "code_blocks_per_bit=$code_blocks_per_bit (code periods per bit)."))
+    code_blocks_per_bit % bit_edge_search_steps == 0 || throw(ArgumentError(
+        "bit_edge_search_steps=$bit_edge_search_steps must divide code_blocks_per_bit=$code_blocks_per_bit."))
+    num_coherently_integrated_code_periods ÷ code_blocks_per_bit
+end
+
 """
     plan_acquire(system, sampling_freq, prns; kwargs...) -> AcquisitionPlan
 
@@ -334,7 +354,10 @@ multi-threaded acquisition. Scratch buffers are tile-sized (nothing scales with
 
 - `system`: GNSS system (e.g. `GPSL1CA()`)
 - `sampling_freq`: Sampling frequency
-- `prns`: PRN numbers to pre-compute (e.g. `1:32`)
+- `prns`: PRN numbers to pre-compute (e.g. `1:32`). On BeiDou B1I and B3I, a
+  coherent window longer than two code periods spans a different number of bits
+  on a GEO satellite (D2, 500 bit/s) than on the others (D1, 50 bit/s), so
+  plan the GEO PRNs separately there.
 
 # Keyword Arguments
 
@@ -487,11 +510,6 @@ function plan_acquire(
     # Samples per code period
     samples_per_code = ceil(Int, get_code_length(system) / get_chip_rate(system) * sampling_freq)
 
-    # Bit period in code periods (code_blocks_per_bit); 0 for a pilot, which
-    # broadcasts no bits and so imposes no constraint.
-    code_blocks_per_bit = get_code_blocks_per_bit(system)
-    has_data = code_blocks_per_bit > 0
-
     # Blocks per code period: smallest divisor of samples_per_code such that the
     # final Doppler grid `range(-cov/2, step=spacing, length=num_doppler_bins)`
     # covers `[-min_doppler_coverage, +min_doppler_coverage]` at *both* ends.
@@ -527,18 +545,24 @@ function plan_acquire(
             "This should not happen for standard GNSS sampling frequencies — please file a bug."))
     end
 
-    # Validate data-channel coherent integration length.
-    # Sub-bit integration (num_coherently_integrated_code_periods < code_blocks_per_bit) is always valid — a bit
-    # boundary may still fall within the window (bit edge search handles this), but there
-    # can be at most one transition so num_bits=1 and no bit combination search is needed.
-    # Multi-bit integration (num_coherently_integrated_code_periods >= code_blocks_per_bit) requires the window to span
-    # a whole number of bit periods so the FM-DBZP sub-block structure is consistent.
-    if has_data && num_coherently_integrated_code_periods >= code_blocks_per_bit
-        num_coherently_integrated_code_periods % code_blocks_per_bit == 0 || throw(ArgumentError(
-            "num_coherently_integrated_code_periods=$num_coherently_integrated_code_periods must be divisible by " *
-            "code_blocks_per_bit=$code_blocks_per_bit (code periods per bit)."))
-        code_blocks_per_bit % bit_edge_search_steps == 0 || throw(ArgumentError(
-            "bit_edge_search_steps=$bit_edge_search_steps must divide code_blocks_per_bit=$code_blocks_per_bit."))
+    # num_bits (paper: N_db): number of full bit periods within the coherent window,
+    # validated for each satellite's bit period. The period is a signal's on every
+    # signal but BeiDou B1I and B3I, whose GEO satellites broadcast D2 bits ten times
+    # shorter than the other satellites' D1; one plan holds one num_bits, so the
+    # satellites it is built for must agree on it.
+    code_blocks_per_bit_by_prn = isempty(prns) ? [get_code_blocks_per_bit(system)] :
+                                    unique(get_code_blocks_per_bit(system, prn) for prn in prns)
+    num_bits = _num_bits(first(code_blocks_per_bit_by_prn),
+        num_coherently_integrated_code_periods, bit_edge_search_steps)
+    for code_blocks_per_bit in code_blocks_per_bit_by_prn
+        _num_bits(code_blocks_per_bit, num_coherently_integrated_code_periods,
+                     bit_edge_search_steps) == num_bits || throw(ArgumentError(
+            "The PRNs span $(join(code_blocks_per_bit_by_prn, " and ")) code periods per bit " *
+            "(get_code_blocks_per_bit(system, prn); BeiDou GEO satellites broadcast D2 " *
+            "bits ten times shorter than D1), so " *
+            "num_coherently_integrated_code_periods=$num_coherently_integrated_code_periods " *
+            "spans a different number of bits on each. Plan the GEO PRNs separately, or set " *
+            "num_coherently_integrated_code_periods <= $(minimum(code_blocks_per_bit_by_prn))."))
     end
 
     block_size = samples_per_code ÷ num_blocks
@@ -554,10 +578,6 @@ function plan_acquire(
     # the IFFT is normalised by the actual length (see `_build_coherent_tile!`).
     # No-op when double_block_size is already 7-smooth.
     fft_size = nextprod((2, 3, 5, 7), double_block_size)
-    # num_bits (paper: N_db): number of full bit periods within the coherent window.
-    # 1 for pilot channels and sub-bit integration (< one bit period); bit combination search
-    # is only needed when num_bits > 1 (multiple bits → unknown polarity transitions).
-    num_bits = (has_data && num_coherently_integrated_code_periods >= code_blocks_per_bit) ? num_coherently_integrated_code_periods ÷ code_blocks_per_bit : 1
     num_doppler_bins = num_coherently_integrated_code_periods * num_blocks  # paper C_fd
 
     # FFT plans (in-place, size fft_size and num_doppler_bins)

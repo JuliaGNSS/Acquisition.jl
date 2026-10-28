@@ -39,6 +39,29 @@ end
     @test step(plan.doppler_freqs) ≈ 25Hz    # 32000/1280
 end
 
+@testset "plan_acquire counts a BeiDou GEO satellite's D2 bits" begin
+    # B1I GEO satellites (PRN 1-5, 59-63) broadcast D2 at 500 bit/s, 2 code
+    # periods per bit; the others broadcast D1 at 50 bit/s, 20 per bit.
+    system = BeiDouB1I()
+    sampling_freq = 4.092e6Hz
+    plan_geo = plan_acquire(system, sampling_freq, [1, 2];
+        num_coherently_integrated_code_periods = 4, use_secondary_code = false)
+    @test plan_geo.num_bits == 2
+    plan_meo = plan_acquire(system, sampling_freq, [6, 7];
+        num_coherently_integrated_code_periods = 4, use_secondary_code = false)
+    @test plan_meo.num_bits == 1
+    # Within one D2 bit both agree on one bit per window.
+    plan_mixed = plan_acquire(system, sampling_freq, [1, 6];
+        num_coherently_integrated_code_periods = 2, use_secondary_code = false)
+    @test plan_mixed.num_bits == 1
+    # Beyond it they do not, and one plan cannot hold both.
+    @test_throws ArgumentError plan_acquire(system, sampling_freq, [1, 6];
+        num_coherently_integrated_code_periods = 4, use_secondary_code = false)
+    # A GEO satellite's window must also span whole D2 bits.
+    @test_throws ArgumentError plan_acquire(system, sampling_freq, [1];
+        num_coherently_integrated_code_periods = 3, use_secondary_code = false)
+end
+
 @testset "plan_acquire stores secondary-code search configuration" begin
     # L1 C/A has no secondary code (L = 1) → rotation axis is a no-op.
     plan_l1 = plan_acquire(GPSL1CA(), 2.048e6Hz, [1];
