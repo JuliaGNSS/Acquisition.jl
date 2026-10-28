@@ -1,8 +1,6 @@
 module Acquisition
 
-using DocStringExtensions,
-    GNSSSignals, RecipesBase, FFTW, LinearAlgebra, Unitful,
-    SpecialFunctions, Random
+using GNSSSignals, RecipesBase, FFTW, LinearAlgebra, Unitful, SpecialFunctions, Random
 
 import Unitful: Hz
 using Unitful: ustrip
