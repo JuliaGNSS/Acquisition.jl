@@ -58,19 +58,19 @@ const _PRECOMPILE_SIGNALS = (
 # Float64-valued, like the `5e6Hz` a receiver passes: the search specialises on
 # the frequency's element type, and an `Int`-valued rate would compile a
 # specialisation nobody calls.
-function _precompile_sampling_frequency(system)
-    chip_rate = get_chip_rate(system)
+function _precompile_sampling_frequency(signal)
+    chip_rate = get_chip_rate(signal)
     chip_rate <= 1.1e6Hz ? 16.0 * chip_rate : 2.0 * chip_rate
 end
 
 # One code period at four samples per chip: the shortest signal `acquire`
-# accepts for the system, with the same kernel shapes as any longer one.
-function _precompile_signal(system)
-    sampling_freq = _precompile_sampling_frequency(system)
+# accepts for the signal, with the same kernel shapes as any longer one.
+function _precompile_signal(signal)
+    sampling_freq = _precompile_sampling_frequency(signal)
     num_samples =
-        round(Int, get_code_length(system) * sampling_freq / get_chip_rate(system))
-    (; signal) = generate_test_signal(
-        system,
+        round(Int, get_code_length(signal) * sampling_freq / get_chip_rate(signal))
+    (; samples) = generate_test_signal(
+        signal,
         1;
         num_samples,
         sampling_freq,
@@ -78,23 +78,23 @@ function _precompile_signal(system)
         CN0 = 45,
         unit_noise_power = true,
     )
-    ComplexF32.(signal), Complex{Int16}.(round.(signal .* 64)), sampling_freq
+    ComplexF32.(samples), Complex{Int16}.(round.(samples .* 64)), sampling_freq
 end
 
 @setup_workload begin
     signals = map(_precompile_signal, _PRECOMPILE_SIGNALS)
     @compile_workload begin
-        for (system, (signal_f32, signal_i16, sampling_freq)) in
+        for (signal, (signal_f32, signal_i16, sampling_freq)) in
             zip(_PRECOMPILE_SIGNALS, signals)
-            acquire(system, signal_i16, sampling_freq, [1, 2]; fft_flag = FFTW.ESTIMATE)
-            acquire(system, signal_f32, sampling_freq, 1; fft_flag = FFTW.ESTIMATE)
+            acquire(signal, signal_i16, sampling_freq, [1, 2]; fft_flag = FFTW.ESTIMATE)
+            acquire(signal, signal_f32, sampling_freq, 1; fft_flag = FFTW.ESTIMATE)
         end
         # A receiver builds its plan once and drives `acquire!` with it; a
         # multi-period coherent plan is the common shape for that.
-        system = GPSL1CA()
+        signal = GPSL1CA()
         signal_f32, signal_i16, sampling_freq = signals[1]
         plan = plan_acquire(
-            system,
+            signal,
             sampling_freq,
             [1, 2];
             num_coherently_integrated_code_periods = 2,

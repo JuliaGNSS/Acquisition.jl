@@ -63,7 +63,7 @@ end
     num_blocks = result.num_blocks
     block_size = result.block_size
 
-    code_freq_hz     = Float64(ustrip(Hz, get_chip_rate(result.system)))
+    code_freq_hz     = Float64(ustrip(Hz, get_chip_rate(result.signal)))
     sampling_freq_hz = Float64(ustrip(Hz, result.sampling_frequency))
 
     chip_axis, chip_sorted_power_bins =

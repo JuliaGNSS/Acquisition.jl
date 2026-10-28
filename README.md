@@ -34,13 +34,13 @@ Pkg.add("Acquisition")
 using Acquisition, GNSSSignals
 import Unitful: Hz
 
-system = GPSL1CA()
+signal = GPSL1CA()
 
-# Generate a synthetic GPS L1 signal for PRN 1
-(; signal, sampling_freq, interm_freq) = generate_test_signal(system, 1)
+# Generate a synthetic GPS L1 C/A signal for PRN 1
+(; samples, sampling_freq, interm_freq) = generate_test_signal(signal, 1)
 
 # Acquire PRNs 1–32
-results = acquire(system, signal, sampling_freq, 1:32; interm_freq)
+results = acquire(signal, samples, sampling_freq, 1:32; interm_freq)
 
 # Filter to detected satellites (CFAR, 1% false alarm probability)
 detected = filter(is_detected, results)
@@ -51,8 +51,8 @@ detected = filter(is_detected, results)
 For repeated acquisitions (e.g. processing a recorded file), pre-compute a plan once to avoid repeated FFT planning and memory allocation:
 
 ```julia
-plan = plan_acquire(system, sampling_freq, collect(1:32))
-results = acquire!(plan, signal, 1:32; interm_freq)
+plan = plan_acquire(signal, sampling_freq, collect(1:32))
+results = acquire!(plan, samples, 1:32; interm_freq)
 ```
 
 ### Streaming Results
@@ -63,7 +63,7 @@ each result on it as soon as its own PRN finishes, so a satellite can be handed 
 tracking while the rest of the search is still running:
 
 ```julia
-acquire_stream!(plan, signal, 1:32; interm_freq) do results
+acquire_stream!(plan, samples, 1:32; interm_freq) do results
     for result in results
         is_detected(result) && start_tracking(result)
     end
@@ -92,7 +92,7 @@ throughput.
 At low CN0, accumulate power across multiple successive signal segments:
 
 ```julia
-plan = plan_acquire(system, sampling_freq, [1];
+plan = plan_acquire(signal, sampling_freq, [1];
     num_coherently_integrated_code_periods = 10,
     num_noncoherent_accumulations = 8)
 
@@ -104,7 +104,7 @@ results = acquire!(plan, long_signal, [1])
 ```julia
 using Plots
 
-result = acquire(system, signal, sampling_freq, 1;
+result = acquire(signal, samples, sampling_freq, 1;
     interm_freq, store_power_bins = true)
 plot(result)
 ```

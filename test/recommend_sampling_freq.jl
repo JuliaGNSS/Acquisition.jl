@@ -88,7 +88,7 @@ end
     @test all(r -> round(Int, ustrip(Hz, r.sampling_freq)) != 1_542_000, rs2)
 end
 
-@testset "recommend_sampling_freqs — system convenience method" begin
+@testset "recommend_sampling_freqs — signal convenience method" begin
     # GPS L1 C/A: code_length=1023, code_freq=1.023 MHz, T_code=1 ms
     rs = recommend_sampling_freqs(
         GPSL1CA();

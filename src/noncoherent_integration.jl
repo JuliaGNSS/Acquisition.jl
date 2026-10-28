@@ -442,7 +442,7 @@ function _apply_code_drift!(noncoherent_integration_buf::Matrix{Float32}, plan::
     accumulation_step_index == 0 && return  # no drift on first step
     num_doppler_bins = size(noncoherent_integration_buf, 1)
     sampling_freq_hz = ustrip(Hz, plan.sampling_freq)
-    carrier_freq_hz = ustrip(Hz, get_center_frequency(plan.system))
+    carrier_freq_hz = ustrip(Hz, get_center_frequency(plan.signal))
     coherent_duration_s = plan.num_coherently_integrated_code_periods * plan.samples_per_code / sampling_freq_hz
     # On the rotation path the cp axis is `samples_per_code_eff` =
     # `samples_per_code * num_secondary_rotations` wide, with each rotation
@@ -603,7 +603,7 @@ function _fill_code_drift_shifts!(shifts::Vector{Int}, plan::AcquisitionPlan, ac
         return false
     end
     sampling_freq_hz = ustrip(Hz, plan.sampling_freq)
-    carrier_freq_hz = ustrip(Hz, get_center_frequency(plan.system))
+    carrier_freq_hz = ustrip(Hz, get_center_frequency(plan.signal))
     coherent_duration_s = plan.num_coherently_integrated_code_periods * plan.samples_per_code / sampling_freq_hz
     samples_per_code = plan.samples_per_code
     has_drift = false

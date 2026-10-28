@@ -21,7 +21,7 @@ end
 end
 
 """
-    acquire!(plan::AcquisitionPlan, signal, prns; interm_freq=0.0Hz, subsample_interpolation=false, store_power_bins=false) -> Vector{AcquisitionResults}
+    acquire!(plan::AcquisitionPlan, samples, prns; interm_freq=0.0Hz, subsample_interpolation=false, store_power_bins=false) -> Vector{AcquisitionResults}
 
 Perform FM-DBZP acquisition using a pre-computed [`AcquisitionPlan`](@ref).
 
@@ -31,7 +31,7 @@ pass.
 # Arguments
 
   - `plan`: Pre-computed [`AcquisitionPlan`](@ref) (from [`plan_acquire`](@ref))
-  - `signal`: Complex baseband signal samples
+  - `samples`: Complex baseband signal samples
   - `prns`: PRN numbers to search (must be a subset of `plan.avail_prns`)
 
 # Keyword Arguments
@@ -55,18 +55,18 @@ result as soon as its own PRN finishes.
 """
 function acquire!(
     plan::AcquisitionPlan,
-    signal,
+    samples,
     prns::AbstractVector{<:Integer};
     interm_freq = 0.0Hz,
     subsample_interpolation::Bool = false,
     store_power_bins::Bool = false,
 )
-    segment_length = _validate_acquire_inputs(plan, signal, prns)
+    segment_length = _validate_acquire_inputs(plan, samples, prns)
     # Exclusive for the duration of the call. Throws rather than corrupting if an
     # `acquire_stream!` on this plan is still running — see `PlanInUseError`.
     _claim_plan!(plan)
     try
-        _acquire!(plan, signal, prns, segment_length, ustrip(Hz, interm_freq),
+        _acquire!(plan, samples, prns, segment_length, ustrip(Hz, interm_freq),
             subsample_interpolation, store_power_bins, nothing)
     finally
         _release_plan!(plan)
@@ -77,18 +77,18 @@ end
 # length both paths go on to use. Split out because `acquire_stream!` runs the search
 # on another task: validating here, on the caller's task, makes a bad PRN or a too
 # short signal throw at the call site rather than surface later out of the channel.
-function _validate_acquire_inputs(plan::AcquisitionPlan, signal, prns)
+function _validate_acquire_inputs(plan::AcquisitionPlan, samples, prns)
     all(prn -> prn in plan.avail_prns, prns) ||
         throw(ArgumentError("All requested PRNs must be in plan.avail_prns. Got: $prns, available: $(plan.avail_prns)"))
 
     segment_length = plan.num_coherently_integrated_code_periods * plan.samples_per_code
-    num_segments = length(signal) ÷ segment_length
+    num_segments = length(samples) ÷ segment_length
 
     num_segments >= plan.num_noncoherent_accumulations ||
         throw(ArgumentError(
-            "Signal has $(length(signal)) samples → $num_segments full segments of $segment_length, " *
+            "Got $(length(samples)) samples → $num_segments full segments of $segment_length, " *
             "but plan.num_noncoherent_accumulations=$(plan.num_noncoherent_accumulations). " *
-            "Provide a longer signal."))
+            "Provide more samples."))
     return segment_length
 end
 
@@ -96,7 +96,7 @@ end
 # PRN's result is published as it finishes (see `_foreach_prn_chunk`). Only
 # `acquire_stream!` passes a channel — it is never part of the public keyword set,
 # so there is exactly one way to stream and it is the one that owns the channel.
-function _acquire!(plan::AcquisitionPlan, signal, prns, segment_length, interm_freq_hz,
+function _acquire!(plan::AcquisitionPlan, samples, prns, segment_length, interm_freq_hz,
                    subsample_interpolation::Bool, store_power_bins::Bool, results_channel)
     sampling_freq_hz = ustrip(Hz, plan.sampling_freq)
 
@@ -106,16 +106,16 @@ function _acquire!(plan::AcquisitionPlan, signal, prns, segment_length, interm_f
     # (N_nc>1) keeps per-PRN accumulation matrices because the surface carries
     # state across signal segments.
     if plan.num_noncoherent_accumulations == 1
-        _acquire_sequential!(plan, signal, prns, segment_length, interm_freq_hz,
+        _acquire_sequential!(plan, samples, prns, segment_length, interm_freq_hz,
             sampling_freq_hz, subsample_interpolation, store_power_bins, results_channel)
     else
-        _acquire_multistep!(plan, signal, prns, segment_length, interm_freq_hz,
+        _acquire_multistep!(plan, samples, prns, segment_length, interm_freq_hz,
             sampling_freq_hz, subsample_interpolation, store_power_bins, results_channel)
     end
 end
 
 """
-    acquire_stream!(plan::AcquisitionPlan, signal, prns; interm_freq=0.0Hz, subsample_interpolation=false, store_power_bins=false, buffer_size=length(prns)) -> Channel{AcquisitionResults}
+    acquire_stream!(plan::AcquisitionPlan, samples, prns; interm_freq=0.0Hz, subsample_interpolation=false, store_power_bins=false, buffer_size=length(prns)) -> Channel{AcquisitionResults}
 
 Streaming counterpart of [`acquire!`](@ref): start the search on its own task and
 return the `Channel` its results are published on *immediately*, before any PRN is
@@ -126,7 +126,7 @@ finished — one result per entry, in completion order — so a consumer can sta
 a satellite while the remaining PRNs are still being searched:
 
 ```julia
-acquire_stream!(plan, signal, 1:32; interm_freq) do results
+acquire_stream!(plan, samples, 1:32; interm_freq) do results
     for result in results
         is_detected(result) && start_tracking(result)
     end
@@ -158,7 +158,7 @@ cost to throughput.
 # Arguments
 
   - `plan`: Pre-computed [`AcquisitionPlan`](@ref) (from [`plan_acquire`](@ref))
-  - `signal`: Complex baseband signal samples. Read by the search task after this
+  - `samples`: Complex baseband signal samples. Read by the search task after this
     function has returned, so it must stay unmodified until the channel closes.
   - `prns`: PRN numbers to search (must be a subset of `plan.avail_prns`)
 
@@ -201,14 +201,14 @@ cost to throughput.
 """
 function acquire_stream!(
     plan::AcquisitionPlan,
-    signal,
+    samples,
     prns::AbstractVector{<:Integer};
     interm_freq = 0.0Hz,
     subsample_interpolation::Bool = false,
     store_power_bins::Bool = false,
     buffer_size::Int = length(prns),
 )
-    channel, _ = _start_acquire_stream(plan, signal, prns; interm_freq,
+    channel, _ = _start_acquire_stream(plan, samples, prns; interm_freq,
         subsample_interpolation, store_power_bins, buffer_size)
     return channel
 end
@@ -218,7 +218,7 @@ end
 # above drops it (its caller shuts the search down by closing the channel).
 function _start_acquire_stream(
     plan::AcquisitionPlan,
-    signal,
+    samples,
     prns::AbstractVector{<:Integer};
     interm_freq = 0.0Hz,
     subsample_interpolation::Bool = false,
@@ -232,7 +232,7 @@ function _start_acquire_stream(
     # throws at the call site, like it does for `acquire!`. Unitful conversion too:
     # otherwise a unitless `interm_freq` — an easy slip — would return a channel
     # happily and only fail later, out of the iteration.
-    segment_length = _validate_acquire_inputs(plan, signal, prns_vec)
+    segment_length = _validate_acquire_inputs(plan, samples, prns_vec)
     interm_freq_hz = ustrip(Hz, interm_freq)
     # Held until the search task finishes, not until this call returns.
     _claim_plan!(plan)
@@ -242,7 +242,7 @@ function _start_acquire_stream(
         # return type follows from the type of `plan`.
         channel = Channel{eltype(plan.acq_results_buf)}(buffer_size)
         search = Threads.@spawn try
-            _acquire!(plan, signal, prns_vec, segment_length, interm_freq_hz,
+            _acquire!(plan, samples, prns_vec, segment_length, interm_freq_hz,
                 subsample_interpolation, store_power_bins, channel)
         finally
             _release_plan!(plan)
@@ -262,14 +262,14 @@ function _start_acquire_stream(
 end
 
 """
-    acquire_stream!(f::Function, plan::AcquisitionPlan, signal, prns; kwargs...)
+    acquire_stream!(f::Function, plan::AcquisitionPlan, samples, prns; kwargs...)
 
 Scoped form of [`acquire_stream!`](@ref): runs `f(results)` with `results` the channel
 the search publishes on, and shuts the search down when `f` returns — however it
 returns.
 
 ```julia
-acquire_stream!(plan, signal, 1:32; interm_freq) do results
+acquire_stream!(plan, samples, 1:32; interm_freq) do results
     for result in results
         is_detected(result) && break     # the search is stopped, the plan is free
     end
@@ -293,14 +293,14 @@ Returns whatever `f` returns. Takes the same keyword arguments as the channel-re
 function acquire_stream!(
     f::Function,
     plan::AcquisitionPlan,
-    signal,
+    samples,
     prns::AbstractVector{<:Integer};
     interm_freq = 0.0Hz,
     subsample_interpolation::Bool = false,
     store_power_bins::Bool = false,
     buffer_size::Int = length(prns),
 )
-    channel, search = _start_acquire_stream(plan, signal, prns; interm_freq,
+    channel, search = _start_acquire_stream(plan, samples, prns; interm_freq,
         subsample_interpolation, store_power_bins, buffer_size)
     completed = false
     try
@@ -341,16 +341,16 @@ function _stop_acquire_stream!(plan::AcquisitionPlan, channel::Channel, search::
 end
 
 # Fill `sig_buf` with one downconverted code segment starting at `seg_start`.
-function _downconvert!(sig_buf, signal, seg_start, segment_length, interm_freq_hz, sampling_freq_hz)
+function _downconvert!(sig_buf, samples, seg_start, segment_length, interm_freq_hz, sampling_freq_hz)
     if iszero(interm_freq_hz)
-        sig_buf .= ComplexF32.(view(signal, seg_start:seg_start + segment_length - 1))
+        sig_buf .= ComplexF32.(view(samples, seg_start:seg_start + segment_length - 1))
     else
         phase_step = Float32(-2π * interm_freq_hz / sampling_freq_hz)
         phase_offset = Float32((seg_start - 1) * phase_step)
         @inbounds for sample_idx in 1:segment_length
             phase = phase_offset + (sample_idx - 1) * phase_step
             s, c = sincos(phase)
-            sig_buf[sample_idx] = ComplexF32(signal[seg_start + sample_idx - 1]) * Complex(c, s)
+            sig_buf[sample_idx] = ComplexF32(samples[seg_start + sample_idx - 1]) * Complex(c, s)
         end
     end
 end
@@ -526,7 +526,7 @@ _prn_emitter(results, channel) = result_idx -> put!(channel, results[result_idx]
 # bounds the number of live power surfaces by `min(nthreads, num_cores,
 # num_prns)` instead of one per PRN, and removes the per-step thread barriers
 # the former segment-outer loop needed.
-function _acquire_multistep!(plan, signal, prns, segment_length, interm_freq_hz,
+function _acquire_multistep!(plan, samples, prns, segment_length, interm_freq_hz,
                               sampling_freq_hz, subsample_interpolation, store_power_bins,
                               results_channel)
     # Fill the all-segment signal-block FFT cache. The downconverted segment
@@ -536,7 +536,7 @@ function _acquire_multistep!(plan, signal, prns, segment_length, interm_freq_hz,
     sig_buf = plan.sig_buf
     for step_idx in 1:plan.num_noncoherent_accumulations
         seg_start = (step_idx - 1) * segment_length + 1
-        _downconvert!(sig_buf, signal, seg_start, segment_length, interm_freq_hz, sampling_freq_hz)
+        _downconvert!(sig_buf, samples, seg_start, segment_length, interm_freq_hz, sampling_freq_hz)
         _precompute_signal_block_ffts!(
             _signal_block_ffts_for_step(plan, step_idx),
             sig_buf,
@@ -550,13 +550,13 @@ function _acquire_multistep!(plan, signal, prns, segment_length, interm_freq_hz,
     end
 
     results = resize!(plan.acq_results_buf, length(prns))
-    code_freq_hz = ustrip(Hz, get_chip_rate(plan.system))
-    code_length = get_code_length(plan.system)
-    code_period = code_length / get_chip_rate(plan.system)
+    code_freq_hz = ustrip(Hz, get_chip_rate(plan.signal))
+    code_length = get_code_length(plan.signal)
+    code_period = code_length / get_chip_rate(plan.signal)
     num_doppler_bins = length(plan.doppler_freqs)
     doppler_step = step(plan.doppler_freqs)
     _foreach_prn_chunk(plan, eachindex(prns), results, results_channel) do result_idx
-        _acquire_one_multistep!(plan, results, prns, result_idx, signal,
+        _acquire_one_multistep!(plan, results, prns, result_idx, samples,
             interm_freq_hz, sampling_freq_hz, code_freq_hz, code_length,
             code_period, num_doppler_bins, doppler_step,
             subsample_interpolation, store_power_bins)
@@ -567,7 +567,7 @@ end
 # One PRN of the multistep path: claim a scratch slot, accumulate every
 # non-coherent step into its accumulator, extract, release. Kept out of the
 # spawned chunk task's body so that body stays a plain function call.
-function _acquire_one_multistep!(plan, results, prns, result_idx, signal,
+function _acquire_one_multistep!(plan, results, prns, result_idx, samples,
         interm_freq_hz, sampling_freq_hz, code_freq_hz, code_length, code_period,
         num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
     prn = @inbounds prns[result_idx]
@@ -582,7 +582,7 @@ function _acquire_one_multistep!(plan, results, prns, result_idx, signal,
                 plan, scratch, prn, step_idx - 1)
         end
         results[result_idx] = _extract_result!(plan, scratch, prn, prn_idx, accumulator,
-            signal, interm_freq_hz,
+            samples, interm_freq_hz,
             sampling_freq_hz, code_freq_hz, code_length, code_period,
             num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
     finally
@@ -597,13 +597,13 @@ end
 # (num_doppler_bins × samples_per_code_eff) power surface is only materialised
 # into the per-PRN result buffer when the caller requests it via
 # `store_power_bins = true`.
-function _acquire_sequential!(plan, signal, prns, segment_length, interm_freq_hz,
+function _acquire_sequential!(plan, samples, prns, segment_length, interm_freq_hz,
                                sampling_freq_hz, subsample_interpolation, store_power_bins,
                                results_channel)
     main_scratch = _default_scratch(plan)
     sig_buf = plan.sig_buf
 
-    _downconvert!(sig_buf, signal, 1, segment_length, interm_freq_hz, sampling_freq_hz)
+    _downconvert!(sig_buf, samples, 1, segment_length, interm_freq_hz, sampling_freq_hz)
     _precompute_signal_block_ffts!(
         plan.signal_block_ffts,
         sig_buf,
@@ -616,14 +616,14 @@ function _acquire_sequential!(plan, signal, prns, segment_length, interm_freq_hz
     )
 
     results = resize!(plan.acq_results_buf, length(prns))
-    code_freq_hz = ustrip(Hz, get_chip_rate(plan.system))
-    code_length = get_code_length(plan.system)
-    code_period = code_length / get_chip_rate(plan.system)
+    code_freq_hz = ustrip(Hz, get_chip_rate(plan.signal))
+    code_length = get_code_length(plan.signal)
+    code_period = code_length / get_chip_rate(plan.signal)
     num_doppler_bins = length(plan.doppler_freqs)
     doppler_step = step(plan.doppler_freqs)
 
     _foreach_prn_chunk(plan, eachindex(prns), results, results_channel) do result_idx
-        _acquire_one_sequential!(plan, results, prns, result_idx, signal,
+        _acquire_one_sequential!(plan, results, prns, result_idx, samples,
             interm_freq_hz, sampling_freq_hz, code_freq_hz, code_length,
             code_period, num_doppler_bins, doppler_step,
             subsample_interpolation, store_power_bins)
@@ -633,7 +633,7 @@ end
 
 # One PRN of the sequential (N_nc == 1) path. Kept out of the spawned chunk
 # task's body so that body stays a plain function call.
-function _acquire_one_sequential!(plan, results, prns, result_idx, signal,
+function _acquire_one_sequential!(plan, results, prns, result_idx, samples,
         interm_freq_hz, sampling_freq_hz, code_freq_hz, code_length, code_period,
         num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
     prn = @inbounds prns[result_idx]
@@ -647,7 +647,7 @@ function _acquire_one_sequential!(plan, results, prns, result_idx, signal,
 
         results[result_idx] = _extract_result_streamed!(plan, scratch, prn,
             peak_power, peak_doppler_bin, peak_col, store_buf,
-            signal, interm_freq_hz,
+            samples, interm_freq_hz,
             sampling_freq_hz, code_freq_hz, code_length, code_period,
             num_doppler_bins, doppler_step, subsample_interpolation)
     finally
@@ -944,13 +944,13 @@ end
 # drift to within a primary-code period. The primary-code reference is generated once
 # per call; for signals whose `gen_code` bakes the secondary code (e.g. GPS L5I) it
 # carries a single constant chip, a global ±1 that cancels in the magnitude `argmax`.
-function _estimate_secondary_code_phase(plan, prn, signal, interm_freq_hz,
+function _estimate_secondary_code_phase(plan, prn, samples, interm_freq_hz,
                                         sampling_freq_hz, code_phase, doppler_hz)
-    system = plan.system
+    signal = plan.signal
     L = plan.num_secondary_rotations
     spc = plan.samples_per_code
-    sec = get_secondary_code(system)
-    code = gen_code(spc, system, prn, plan.sampling_freq, get_chip_rate(system), code_phase)
+    sec = get_secondary_code(signal)
+    code = gen_code(spc, signal, prn, plan.sampling_freq, get_chip_rate(signal), code_phase)
     phase_step = -2.0 * π * (interm_freq_hz + doppler_hz) / sampling_freq_hz
     dphi = ComplexF32(cos(phase_step), sin(phase_step))   # per-sample carrier rotation
     zs = Vector{ComplexF32}(undef, L)
@@ -960,7 +960,7 @@ function _estimate_secondary_code_phase(plan, prn, signal, interm_freq_hz,
         carr = ComplexF32(c0, s0)
         acc = zero(ComplexF32)
         for n in 0:spc-1
-            acc += ComplexF32(signal[base + n + 1]) * carr * ComplexF32(code[n + 1])
+            acc += ComplexF32(samples[base + n + 1]) * carr * ComplexF32(code[n + 1])
             carr *= dphi
         end
         zs[k + 1] = acc
@@ -985,7 +985,7 @@ end
 # both the sequential and multistep paths; in the sequential path `power_bins`
 # is the per-thread accumulator (and is reused by the next PRN), so the
 # store_power_bins copy must happen here before this function returns.
-function _extract_result!(plan, scratch, prn, prn_idx, power_bins, signal, interm_freq_hz,
+function _extract_result!(plan, scratch, prn, prn_idx, power_bins, samples, interm_freq_hz,
                           sampling_freq_hz, code_freq_hz, code_length, code_period,
                           num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
     col_sums_buf = scratch.col_sums_buf
@@ -1080,7 +1080,7 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins, signal, inter
         threshold = cfar_threshold(0.01, num_cells;
             num_noncoherent_integrations = plan.num_noncoherent_accumulations)
         if peak_to_noise > threshold
-            _estimate_secondary_code_phase(plan, prn, signal, interm_freq_hz,
+            _estimate_secondary_code_phase(plan, prn, samples, interm_freq_hz,
                 sampling_freq_hz, code_phase, ustrip(Hz, doppler))
         else
             nothing
@@ -1096,7 +1096,7 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins, signal, inter
     end
 
     return AcquisitionResults(
-        plan.system,
+        plan.signal,
         prn,
         plan.sampling_freq,
         doppler,
@@ -1124,7 +1124,7 @@ end
 # (`_recompute_column_power!`).
 function _extract_result_streamed!(plan, scratch, prn,
                                    peak_power, peak_doppler_bin, peak_col,
-                                   store_buf, signal, interm_freq_hz,
+                                   store_buf, samples, interm_freq_hz,
                                    sampling_freq_hz, code_freq_hz, code_length, code_period,
                                    num_doppler_bins, doppler_step, subsample_interpolation)
     num_cp_cols = plan.samples_per_code_eff
@@ -1196,7 +1196,7 @@ function _extract_result_streamed!(plan, scratch, prn,
         threshold = cfar_threshold(0.01, num_cells;
             num_noncoherent_integrations = plan.num_noncoherent_accumulations)
         if peak_to_noise > threshold
-            _estimate_secondary_code_phase(plan, prn, signal, interm_freq_hz,
+            _estimate_secondary_code_phase(plan, prn, samples, interm_freq_hz,
                 sampling_freq_hz, code_phase, ustrip(Hz, doppler))
         else
             nothing
@@ -1206,7 +1206,7 @@ function _extract_result_streamed!(plan, scratch, prn,
     end
 
     return AcquisitionResults(
-        plan.system,
+        plan.signal,
         prn,
         plan.sampling_freq,
         doppler,
@@ -1225,31 +1225,31 @@ function _extract_result_streamed!(plan, scratch, prn,
 end
 
 """
-    acquire!(plan::AcquisitionPlan, signal, prn::Integer; kwargs...) -> AcquisitionResults
+    acquire!(plan::AcquisitionPlan, samples, prn::Integer; kwargs...) -> AcquisitionResults
 
 Single-PRN convenience method. Calls the multi-PRN `acquire!` and returns the single result.
 """
 function acquire!(
     plan::AcquisitionPlan,
-    signal,
+    samples,
     prn::Integer;
     interm_freq = 0.0Hz,
     subsample_interpolation::Bool = false,
     store_power_bins::Bool = false,
 )
-    only(acquire!(plan, signal, [prn]; interm_freq, subsample_interpolation,
+    only(acquire!(plan, samples, [prn]; interm_freq, subsample_interpolation,
         store_power_bins))
 end
 
 """
-    acquire(system, signal, sampling_freq, prns; kwargs...) -> Vector{AcquisitionResults}
+    acquire(signal, samples, sampling_freq, prns; kwargs...) -> Vector{AcquisitionResults}
 
 Convenience wrapper: calls [`plan_acquire`](@ref) then [`acquire!`](@ref).
 
 # Arguments
 
-  - `system`: GNSS system (e.g. `GPSL1CA()`)
-  - `signal`: Complex baseband signal samples
+  - `signal`: GNSS signal (e.g. `GPSL1CA()`)
+  - `samples`: Complex baseband signal samples
   - `sampling_freq`: Sampling frequency
   - `prns`: PRN numbers to search
 
@@ -1282,8 +1282,8 @@ each result as soon as its own PRN finishes instead.
 [`acquire_stream`](@ref), [`plan_acquire`](@ref), [`acquire!`](@ref)
 """
 function acquire(
-    system::AbstractGNSSSignal,
-    signal,
+    signal::AbstractGNSSSignal,
+    samples,
     sampling_freq,
     prns::AbstractVector{<:Integer};
     interm_freq = 0.0Hz,
@@ -1298,7 +1298,7 @@ function acquire(
     store_power_bins::Bool = false,
 )
     plan = plan_acquire(
-        system,
+        signal,
         sampling_freq,
         collect(Int, prns);
         min_doppler_coverage,
@@ -1309,18 +1309,18 @@ function acquire(
         max_secondary_code_rotations,
         fft_flag,
     )
-    acquire!(plan, signal, collect(Int, prns); interm_freq, subsample_interpolation,
+    acquire!(plan, samples, collect(Int, prns); interm_freq, subsample_interpolation,
         store_power_bins)
 end
 
 """
-    acquire_stream(system, signal, sampling_freq, prns; kwargs...) -> Channel{AcquisitionResults}
+    acquire_stream(signal, samples, sampling_freq, prns; kwargs...) -> Channel{AcquisitionResults}
 
 Convenience wrapper: calls [`plan_acquire`](@ref) then [`acquire_stream!`](@ref), so
 each result can be consumed as soon as its own PRN is finished:
 
 ```julia
-for result in acquire_stream(system, signal, sampling_freq, 1:32; interm_freq)
+for result in acquire_stream(signal, samples, sampling_freq, 1:32; interm_freq)
     is_detected(result) && start_tracking(result)
 end
 ```
@@ -1339,8 +1339,8 @@ search, or hoist the plan out with [`plan_acquire`](@ref) and use
 [`acquire_stream!`](@ref), [`acquire`](@ref), [`plan_acquire`](@ref)
 """
 function acquire_stream(
-    system::AbstractGNSSSignal,
-    signal,
+    signal::AbstractGNSSSignal,
+    samples,
     sampling_freq,
     prns::AbstractVector{<:Integer};
     interm_freq = 0.0Hz,
@@ -1356,7 +1356,7 @@ function acquire_stream(
     buffer_size::Int = length(prns),
 )
     plan = plan_acquire(
-        system,
+        signal,
         sampling_freq,
         collect(Int, prns);
         min_doppler_coverage,
@@ -1367,18 +1367,18 @@ function acquire_stream(
         max_secondary_code_rotations,
         fft_flag,
     )
-    acquire_stream!(plan, signal, collect(Int, prns); interm_freq,
+    acquire_stream!(plan, samples, collect(Int, prns); interm_freq,
         subsample_interpolation, store_power_bins, buffer_size)
 end
 
 """
-    acquire_stream(f::Function, system, signal, sampling_freq, prns; kwargs...)
+    acquire_stream(f::Function, signal, samples, sampling_freq, prns; kwargs...)
 
 Scoped form of [`acquire_stream`](@ref): plans, streams, runs `f(results)` and shuts
 the search down when `f` returns — however it returns.
 
 ```julia
-acquire_stream(system, signal, sampling_freq, 1:32; interm_freq) do results
+acquire_stream(signal, samples, sampling_freq, 1:32; interm_freq) do results
     for result in results
         is_detected(result) && break
     end
@@ -1394,8 +1394,8 @@ the `do`-block [`acquire_stream!`](@ref) for why. Returns whatever `f` returns.
 """
 function acquire_stream(
     f::Function,
-    system::AbstractGNSSSignal,
-    signal,
+    signal::AbstractGNSSSignal,
+    samples,
     sampling_freq,
     prns::AbstractVector{<:Integer};
     interm_freq = 0.0Hz,
@@ -1411,7 +1411,7 @@ function acquire_stream(
     buffer_size::Int = length(prns),
 )
     plan = plan_acquire(
-        system,
+        signal,
         sampling_freq,
         collect(Int, prns);
         min_doppler_coverage,
@@ -1422,21 +1422,21 @@ function acquire_stream(
         max_secondary_code_rotations,
         fft_flag,
     )
-    acquire_stream!(f, plan, signal, collect(Int, prns); interm_freq,
+    acquire_stream!(f, plan, samples, collect(Int, prns); interm_freq,
         subsample_interpolation, store_power_bins, buffer_size)
 end
 
 """
-    acquire(system, signal, sampling_freq, prn::Integer; kwargs...) -> AcquisitionResults
+    acquire(signal, samples, sampling_freq, prn::Integer; kwargs...) -> AcquisitionResults
 
 Single-PRN convenience method. Returns a single [`AcquisitionResults`](@ref).
 """
 function acquire(
-    system::AbstractGNSSSignal,
-    signal,
+    signal::AbstractGNSSSignal,
+    samples,
     sampling_freq,
     prn::Integer;
     kwargs...,
 )
-    only(acquire(system, signal, sampling_freq, [prn]; kwargs...))
+    only(acquire(signal, samples, sampling_freq, [prn]; kwargs...))
 end

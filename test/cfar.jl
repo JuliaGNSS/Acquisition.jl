@@ -29,14 +29,14 @@
 end
 
 @testset "CFAR detection with synthetic signal" begin
-    system = GPSL1CA()
+    signal = GPSL1CA()
     prn = 1
 
     # Generate signal with known satellite
-    (; signal, sampling_freq, interm_freq) = generate_test_signal(system, prn)
+    (; samples, sampling_freq, interm_freq) = generate_test_signal(signal, prn)
 
     # Acquire all PRNs
-    results = acquire(system, signal, sampling_freq, collect(1:32); interm_freq)
+    results = acquire(signal, samples, sampling_freq, collect(1:32); interm_freq)
 
     threshold = cfar_threshold(0.01, get_num_cells(results[1]))
 
@@ -58,7 +58,7 @@ end
     # single-dwell synthetic test above: the analytic derivation in
     # `cfar_threshold` assumes per-cell χ²(2M) distribution, and we want the
     # end-to-end `acquire!` pipeline to reproduce that on synthetic AWGN.
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
     samples_per_code = 2048
     pfa = 0.01
@@ -69,7 +69,7 @@ end
         seg_len = num_code_cycles * samples_per_code * M
         false_alarms = 0
         Random.seed!(0xC0FFEE + M * 1000)
-        plan = plan_acquire(system, float(sampling_freq), collect(1:32);
+        plan = plan_acquire(signal, float(sampling_freq), collect(1:32);
             num_coherently_integrated_code_periods = num_code_cycles,
             num_noncoherent_accumulations = M)
         num_cells = length(plan.doppler_freqs) * plan.num_blocks * plan.block_size
@@ -93,7 +93,7 @@ end
     # detected when num_noncoherent_accumulations > 1. This guards against a
     # threshold that's so loose it admits false alarms but also against one
     # that's so tight it rejects real signals.
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
     samples_per_code = 2048
     pfa = 0.01
@@ -101,31 +101,31 @@ end
     for (M, num_code_cycles, CN0) in [(2, 4, 40), (4, 4, 38), (8, 1, 42)]
         seg_len = num_code_cycles * samples_per_code * M
         prn = 7
-        (; signal, interm_freq) = generate_test_signal(system, prn;
+        (; samples, interm_freq) = generate_test_signal(signal, prn;
             num_samples = seg_len,
             sampling_freq, interm_freq = 0.0Hz,
             CN0, doppler = 500Hz, code_phase = 100.0,
             seed = 9999 + M)
-        plan = plan_acquire(system, float(sampling_freq), collect(1:32);
+        plan = plan_acquire(signal, float(sampling_freq), collect(1:32);
             num_coherently_integrated_code_periods = num_code_cycles,
             num_noncoherent_accumulations = M)
-        result = only(acquire!(plan, signal, [prn]; interm_freq))
+        result = only(acquire!(plan, samples, [prn]; interm_freq))
         @test is_detected(result; pfa)
     end
 end
 
 @testset "peak_to_noise_ratio is consistent with CN0" begin
-    system = GPSL1CA()
+    signal = GPSL1CA()
 
     # Strong signal
-    (; signal, prn, sampling_freq, interm_freq) =
-        generate_test_signal(system, 1; CN0 = 55)
-    strong = acquire(system, signal, sampling_freq, prn; interm_freq)
+    (; samples, prn, sampling_freq, interm_freq) =
+        generate_test_signal(signal, 1; CN0 = 55)
+    strong = acquire(signal, samples, sampling_freq, prn; interm_freq)
 
     # Weak signal
-    (; signal, prn, sampling_freq, interm_freq) =
-        generate_test_signal(system, 1; CN0 = 35)
-    weak = acquire(system, signal, sampling_freq, prn; interm_freq)
+    (; samples, prn, sampling_freq, interm_freq) =
+        generate_test_signal(signal, 1; CN0 = 35)
+    weak = acquire(signal, samples, sampling_freq, prn; interm_freq)
 
     # Strong signal should have higher peak_to_noise_ratio
     @test strong.peak_to_noise_ratio > weak.peak_to_noise_ratio

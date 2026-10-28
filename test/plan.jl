@@ -2,9 +2,9 @@
 # Tests for plan_acquire and PRN FFT precomputation
 
 @testset "plan_acquire parameters — GPS L1 at 2.048 MHz" begin
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
-    plan = plan_acquire(system, sampling_freq, [1];
+    plan = plan_acquire(signal, sampling_freq, [1];
         min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 1, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
 
     @test plan.samples_per_code == 2048      # ceil(1023/1.023e6 * 2.048e6)
@@ -23,10 +23,10 @@
 end
 
 @testset "plan_acquire parameters — GPS L1 multi-ms" begin
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
     # num_coherently_integrated_code_periods=40 → num_bits = 40÷20 = 2 bits
-    plan = plan_acquire(system, sampling_freq, [1];
+    plan = plan_acquire(signal, sampling_freq, [1];
         min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4, num_noncoherent_accumulations = 5)
 
     @test plan.samples_per_code == 2048
@@ -42,23 +42,23 @@ end
 @testset "plan_acquire counts a BeiDou GEO satellite's D2 bits" begin
     # B1I GEO satellites (PRN 1-5, 59-63) broadcast D2 at 500 bit/s, 2 code
     # periods per bit; the others broadcast D1 at 50 bit/s, 20 per bit.
-    system = BeiDouB1I()
+    signal = BeiDouB1I()
     sampling_freq = 4.092e6Hz
-    plan_geo = plan_acquire(system, sampling_freq, [1, 2];
+    plan_geo = plan_acquire(signal, sampling_freq, [1, 2];
         num_coherently_integrated_code_periods = 4, use_secondary_code = false)
     @test plan_geo.num_bits == 2
-    plan_meo = plan_acquire(system, sampling_freq, [6, 7];
+    plan_meo = plan_acquire(signal, sampling_freq, [6, 7];
         num_coherently_integrated_code_periods = 4, use_secondary_code = false)
     @test plan_meo.num_bits == 1
     # Within one D2 bit both agree on one bit per window.
-    plan_mixed = plan_acquire(system, sampling_freq, [1, 6];
+    plan_mixed = plan_acquire(signal, sampling_freq, [1, 6];
         num_coherently_integrated_code_periods = 2, use_secondary_code = false)
     @test plan_mixed.num_bits == 1
     # Beyond it they do not, and one plan cannot hold both.
-    @test_throws ArgumentError plan_acquire(system, sampling_freq, [1, 6];
+    @test_throws ArgumentError plan_acquire(signal, sampling_freq, [1, 6];
         num_coherently_integrated_code_periods = 4, use_secondary_code = false)
     # A GEO satellite's window must also span whole D2 bits.
-    @test_throws ArgumentError plan_acquire(system, sampling_freq, [1];
+    @test_throws ArgumentError plan_acquire(signal, sampling_freq, [1];
         num_coherently_integrated_code_periods = 3, use_secondary_code = false)
 end
 
@@ -167,33 +167,33 @@ end
 end
 
 @testset "plan_acquire validation errors" begin
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
     # num_coherently_integrated_code_periods >= code_blocks_per_bit (20) but not divisible by it
-    @test_throws ArgumentError plan_acquire(system, sampling_freq, [1];
+    @test_throws ArgumentError plan_acquire(signal, sampling_freq, [1];
         num_coherently_integrated_code_periods = 30)
     # bit_edge_search_steps does not divide code_blocks_per_bit (20)
-    @test_throws ArgumentError plan_acquire(system, sampling_freq, [1];
+    @test_throws ArgumentError plan_acquire(signal, sampling_freq, [1];
         num_coherently_integrated_code_periods = 20, bit_edge_search_steps = 3)
     # bit_edge_search_steps > 1 only makes sense when num_coherently_integrated_code_periods > 1
-    @test_throws ArgumentError plan_acquire(system, sampling_freq, [1];
+    @test_throws ArgumentError plan_acquire(signal, sampling_freq, [1];
         num_coherently_integrated_code_periods = 1, bit_edge_search_steps = 2)
     # Other basic guard checks
-    @test_throws ArgumentError plan_acquire(system, sampling_freq, [1];
+    @test_throws ArgumentError plan_acquire(signal, sampling_freq, [1];
         num_noncoherent_accumulations = 0)
-    @test_throws ArgumentError plan_acquire(system, sampling_freq, [1];
+    @test_throws ArgumentError plan_acquire(signal, sampling_freq, [1];
         num_coherently_integrated_code_periods = 0)
-    @test_throws ArgumentError plan_acquire(system, sampling_freq, [1];
+    @test_throws ArgumentError plan_acquire(signal, sampling_freq, [1];
         bit_edge_search_steps = 0)
     # min_doppler_coverage > sampling_freq/2 → no valid divisor → ArgumentError
-    @test_throws ArgumentError plan_acquire(system, sampling_freq, [1];
+    @test_throws ArgumentError plan_acquire(signal, sampling_freq, [1];
         min_doppler_coverage = 1.1e6Hz)
 end
 
 @testset "PRN FFT precomputation" begin
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
-    plan = plan_acquire(system, sampling_freq, [1, 2];
+    plan = plan_acquire(signal, sampling_freq, [1, 2];
         min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 1)
     double_block_size = 2 * plan.block_size
 
@@ -207,7 +207,7 @@ end
 
     # Each column should be conj(FFT) of a zero-padded block_size-length block.
     # Verify by manually computing PRN 1 block 0 FFT and comparing.
-    code = gen_code(plan.samples_per_code, system, 1, sampling_freq, get_chip_rate(system), 0.0)
+    code = gen_code(plan.samples_per_code, signal, 1, sampling_freq, get_chip_rate(signal), 0.0)
     prn_block0 = zeros(ComplexF32, double_block_size)
     prn_block0[1:plan.block_size] .= ComplexF32.(code[1:plan.block_size])
     expected_fft = fft(prn_block0)
@@ -226,7 +226,7 @@ end
         (16.368e6Hz, 11, 1488),  # 11 itself is a divisor (16368 = 2⁴·3·11·31)
         (25e6Hz,    20, 1250),   # divisors of 25000: …,10,20,25,…; smallest >= 11 is 20
     ]
-    system      = GPSL1CA()
+    signal      = GPSL1CA()
     prn         = 1
     code_phase  = 110.613261
     doppler_hz  = 1000Hz
@@ -234,15 +234,15 @@ end
 
     for (sampling_freq, expected_num_blocks, expected_block_size) in cases
         @testset "sampling_freq=$(ustrip(Hz, sampling_freq) / 1e6) MHz" begin
-            samples_per_code = ceil(Int, get_code_length(system) / ustrip(Hz, get_chip_rate(system)) * ustrip(Hz, sampling_freq))
-            plan = plan_acquire(system, sampling_freq, [prn];
+            samples_per_code = ceil(Int, get_code_length(signal) / ustrip(Hz, get_chip_rate(signal)) * ustrip(Hz, sampling_freq))
+            plan = plan_acquire(signal, sampling_freq, [prn];
                 min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = num_periods, num_noncoherent_accumulations = 1)
 
             @test plan.num_blocks * plan.block_size == samples_per_code
             @test plan.num_blocks  == expected_num_blocks
             @test plan.block_size  == expected_block_size
 
-            (; signal) = generate_test_signal(system, prn;
+            (; samples) = generate_test_signal(signal, prn;
                 num_samples   = num_periods * samples_per_code,
                 doppler       = doppler_hz,
                 code_phase    = code_phase,
@@ -251,7 +251,7 @@ end
                 CN0           = 45,
                 seed          = 42)
 
-            results = acquire(system, ComplexF32.(signal), sampling_freq, [prn];
+            results = acquire(signal, ComplexF32.(samples), sampling_freq, [prn];
                 interm_freq = 0.0Hz, min_doppler_coverage = 5_000Hz,
                 num_coherently_integrated_code_periods = num_periods, num_noncoherent_accumulations = 1)
 
@@ -353,15 +353,15 @@ end
     # Default acquire! (store_power_bins=false) must not allocate any per-PRN
     # result matrix. Only when the caller opts in does the slot fill in, and once
     # filled it stays cached for the next call (reuse contract).
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
-    plan = plan_acquire(system, sampling_freq, [1, 2]; fft_flag = FFTW.ESTIMATE)
+    plan = plan_acquire(signal, sampling_freq, [1, 2]; fft_flag = FFTW.ESTIMATE)
     @test all(b -> b === nothing, plan.result_buffers)
 
-    (; signal) = generate_test_signal(system, 1;
+    (; samples) = generate_test_signal(signal, 1;
         num_samples = plan.samples_per_code, sampling_freq = sampling_freq,
         interm_freq = 0.0Hz, CN0 = 45)
-    sig = ComplexF32.(signal)
+    sig = ComplexF32.(samples)
 
     # store_power_bins=false leaves the slots empty.
     acquire!(plan, sig, [1, 2]; interm_freq = 0.0Hz, store_power_bins = false)
@@ -383,10 +383,10 @@ end
     # bit_edge_search_steps == 1 && no rotation search. In that regime
     # stage_buf and sub_block_ffts are never read, so the plan should
     # allocate them as 0x0 sentinels per thread.
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
 
-    simple_plan = plan_acquire(system, sampling_freq, [1];
+    simple_plan = plan_acquire(signal, sampling_freq, [1];
         num_coherently_integrated_code_periods = 1, bit_edge_search_steps = 1)
     simple_scratch = Acquisition._default_scratch(simple_plan)
     @test simple_plan.num_bits == 1
@@ -402,7 +402,7 @@ end
     # Sign-search path: bit_edge_search_steps > 1 makes the kernels actually
     # read these buffers, so they must exist — but the stage is per-COLUMN
     # (num_doppler_bins × num_rotations), never per-surface.
-    search_plan = plan_acquire(system, sampling_freq, [1];
+    search_plan = plan_acquire(signal, sampling_freq, [1];
         min_doppler_coverage = 10_000Hz,
         num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4)
     search_scratch = Acquisition._default_scratch(search_plan)
@@ -423,11 +423,11 @@ end
     # exactly once, so the result statistics are streamed per tile and NO
     # noncoherent power matrix exists anywhere — neither per PRN (that plan
     # field is gone) nor per thread.
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prns = collect(1:4)
 
-    seq_plan = plan_acquire(system, sampling_freq, prns;
+    seq_plan = plan_acquire(signal, sampling_freq, prns;
         num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 1)
     seq_scratch = Acquisition._default_scratch(seq_plan)
     @test !hasfield(typeof(seq_plan), :noncoherent_integration_matrices)
@@ -440,7 +440,7 @@ end
     # N_nc>1: accumulation across segments genuinely needs a surface, but the
     # PRN-outer loop bounds it at ONE per scratch slot — min(threads, cores,
     # num_prns) surfaces total, never one per PRN — and no streaming row sums.
-    multi_plan = plan_acquire(system, sampling_freq, prns;
+    multi_plan = plan_acquire(signal, sampling_freq, prns;
         num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 2)
     multi_scratch = Acquisition._default_scratch(multi_plan)
     @test length(multi_plan.thread_scratch) <= length(prns)
@@ -462,11 +462,11 @@ end
     # doubles as the ambient scratch. The footprint is hard-capped no matter how
     # often / from which threads acquire! is called — the Issue #60 guarantee a
     # long-running receiver relies on — and there is no first-acquire spike.
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prns = collect(1:4)
 
-    plan = plan_acquire(system, sampling_freq, prns;
+    plan = plan_acquire(signal, sampling_freq, prns;
         num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 1)
     cap = min(Threads.nthreads(), max(1, Int(Acquisition.num_cores())), length(prns))
 
@@ -483,11 +483,11 @@ end
     end
 
     # Acquiring produces correct results and returns every slot to the pool.
-    (; signal, doppler, code_phase) = generate_test_signal(system, prns[1];
+    (; samples, doppler, code_phase) = generate_test_signal(signal, prns[1];
         num_samples = plan.samples_per_code,
         doppler = 1234Hz, code_phase = 100.0,
         sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
-    results = acquire!(plan, signal, prns; interm_freq = 0.0Hz)
+    results = acquire!(plan, samples, prns; interm_freq = 0.0Hz)
     @test length(results) == length(prns)
     # PRN 1 is the planted signal; it should acquire to the right cell.
     @test results[1].code_phase ≈ code_phase atol = 2.0
@@ -498,7 +498,7 @@ end
     # Cap is stable under repeated @spawn-driven calls — the scenario that makes
     # threadid()-indexed storage drift. Slot count and free list never change.
     for _ in 1:30
-        fetch(Threads.@spawn acquire!(plan, signal, prns; interm_freq = 0.0Hz))
+        fetch(Threads.@spawn acquire!(plan, samples, prns; interm_freq = 0.0Hz))
     end
     @test length(plan.thread_scratch) == cap
     @test materialised(plan) == cap
@@ -506,19 +506,19 @@ end
 end
 
 @testset "max_blocking_time — cooperative preemption stride (#89)" begin
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prns = collect(1:4)
     base = (min_doppler_coverage = 10_000Hz, use_secondary_code = false,
             fft_flag = FFTW.ESTIMATE)
 
     # Default is off: today's behaviour, no yields anywhere.
-    plan = plan_acquire(system, sampling_freq, prns; base...)
+    plan = plan_acquire(signal, sampling_freq, prns; base...)
     @test plan.preempt_block_stride[] == 0
 
     # A bound is converted to a block stride, always within the loop it guards.
     for t in (1u"µs", 35u"µs", 70u"µs", 1u"ms")
-        p = plan_acquire(system, sampling_freq, prns; base..., max_blocking_time = t)
+        p = plan_acquire(signal, sampling_freq, prns; base..., max_blocking_time = t)
         @test 1 <= p.preempt_block_stride[] <= p.num_blocks
     end
 
@@ -527,48 +527,48 @@ end
     # are machine-independent — no code block takes less than a nanosecond, and
     # none takes a whole second — so pin the ends there and assert nothing
     # sharper in the middle than "inside the loop, and grows with the budget".
-    @test plan_acquire(system, sampling_freq, prns; base...,
+    @test plan_acquire(signal, sampling_freq, prns; base...,
         max_blocking_time = 1u"ns").preempt_block_stride[] == 1
-    @test plan_acquire(system, sampling_freq, prns; base...,
+    @test plan_acquire(signal, sampling_freq, prns; base...,
         max_blocking_time = 1u"s").preempt_block_stride[] == plan.num_blocks
 
     # Budgets decades apart, so calibration noise cannot reorder them.
-    strides = [plan_acquire(system, sampling_freq, prns; base...,
+    strides = [plan_acquire(signal, sampling_freq, prns; base...,
                             max_blocking_time = t).preempt_block_stride[]
                for t in (1u"ns", 10u"µs", 1u"s")]
     @test all(s -> 1 <= s <= plan.num_blocks, strides)
     @test issorted(strides)
 
-    @test_throws ArgumentError plan_acquire(system, sampling_freq, prns; base...,
+    @test_throws ArgumentError plan_acquire(signal, sampling_freq, prns; base...,
         max_blocking_time = 0u"µs")
-    @test_throws ArgumentError plan_acquire(system, sampling_freq, prns; base...,
+    @test_throws ArgumentError plan_acquire(signal, sampling_freq, prns; base...,
         max_blocking_time = -1u"µs")
     # Not a time quantity.
-    @test_throws ArgumentError plan_acquire(system, sampling_freq, prns; base...,
+    @test_throws ArgumentError plan_acquire(signal, sampling_freq, prns; base...,
         max_blocking_time = 100)
-    @test_throws ArgumentError plan_acquire(system, sampling_freq, prns; base...,
+    @test_throws ArgumentError plan_acquire(signal, sampling_freq, prns; base...,
         max_blocking_time = 100Hz)
 end
 
 @testset "max_blocking_time does not change results (#89)" begin
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prns = collect(1:4)
     # Both per-PRN kernels: streamed (N_nc == 1) and multistep (N_nc > 1).
     for n_nc in (1, 3)
         base = (min_doppler_coverage = 10_000Hz, use_secondary_code = false,
                 num_noncoherent_accumulations = n_nc, fft_flag = FFTW.ESTIMATE)
-        plain = plan_acquire(system, sampling_freq, prns; base...)
+        plain = plan_acquire(signal, sampling_freq, prns; base...)
         # Stride 1 — a yield after every single code block, the most disruptive
         # setting the knob can produce.
-        preempt = plan_acquire(system, sampling_freq, prns; base...,
+        preempt = plan_acquire(signal, sampling_freq, prns; base...,
             max_blocking_time = 1u"ns")
         @test preempt.preempt_block_stride[] == 1
 
         Random.seed!(42)
-        signal = ComplexF32.(randn(ComplexF64, plain.samples_per_code * n_nc))
-        a = deepcopy(acquire!(plain, signal, prns; subsample_interpolation = true))
-        b = acquire!(preempt, signal, prns; subsample_interpolation = true)
+        samples = ComplexF32.(randn(ComplexF64, plain.samples_per_code * n_nc))
+        a = deepcopy(acquire!(plain, samples, prns; subsample_interpolation = true))
+        b = acquire!(preempt, samples, prns; subsample_interpolation = true)
         @test all(x.carrier_doppler == y.carrier_doppler for (x, y) in zip(a, b))
         @test all(x.code_phase == y.code_phase for (x, y) in zip(a, b))
         @test all(x.CN0 == y.CN0 for (x, y) in zip(a, b))

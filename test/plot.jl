@@ -2,14 +2,14 @@
 # Tests for src/plot.jl: _fmdbzp_column_to_tau, _fmdbzp_sort_by_chip, and the @recipe
 
 @testset "plot recipe — throws when power_bins is nothing" begin
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
-    plan = plan_acquire(system, sampling_freq, [prn]; fft_flag = FFTW.ESTIMATE)
-    (; signal) = generate_test_signal(system, prn;
+    plan = plan_acquire(signal, sampling_freq, [prn]; fft_flag = FFTW.ESTIMATE)
+    (; samples) = generate_test_signal(signal, prn;
         num_samples = plan.samples_per_code, sampling_freq = sampling_freq,
         interm_freq = 0.0Hz, CN0 = 45)
-    result = only(acquire!(plan, ComplexF32.(signal), [prn]))  # no store_power_bins
+    result = only(acquire!(plan, ComplexF32.(samples), [prn]))  # no store_power_bins
 
     @test result.power_bins === nothing
     @test_throws ArgumentError RecipesBase.apply_recipe(Dict{Symbol,Any}(), result)
@@ -41,13 +41,13 @@ end
 end
 
 @testset "_fmdbzp_sort_by_chip — chip-ordered columns" begin
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
-    plan = plan_acquire(system, sampling_freq, [1];
+    plan = plan_acquire(signal, sampling_freq, [1];
         min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = 1,
         num_noncoherent_accumulations = 1)
 
-    f_code = Float64(ustrip(Hz, get_chip_rate(system)))
+    f_code = Float64(ustrip(Hz, get_chip_rate(signal)))
     fs     = Float64(ustrip(Hz, sampling_freq))
 
     # Build a dummy power_bins matrix (all ones — shape correctness test)
@@ -72,20 +72,20 @@ end
 end
 
 @testset "plot recipe — axes and data shape via RecipesBase" begin
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
 
-    plan = plan_acquire(system, sampling_freq, [prn];
+    plan = plan_acquire(signal, sampling_freq, [prn];
         min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = 1,
         num_noncoherent_accumulations = 1)
 
-    (; signal) = generate_test_signal(system, prn;
+    (; samples) = generate_test_signal(signal, prn;
         num_samples = plan.samples_per_code,
         doppler = 1000Hz, code_phase = 100.0,
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 60)
 
-    results = acquire!(plan, ComplexF32.(signal), [prn]; interm_freq = 0.0Hz, store_power_bins = true)
+    results = acquire!(plan, ComplexF32.(samples), [prn]; interm_freq = 0.0Hz, store_power_bins = true)
     result  = only(results)
 
     # Invoke the recipe without a plot backend
