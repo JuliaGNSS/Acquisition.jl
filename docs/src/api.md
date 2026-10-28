@@ -22,18 +22,18 @@ sample_rate_range
 ```@docs
 AcquisitionResults
 AcquisitionPlan
-PlanInUseError
-SamplingFreqRecommendation
-AbstractSDRClockPlan
 AD9361ClockPlan
+Acquisition.PlanInUseError
+Acquisition.SamplingFreqRecommendation
+Acquisition.AbstractSDRClockPlan
 ```
 
 ## Noise Estimators
 
 ```@docs
-AbstractNoiseEstimator
 OppositeRowNoiseEstimator
 GlobalMeanNoiseEstimator
+Acquisition.AbstractNoiseEstimator
 ```
 
 ## Index

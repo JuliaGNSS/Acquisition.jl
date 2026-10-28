@@ -14,7 +14,8 @@ Hardware constraints that decide which sampling frequencies an SDR can produce.
 Concrete subtypes implement [`is_valid_sample_rate`](@ref). They may also
 override [`sample_rate_range`](@ref) to narrow the sweep range.
 
-See [`AD9361ClockPlan`](@ref) for an example implementation.
+See [`AD9361ClockPlan`](@ref) for an example implementation. Not exported: write
+`Acquisition.AbstractSDRClockPlan` to subtype it.
 """
 abstract type AbstractSDRClockPlan end
 

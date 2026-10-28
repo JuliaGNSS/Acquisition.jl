@@ -4,7 +4,9 @@
 """
     SamplingFreqRecommendation
 
-A single sampling-frequency candidate from [`recommend_sampling_freqs`](@ref).
+A single sampling-frequency candidate from [`recommend_sampling_freqs`](@ref). Not
+exported: a caller reads its fields; write `Acquisition.SamplingFreqRecommendation` to
+name the type.
 
 # Fields
 

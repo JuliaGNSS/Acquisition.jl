@@ -5,6 +5,8 @@ import Unitful: Hz
     Aqua.test_all(Acquisition)
 end
 
+include("api.jl")
+
 include("est_signal_noise_power.jl")
 include("cfar.jl")
 include("sign_patterns.jl")

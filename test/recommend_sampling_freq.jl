@@ -21,7 +21,7 @@
 
     @test !isempty(rs)
     @test length(rs) <= 5
-    @test eltype(rs) == SamplingFreqRecommendation
+    @test eltype(rs) == Acquisition.SamplingFreqRecommendation
 
     # Every returned candidate must satisfy the smoothness budget on all three
     # FFT sizes.
@@ -236,7 +236,7 @@ end
     @test occursin("inner_fft=", out2)
 
     # Empty vector: show should not error
-    empty_rs = SamplingFreqRecommendation[]
+    empty_rs = Acquisition.SamplingFreqRecommendation[]
     io3 = IOBuffer()
     show(io3, MIME"text/plain"(), empty_rs)
     @test occursin("no candidates", String(take!(io3)))

@@ -25,7 +25,8 @@ plan = plan_acquire(signal, sampling_freq, prns;
     noise_estimator = GlobalMeanNoiseEstimator())   # alternative
 ```
 
-See [`OppositeRowNoiseEstimator`](@ref) and [`GlobalMeanNoiseEstimator`](@ref).
+See [`OppositeRowNoiseEstimator`](@ref) and [`GlobalMeanNoiseEstimator`](@ref). Not
+exported: write `Acquisition.AbstractNoiseEstimator` to subtype it.
 """
 abstract type AbstractNoiseEstimator end
 

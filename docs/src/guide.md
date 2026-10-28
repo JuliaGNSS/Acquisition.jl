@@ -275,7 +275,7 @@ nothing will ever fill. (The exception reaches the consumer wrapped in a
 Leaving a *bare-channel* stream early is the one case that needs care: a `for` loop
 does not close the channel it iterates, so a plain `break` leaves the search running
 and still holding the plan. Nothing is corrupted — the next search on that plan raises
-`PlanInUseError` — but nothing is stopped either. Use the `do`-block form, or `close`
+[`Acquisition.PlanInUseError`](@ref) — but nothing is stopped either. Use the `do`-block form, or `close`
 the channel and drain it yourself.
 
 [`acquire_stream`](@ref) is the same thing one level up — it plans and streams in a
@@ -306,7 +306,7 @@ measures within run-to-run noise at 1, 8 and 32 PRNs.
     ordered by `prns`, so the batch and streaming views can be mixed freely.
   - **The plan is in use until the search finishes.** The search writes into the plan's
     buffers from another task, so the same `plan` cannot serve a second `acquire!` or
-    `acquire_stream!` until the stream is done — trying raises `PlanInUseError` rather
+    `acquire_stream!` until the stream is done — trying raises [`Acquisition.PlanInUseError`](@ref) rather
     than letting two searches share one set of buffers. Iterating the channel to
     completion ends the search; the `do`-block form also ends it on `break`, `return`
     and exceptions. The `samples` must stay unmodified for the same span.
@@ -668,7 +668,7 @@ recommended rather than rejected.
 
 Most SDRs can only reach a discrete subset of sampling frequencies — the
 output of a master clock, divider tree, and PLL. Pass an
-[`AbstractSDRClockPlan`](@ref) via `sdr_clock_plan` to skip rates the
+[`Acquisition.AbstractSDRClockPlan`](@ref) via `sdr_clock_plan` to skip rates the
 hardware can't produce:
 
 ```@example guide
@@ -685,7 +685,7 @@ recommend_sampling_freqs(GPSL1CA();
 shipped with `litex_m2sdr` (550 kHz – 61.44 MSPS, divider search through
 `{12, 8, 6, 4, 3, 2, 1}` against an ADC clock window of 25–640 MHz, and a
 reachable BBPLL). Other SDRs can be supported by subtyping
-[`AbstractSDRClockPlan`](@ref) and implementing
+[`Acquisition.AbstractSDRClockPlan`](@ref) and implementing
 [`is_valid_sample_rate`](@ref) (and optionally [`sample_rate_range`](@ref)).
 
 ### Coherent Integration Across Bits (GPS L1 C/A)

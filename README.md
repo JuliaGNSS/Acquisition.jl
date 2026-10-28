@@ -81,7 +81,7 @@ block returns, `break`s or throws. `acquire_stream!` without a block hands back 
 bare channel instead, which is fine when the consumer runs to completion — but a
 `break` out of `for result in acquire_stream!(...)` does *not* close the channel, and
 leaves the search running and still holding the plan. (It cannot corrupt anything: the
-next search on that plan raises `PlanInUseError`.)
+next search on that plan raises `Acquisition.PlanInUseError`.)
 
 On a 32-PRN GPS L1 C/A search at 2.048 MHz with 4 threads, the first result arrives
 after 0.09 ms instead of the 0.72 ms the whole call takes, at no measurable cost to

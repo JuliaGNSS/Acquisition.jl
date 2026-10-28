@@ -743,8 +743,8 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
         # Before this was enforced, the two searches wrote the same buffers and the
         # batch call returned results for the wrong PRNs — silently.
         channel = acquire_stream!(plan, samples, prns; interm_freq, buffer_size = 1)
-        @test_throws PlanInUseError acquire!(plan, samples, prns; interm_freq)
-        @test_throws PlanInUseError acquire_stream!(plan, samples, prns; interm_freq)
+        @test_throws Acquisition.PlanInUseError acquire!(plan, samples, prns; interm_freq)
+        @test_throws Acquisition.PlanInUseError acquire_stream!(plan, samples, prns; interm_freq)
         for _ in channel
         end
         @test timedwait(() -> !plan.in_use[], 10.0) === :ok
@@ -760,7 +760,7 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
         for _ in channel
             break
         end
-        @test_throws PlanInUseError acquire!(own_plan, samples, prns; interm_freq)
+        @test_throws Acquisition.PlanInUseError acquire!(own_plan, samples, prns; interm_freq)
     end
 
     @testset "the do-block form frees the plan however the block is left" begin

@@ -205,6 +205,7 @@ The usual cause is a stream that was abandoned without being shut down — `brea
 of `for result in acquire_stream!(...)` leaves the search running, because a `for` loop
 does not close the channel it iterates. Use the `do`-block form of
 [`acquire_stream!`](@ref), which shuts the search down however the block is left.
+Not exported: write `Acquisition.PlanInUseError`.
 """
 struct PlanInUseError <: Exception end
 
