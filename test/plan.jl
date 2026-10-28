@@ -184,7 +184,7 @@ end
 
     # Each column should be conj(FFT) of a zero-padded block_size-length block.
     # Verify by manually computing PRN 1 block 0 FFT and comparing.
-    code = gen_code(plan.samples_per_code, system, 1, sampling_freq, get_code_frequency(system), 0.0)
+    code = gen_code(plan.samples_per_code, system, 1, sampling_freq, get_chip_rate(system), 0.0)
     prn_block0 = zeros(ComplexF32, double_block_size)
     prn_block0[1:plan.block_size] .= ComplexF32.(code[1:plan.block_size])
     expected_fft = fft(prn_block0)
@@ -211,7 +211,7 @@ end
 
     for (sampling_freq, expected_num_blocks, expected_block_size) in cases
         @testset "sampling_freq=$(ustrip(Hz, sampling_freq) / 1e6) MHz" begin
-            samples_per_code = ceil(Int, get_code_length(system) / ustrip(Hz, get_code_frequency(system)) * ustrip(Hz, sampling_freq))
+            samples_per_code = ceil(Int, get_code_length(system) / ustrip(Hz, get_chip_rate(system)) * ustrip(Hz, sampling_freq))
             plan = plan_acquire(system, sampling_freq, [prn];
                 min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = num_periods, num_noncoherent_accumulations = 1)
 

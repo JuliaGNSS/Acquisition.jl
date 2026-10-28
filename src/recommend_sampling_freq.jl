@@ -293,7 +293,7 @@ end
     recommend_sampling_freqs(system::AbstractGNSSSignal; kwargs...) -> Vector{SamplingFreqRecommendation}
 
 Convenience method that derives `code_length` and `code_freq` from `system` via
-`get_code_length(system)` and `get_code_frequency(system)`.
+`get_code_length(system)` and `get_chip_rate(system)`.
 
 All keyword arguments are forwarded to
 [`recommend_sampling_freqs(::Integer, ::Any)`](@ref).
@@ -301,7 +301,7 @@ All keyword arguments are forwarded to
 function recommend_sampling_freqs(system::AbstractGNSSSignal; kwargs...)
     recommend_sampling_freqs(
         get_code_length(system),
-        get_code_frequency(system);
+        get_chip_rate(system);
         kwargs...,
     )
 end

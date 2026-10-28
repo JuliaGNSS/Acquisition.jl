@@ -64,7 +64,7 @@ function _make_plan(fs, num_coh_ms; prns = 1:32, num_noncoherent_accumulations =
             num_noncoherent_accumulations = num_noncoherent_accumulations)
     else
         samples_per_code = ceil(Int,
-            get_code_length(system) / ustrip(Hz, get_code_frequency(system)) * ustrip(Hz, fs))
+            get_code_length(system) / ustrip(Hz, get_chip_rate(system)) * ustrip(Hz, fs))
         num_samples = num_coh_ms * samples_per_code
         AcquisitionPlan(system, num_samples, fs;
             prns = collect(prns), fft_flag = FFTW.MEASURE)

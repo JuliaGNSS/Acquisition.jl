@@ -59,8 +59,8 @@ const _PRECOMPILE_SIGNALS = (
 # the frequency's element type, and an `Int`-valued rate would compile a
 # specialisation nobody calls.
 function _precompile_sampling_frequency(system)
-    code_frequency = get_code_frequency(system)
-    code_frequency <= 1.1e6Hz ? 16.0 * code_frequency : 2.0 * code_frequency
+    chip_rate = get_chip_rate(system)
+    chip_rate <= 1.1e6Hz ? 16.0 * chip_rate : 2.0 * chip_rate
 end
 
 # One code period at four samples per chip: the shortest signal `acquire`
@@ -68,7 +68,7 @@ end
 function _precompile_signal(system)
     sampling_freq = _precompile_sampling_frequency(system)
     num_samples =
-        round(Int, get_code_length(system) * sampling_freq / get_code_frequency(system))
+        round(Int, get_code_length(system) * sampling_freq / get_chip_rate(system))
     (; signal) = generate_test_signal(
         system,
         1;

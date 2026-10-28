@@ -550,9 +550,9 @@ function _acquire_multistep!(plan, signal, prns, segment_length, interm_freq_hz,
     end
 
     results = resize!(plan.acq_results_buf, length(prns))
-    code_freq_hz = ustrip(Hz, get_code_frequency(plan.system))
+    code_freq_hz = ustrip(Hz, get_chip_rate(plan.system))
     code_length = get_code_length(plan.system)
-    code_period = code_length / get_code_frequency(plan.system)
+    code_period = code_length / get_chip_rate(plan.system)
     num_doppler_bins = length(plan.doppler_freqs)
     doppler_step = step(plan.doppler_freqs)
     _foreach_prn_chunk(plan, eachindex(prns), results, results_channel) do result_idx
@@ -616,9 +616,9 @@ function _acquire_sequential!(plan, signal, prns, segment_length, interm_freq_hz
     )
 
     results = resize!(plan.acq_results_buf, length(prns))
-    code_freq_hz = ustrip(Hz, get_code_frequency(plan.system))
+    code_freq_hz = ustrip(Hz, get_chip_rate(plan.system))
     code_length = get_code_length(plan.system)
-    code_period = code_length / get_code_frequency(plan.system)
+    code_period = code_length / get_chip_rate(plan.system)
     num_doppler_bins = length(plan.doppler_freqs)
     doppler_step = step(plan.doppler_freqs)
 
@@ -950,7 +950,7 @@ function _estimate_secondary_code_phase(plan, prn, signal, interm_freq_hz,
     L = plan.num_secondary_rotations
     spc = plan.samples_per_code
     sec = get_secondary_code(system)
-    code = gen_code(spc, system, prn, plan.sampling_freq, get_code_frequency(system), code_phase)
+    code = gen_code(spc, system, prn, plan.sampling_freq, get_chip_rate(system), code_phase)
     phase_step = -2.0 * π * (interm_freq_hz + doppler_hz) / sampling_freq_hz
     dphi = ComplexF32(cos(phase_step), sin(phase_step))   # per-sample carrier rotation
     zs = Vector{ComplexF32}(undef, L)

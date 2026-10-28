@@ -15,9 +15,9 @@ struct _LongL5I <: GNSSSignals.AbstractGNSSSignal{Matrix{Int16}}
 end
 _LongL5I() = _LongL5I(GPSL5I())
 GNSSSignals.get_code_length(::_LongL5I)             = 102_300
-GNSSSignals.get_code_frequency(::_LongL5I)          = GNSSSignals.get_code_frequency(GPSL5I())
+GNSSSignals.get_chip_rate(::_LongL5I)          = GNSSSignals.get_chip_rate(GPSL5I())
 GNSSSignals.get_center_frequency(::_LongL5I)        = GNSSSignals.get_center_frequency(GPSL5I())
-GNSSSignals.get_data_frequency(::_LongL5I)          = 0.0Hz
+GNSSSignals.get_bit_rate(::Type{_LongL5I})  = 0.0Hz
 GNSSSignals.get_secondary_code(::_LongL5I)          = GNSSSignals.NoSecondaryCode()
 GNSSSignals.get_secondary_code_length(::_LongL5I)   = 1
 GNSSSignals.get_code_type(::_LongL5I)               = Int16
@@ -37,7 +37,7 @@ end
         system        = GPSL5I()
         sampling_freq = 10.24e6Hz
         prn           = 1
-        fc            = get_code_frequency(system)
+        fc            = get_chip_rate(system)
         samples_per_code = ceil(Int, get_code_length(system) / fc * sampling_freq)
         N = 10
         L = 10
@@ -98,7 +98,7 @@ end
         system        = GPSL5I()
         sampling_freq = 10.24e6Hz
         prn           = 1
-        fc            = get_code_frequency(system)
+        fc            = get_chip_rate(system)
         samples_per_code = ceil(Int, get_code_length(system) / fc * sampling_freq)
         N = 10
         sec = get_secondary_code(system)
@@ -144,7 +144,7 @@ end
         system        = GPSL5I()
         sampling_freq = 10.24e6Hz
         prn           = 1
-        fc            = get_code_frequency(system)
+        fc            = get_chip_rate(system)
         samples_per_code = ceil(Int, get_code_length(system) / fc * sampling_freq)
         N = 10
         sec = get_secondary_code(system)
@@ -228,7 +228,7 @@ end
         true_cp       = 1234.5
         N = 20; L = 10
 
-        fc  = get_code_frequency(system)
+        fc  = get_chip_rate(system)
         spc = ceil(Int, get_code_length(system) / fc * sampling_freq)
         sec = get_secondary_code(system)
         primary = ComplexF32.(gen_code(spc, system, prn, sampling_freq, fc, true_cp))
@@ -268,7 +268,7 @@ end
         sampling_freq = 12e6Hz
         prn           = 1
         N = 10; L = 10
-        fc  = get_code_frequency(system)
+        fc  = get_chip_rate(system)
         spc = ceil(Int, get_code_length(system) / fc * sampling_freq)
         sec = get_secondary_code(system)
         plan = plan_acquire(system, sampling_freq, [prn];
@@ -424,7 +424,7 @@ end
 
         # Build a noiseless NH10·primary signal at amplitude 1.0 at the test Doppler.
         sec = get_secondary_code(system)
-        fc  = get_code_frequency(system)
+        fc  = get_chip_rate(system)
         code_full = ComplexF32.(gen_code(N_total, system, prn, sampling_freq,
                                          fc, true_cp))
         # The L5I sample-level code generation already bakes NH10 across primary

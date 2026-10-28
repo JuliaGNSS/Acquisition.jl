@@ -385,7 +385,7 @@ end
         interm_freq = 0.0Hz, store_power_bins = true)
     col_sums = zeros(Float32, plan_gm.samples_per_code_eff)
     sp, np, _, _ = Acquisition.est_signal_noise_power(res_stored.power_bins,
-        ustrip(Hz, sampling_freq), ustrip(Hz, get_code_frequency(system)),
+        ustrip(Hz, sampling_freq), ustrip(Hz, get_chip_rate(system)),
         col_sums, GlobalMeanNoiseEstimator())
     @test res_stored.noise_power ≈ Float32(np) rtol = 4eps(Float32)
 end

@@ -10,7 +10,7 @@ one pattern over `num_coh_periods` coherent code periods.
 Two independent search axes:
 - Data-bit polarities: `2^(num_data_bits − 1)` patterns with `d[0] = +1` fixed.
 - Secondary-code rotations: `num_secondary_rotations` cyclic start phases, where rotation
-  `r ∈ 0..L−1` produces signs `secondary_value(sec, prn, (k + r) mod L)` for `k = 0..N−1`.
+  `r ∈ 0..L−1` produces signs `GNSSSignals.secondary_value(sec, prn, (k + r) mod L)` for `k = 0..N−1`.
 
 When `use_secondary_code = false` or `num_secondary_rotations == 1`, the secondary axis
 collapses to a single all-`+1` pattern and the result is exactly the data-bit polarity set.
