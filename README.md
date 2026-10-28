@@ -16,7 +16,7 @@ Part of the [JuliaGNSS](https://github.com/JuliaGNSS) ecosystem. Works with [GNS
 - **Multi-threaded** — PRNs processed in parallel automatically when Julia is started with multiple threads (`julia -t N`)
 - **Streaming results** — `acquire_stream!` returns a channel that delivers each PRN's result the moment that PRN is done, instead of waiting for the whole search
 - **Non-coherent integration** — accumulate power across multiple signal segments to improve sensitivity at low CN0
-- **Data bit handling** — bit-edge search and sign-combination search for coherent integration spanning GPS L1 C/A data bits
+- **Bit handling** — bit-edge search and sign-combination search for coherent integration spanning GPS L1 C/A bits
 - **CFAR detection** — built-in constant false alarm rate threshold via `is_detected` / `cfar_threshold`
 - **Sub-sample interpolation** — parabolic interpolation for Doppler and code-phase refinement below grid resolution
 - **Plotting** — visualise correlation power surfaces directly with Plots.jl

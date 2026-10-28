@@ -1,5 +1,5 @@
 # test/noncoherent_integration.jl
-# Tests for noncoherent integration: column FFT accumulation, data bit search, code drift correction
+# Tests for noncoherent integration: column FFT accumulation, bit search, code drift correction
 
 @testset "Fused FFT+|x|²+code-drift+fftshift kernel matches unfused pipeline" begin
     # Issue #62: extends the slice-5 fusion to the multistep simple path by
@@ -284,7 +284,7 @@ end
     true_doppler = 1050Hz
     code_phase = 973.0  # tau = 1023 - 973 = 50 chips → tau_samples = round(50*2048/1023) = 100
 
-    # num_coherently_integrated_code_periods=20 = one GPS data bit period (num_data_bits=1, pilot path)
+    # num_coherently_integrated_code_periods=20 = one GPS bit period (num_bits=1, pilot path)
     plan = plan_acquire(system, sampling_freq, [prn];
         min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 20)
     scratch = Acquisition._default_scratch(plan)
@@ -340,13 +340,13 @@ end
     @test noncoherent_integration_matrix[peak_row, peak_col] ≈ 2 * peak_value_first
 end
 
-@testset "Data bit combination search — num_data_bits=2, no bit transitions in test signal" begin
+@testset "Bit combination search — num_bits=2, no bit transitions in test signal" begin
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
     true_doppler = 1500Hz
 
-    # num_coherently_integrated_code_periods=40 → num_data_bits=2 (two GPS data bit periods)
+    # num_coherently_integrated_code_periods=40 → num_bits=2 (two GPS bit periods)
     plan = plan_acquire(system, sampling_freq, [prn];
         min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
     scratch = Acquisition._default_scratch(plan)
@@ -373,10 +373,10 @@ end
 
     noncoherent_integration_matrix = zeros(Float32, num_doppler_bins, plan.samples_per_code)
     noncoherent_integration_buf = zeros(Float32, num_doppler_bins, plan.samples_per_code)
-    sub_block_ffts = zeros(ComplexF32, num_doppler_bins, plan.num_data_bits)
-    patterns = Acquisition.sign_patterns(nothing, 0, plan.num_data_bits, 1, plan.num_coherently_integrated_code_periods, false)
+    sub_block_ffts = zeros(ComplexF32, num_doppler_bins, plan.num_bits)
+    patterns = Acquisition.sign_patterns(nothing, 0, plan.num_bits, 1, plan.num_coherently_integrated_code_periods, false)
     Acquisition._sign_search_step!(noncoherent_integration_buf, cim, scratch.col_buf,
-        plan.col_fft_plan, plan.samples_per_code, num_doppler_bins, plan.num_data_bits, 0, sub_block_ffts, patterns)
+        plan.col_fft_plan, plan.samples_per_code, num_doppler_bins, plan.num_bits, 0, sub_block_ffts, patterns)
     noncoherent_integration_matrix .+= noncoherent_integration_buf
 
     peak_row, peak_col = Tuple(argmax(noncoherent_integration_matrix))
@@ -398,7 +398,7 @@ end
     @test diff_sym < doppler_bin_spacing / (1Hz)
 end
 
-@testset "Data bit combination search — bit transition recovery" begin
+@testset "Bit combination search — bit transition recovery" begin
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
@@ -413,14 +413,14 @@ end
 
     # Generate a clean signal, then negate the second half to simulate a bit
     # transition at code period 20.  With a perfect polarity flip, the pilot
-    # path (naive sum over all 40 periods) cancels to ~0, whereas the data bit
+    # path (naive sum over all 40 periods) cancels to ~0, whereas the bit
     # search with pattern (+1,−1) recombines both halves coherently.
     (; signal) = generate_test_signal(system, prn;
         num_samples = plan.num_coherently_integrated_code_periods * plan.samples_per_code,
         doppler = true_doppler, code_phase = 100.0,
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 60)
     signal_flipped = ComplexF32.(signal)
-    half = (plan.num_coherently_integrated_code_periods ÷ plan.num_data_bits) * plan.samples_per_code  # = 20 * 2048 = 40960
+    half = (plan.num_coherently_integrated_code_periods ÷ plan.num_bits) * plan.samples_per_code  # = 20 * 2048 = 40960
     signal_flipped[half+1:end] .*= -1
 
     Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, signal_flipped,
@@ -432,17 +432,17 @@ end
         scratch.corr_buf, plan.double_block_bfft_plan)
 
     noncoherent_integration_data = zeros(Float32, num_doppler_bins, plan.samples_per_code)
-    sub_block_ffts = zeros(ComplexF32, num_doppler_bins, plan.num_data_bits)
-    patterns = Acquisition.sign_patterns(nothing, 0, plan.num_data_bits, 1, plan.num_coherently_integrated_code_periods, false)
+    sub_block_ffts = zeros(ComplexF32, num_doppler_bins, plan.num_bits)
+    patterns = Acquisition.sign_patterns(nothing, 0, plan.num_bits, 1, plan.num_coherently_integrated_code_periods, false)
     Acquisition._sign_search_step!(noncoherent_integration_data, cim, scratch.col_buf,
-        plan.col_fft_plan, plan.samples_per_code, num_doppler_bins, plan.num_data_bits, 0, sub_block_ffts, patterns)
+        plan.col_fft_plan, plan.samples_per_code, num_doppler_bins, plan.num_bits, 0, sub_block_ffts, patterns)
 
     # Pilot path: no bit search → the two halves cancel → weaker peak
     noncoherent_integration_pilot = zeros(Float32, num_doppler_bins, plan.samples_per_code)
     Acquisition._accumulate_noncoherent_integration_pilot!(noncoherent_integration_pilot, cim, scratch.col_buf,
         plan.col_fft_plan, plan.samples_per_code)
 
-    # Data bit search should recover a much stronger peak than naive pilot
+    # Bit search should recover a much stronger peak than naive pilot
     @test maximum(noncoherent_integration_data) > maximum(noncoherent_integration_pilot)
 
     # The detected Doppler (from the corrected peak) must be a valid alias
@@ -599,7 +599,7 @@ end
     @test prob_detect_ni8_wrong < prob_detect_ni8
 end
 
-@testset "Bit transition at 0 Hz Doppler — data bit search recovers same peak as no-transition signal" begin
+@testset "Bit transition at 0 Hz Doppler — bit search recovers same peak as no-transition signal" begin
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn    = 1
@@ -618,7 +618,7 @@ end
     cim = zeros(ComplexF32, plan.num_coherently_integrated_code_periods * plan.num_blocks, plan.samples_per_code)
     num_doppler_bins = plan.num_coherently_integrated_code_periods * plan.num_blocks
 
-    sub_block_ffts = zeros(ComplexF32, num_doppler_bins, plan.num_data_bits)
+    sub_block_ffts = zeros(ComplexF32, num_doppler_bins, plan.num_bits)
 
     Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, ComplexF32.(signal_no_transition),
         plan.samples_per_code, plan.num_blocks, plan.block_size,
@@ -642,9 +642,9 @@ end
         plan.num_coherently_integrated_code_periods, scratch.corr_buf,
         plan.double_block_bfft_plan)
     noncoherent_integration_with_transition = zeros(Float32, num_doppler_bins, plan.samples_per_code)
-    patterns = Acquisition.sign_patterns(nothing, 0, plan.num_data_bits, 1, plan.num_coherently_integrated_code_periods, false)
+    patterns = Acquisition.sign_patterns(nothing, 0, plan.num_bits, 1, plan.num_coherently_integrated_code_periods, false)
     Acquisition._sign_search_step!(noncoherent_integration_with_transition, cim, scratch.col_buf, plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
-        plan.num_data_bits, 0, sub_block_ffts, patterns)
+        plan.num_bits, 0, sub_block_ffts, patterns)
     peak_with_transition = maximum(noncoherent_integration_with_transition)
 
     @test peak_with_transition ≈ peak_no_transition rtol = 0.1
@@ -669,7 +669,7 @@ end
     cim = zeros(ComplexF32, plan.num_coherently_integrated_code_periods * plan.num_blocks, plan.samples_per_code)
     num_doppler_bins = plan.num_coherently_integrated_code_periods * plan.num_blocks
 
-    sub_block_ffts = zeros(ComplexF32, num_doppler_bins, plan.num_data_bits)
+    sub_block_ffts = zeros(ComplexF32, num_doppler_bins, plan.num_bits)
 
     Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, ComplexF32.(signal_no_transition),
         plan.samples_per_code, plan.num_blocks, plan.block_size,
@@ -693,9 +693,9 @@ end
         plan.num_coherently_integrated_code_periods, scratch.corr_buf,
         plan.double_block_bfft_plan)
     noncoherent_integration_with_transition = zeros(Float32, num_doppler_bins, plan.samples_per_code)
-    patterns = Acquisition.sign_patterns(nothing, 0, plan.num_data_bits, 1, plan.num_coherently_integrated_code_periods, false)
+    patterns = Acquisition.sign_patterns(nothing, 0, plan.num_bits, 1, plan.num_coherently_integrated_code_periods, false)
     Acquisition._sign_search_step!(noncoherent_integration_with_transition, cim, scratch.col_buf, plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
-        plan.num_data_bits, 0, sub_block_ffts, patterns)
+        plan.num_bits, 0, sub_block_ffts, patterns)
     peak_with_transition = maximum(noncoherent_integration_with_transition)
 
     @test peak_with_transition ≈ peak_no_transition rtol = 0.1
@@ -721,7 +721,7 @@ end
         ("rotation+drift", plan_acquire(GPSL5I(), 10.24e6Hz, [prn];
             num_coherently_integrated_code_periods = 10,
             num_noncoherent_accumulations = 4, fft_flag = FFTW.ESTIMATE), 3),
-        # Data-bit + bit-edge search (max across alignments), no drift at step 0.
+        # Bit + bit-edge search (max across alignments), no drift at step 0.
         ("bitedge", plan_acquire(GPSL1CA(), 2.048e6Hz, [prn];
             min_doppler_coverage = 10_000Hz,
             num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4,

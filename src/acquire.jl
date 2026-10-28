@@ -691,7 +691,7 @@ function _acquire_prn_streamed!(
     block_size = plan.block_size
     rotation_active = plan.num_secondary_rotations > 1 &&
                       plan.num_coherently_integrated_code_periods > 1
-    simple_path = plan.num_data_bits == 1 && plan.bit_edge_search_steps == 1 &&
+    simple_path = plan.num_bits == 1 && plan.bit_edge_search_steps == 1 &&
                   !rotation_active
     row_sums = scratch.row_sums_buf
     fill!(row_sums, 0f0)
@@ -737,10 +737,10 @@ function _acquire_prn_streamed!(
         stage = scratch.stage_buf
         num_slices = size(stage, 2)
         samples_per_code = plan.samples_per_code
-        num_data_combos = 1 << (plan.num_data_bits - 1)
-        bit_period_codes = plan.num_coherently_integrated_code_periods ÷ plan.num_data_bits
-        edge_step = bit_period_codes * plan.num_blocks ÷ plan.bit_edge_search_steps
-        use_max = num_data_combos > 1 || plan.bit_edge_search_steps > 1
+        num_bit_combos = 1 << (plan.num_bits - 1)
+        code_blocks_per_bit = plan.num_coherently_integrated_code_periods ÷ plan.num_bits
+        edge_step = code_blocks_per_bit * plan.num_blocks ÷ plan.bit_edge_search_steps
+        use_max = num_bit_combos > 1 || plan.bit_edge_search_steps > 1
         patterns = plan.sign_patterns_by_prn[prn]
         tiled_re = rotation_active ? plan.tiled_phase_patterns_re_by_prn[prn] :
             _EMPTY_TILED_PATTERNS
@@ -755,7 +755,7 @@ function _acquire_prn_streamed!(
                 cp_col = col_block_idx * block_size + local_col
                 fill!(stage, 0f0)
                 _fill_sign_stage_column!(stage, tile, local_col, cp_col, plan, scratch,
-                    patterns, tiled_re, tiled_im, rotation_active, num_data_combos,
+                    patterns, tiled_re, tiled_im, rotation_active, num_bit_combos,
                     edge_step, use_max)
                 for s in 0:num_slices-1
                     peak_power, peak_doppler_bin, peak_col = _stream_stage_column!(
@@ -895,7 +895,7 @@ function _recompute_column_power!(
         scratch.corr_buf, plan.double_block_bfft_plan)
     rotation_active = plan.num_secondary_rotations > 1 &&
                       plan.num_coherently_integrated_code_periods > 1
-    simple_path = plan.num_data_bits == 1 && plan.bit_edge_search_steps == 1 &&
+    simple_path = plan.num_bits == 1 && plan.bit_edge_search_steps == 1 &&
                   !rotation_active
     if simple_path
         col_buf = scratch.col_buf
@@ -912,17 +912,17 @@ function _recompute_column_power!(
     else
         stage = scratch.stage_buf
         fill!(stage, 0f0)
-        num_data_combos = 1 << (plan.num_data_bits - 1)
-        bit_period_codes = plan.num_coherently_integrated_code_periods ÷ plan.num_data_bits
-        edge_step = bit_period_codes * plan.num_blocks ÷ plan.bit_edge_search_steps
-        use_max = num_data_combos > 1 || plan.bit_edge_search_steps > 1
+        num_bit_combos = 1 << (plan.num_bits - 1)
+        code_blocks_per_bit = plan.num_coherently_integrated_code_periods ÷ plan.num_bits
+        edge_step = code_blocks_per_bit * plan.num_blocks ÷ plan.bit_edge_search_steps
+        use_max = num_bit_combos > 1 || plan.bit_edge_search_steps > 1
         patterns = plan.sign_patterns_by_prn[prn]
         tiled_re = rotation_active ? plan.tiled_phase_patterns_re_by_prn[prn] :
             _EMPTY_TILED_PATTERNS
         tiled_im = rotation_active ? plan.tiled_phase_patterns_im_by_prn[prn] :
             _EMPTY_TILED_PATTERNS
         _fill_sign_stage_column!(stage, tile, local_col, cp_col0 + 1, plan, scratch,
-            patterns, tiled_re, tiled_im, rotation_active, num_data_combos,
+            patterns, tiled_re, tiled_im, rotation_active, num_bit_combos,
             edge_step, use_max)
         dest .= view(stage, :, rotation_idx + 1)
     end
@@ -936,8 +936,8 @@ end
 # `L` secondary-code rotations and take the strongest. A full secondary-code period of
 # coherent despread is the unambiguous case (bounded periodic autocorrelation), so this
 # is exact at every code phase. `L = num_secondary_rotations` and only the first `L`
-# periods are used, so an unknown data-bit flip at a symbol boundary (N > L) never
-# enters — the NH-phase is constant across symbols anyway (N is a multiple of L).
+# periods are used, so an unknown bit flip at a bit boundary (N > L) never
+# enters — the NH-phase is constant across bits anyway (N is a multiple of L).
 #
 # Carrier (interm + doppler) wipe-off uses an incremental complex phasor reset each
 # period (one `sincos` per period, not per sample) to stay cheap and bound Float32
@@ -1016,7 +1016,7 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins, signal, inter
     #
     # The result is a lower bound on the true C/N₀. Real coherent gain is
     # `(C/N₀)·T·L` with `L ≤ 1` absorbing residual frequency error inside the
-    # Doppler bin, oscillator phase noise, and any data-bit transition inside
+    # Doppler bin, oscillator phase noise, and any bit transition inside
     # `T`; recovering `L` would need it estimated separately. The remaining bias
     # is in the conservative direction for a detection or quality gate.
     coherent_integration_time = plan.num_coherently_integrated_code_periods * code_period

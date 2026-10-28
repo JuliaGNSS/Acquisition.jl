@@ -196,19 +196,19 @@ end
 
 @testset "acquire! — sign-search path reports correct Doppler (no half-band fftshift offset)" begin
     # Regression for the double-fftshift bug in the sign-search kernel: when
-    # num_data_bits > 1 the column sub-block FFT applied fftshift (circshift by
+    # num_bits > 1 the column sub-block FFT applied fftshift (circshift by
     # N/2) AND the result was scattered through fftshift_perm a second time.
     # Two fftshifts compose to the identity, leaving the Doppler axis in raw FFT
     # order — every reported Doppler was off by exactly half the searched band,
     # while code phase (the column axis) stayed correct. The pilot path shifts
-    # once and is unaffected, so existing tests (all num_data_bits == 1) missed it.
+    # once and is unaffected, so existing tests (all num_bits == 1) missed it.
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
     doppler_true = 500Hz      # on the 25 Hz Doppler grid
     code_phase_true = 100.0
 
-    # N_coh = 40 code periods = 2 GPS data-bit periods (20 each) → num_data_bits = 2,
+    # N_coh = 40 code periods = 2 GPS bit periods (20 each) → num_bits = 2,
     # which routes through the sign-search kernel rather than the simple pilot path.
     (; signal) = generate_test_signal(system, prn;
         num_samples = 40 * 2048,
@@ -218,7 +218,7 @@ end
     plan = plan_acquire(system, sampling_freq, [prn];
         num_coherently_integrated_code_periods = 40, num_noncoherent_accumulations = 1,
         fft_flag = FFTW.ESTIMATE)
-    @test plan.num_data_bits == 2   # confirm the sign-search path is exercised
+    @test plan.num_bits == 2   # confirm the sign-search path is exercised
 
     result = acquire!(plan, signal, prn; interm_freq = 0.0Hz)
 
@@ -313,8 +313,8 @@ end
 @testset "acquire! — fused simple-path kernel above batch threshold (num_doppler_bins > 320)" begin
     # Forces the per-column fused kernel `_accumulate_fftshifted_power_pilot!`
     # (the only fused-kernel path no other test hits): simple/pilot routing +
-    # num_doppler_bins > BATCH_FFT_THRESHOLD. N_coh=10 keeps num_data_bits=1
-    # (GPS L1CA bit_period_codes=20), bit_edge_search_steps=1 keeps the simple
+    # num_doppler_bins > BATCH_FFT_THRESHOLD. N_coh=10 keeps num_bits=1
+    # (GPS L1CA code_blocks_per_bit=20), bit_edge_search_steps=1 keeps the simple
     # path, and a 20 kHz doppler request inflates num_blocks past 32 →
     # num_doppler_bins = 10 × num_blocks > 320.
     system = GPSL1CA()
@@ -326,7 +326,7 @@ end
         num_coherently_integrated_code_periods = 10,
         bit_edge_search_steps = 1,
         fft_flag = FFTW.ESTIMATE)
-    @test plan.num_data_bits == 1
+    @test plan.num_bits == 1
     @test plan.bit_edge_search_steps == 1
     @test length(plan.doppler_freqs) > Acquisition.BATCH_FFT_THRESHOLD
 

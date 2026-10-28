@@ -688,9 +688,9 @@ reachable BBPLL). Other SDRs can be supported by subtyping
 [`AbstractSDRClockPlan`](@ref) and implementing
 [`is_valid_sample_rate`](@ref) (and optionally [`sample_rate_range`](@ref)).
 
-### Coherent Integration with Data Bits (GPS L1 C/A)
+### Coherent Integration Across Bits (GPS L1 C/A)
 
-GPS L1 C/A data bits flip every 20 ms. Integrating across a bit transition cancels
+GPS L1 C/A bits flip every 20 ms. Integrating across a bit transition cancels
 signal energy. The library handles this automatically:
 
 **Sub-bit integration** (`num_coherently_integrated_code_periods < 20`):
@@ -704,14 +704,14 @@ plan = plan_acquire(system, sampling_freq, prns;
 ```
 
 **Multi-bit integration** (`num_coherently_integrated_code_periods ≥ 20`):
-The window spans whole data bit periods. Two constraints apply:
-1. `num_coherently_integrated_code_periods` must be divisible by `bit_period_codes` (= 20 for GPS L1)
-2. `bit_period_codes` must be divisible by `bit_edge_search_steps`
+The window spans whole bit periods. Two constraints apply:
+1. `num_coherently_integrated_code_periods` must be divisible by `get_code_blocks_per_bit(system)` (= 20 for GPS L1 C/A)
+2. `get_code_blocks_per_bit(system)` must be divisible by `bit_edge_search_steps`
 
-The algorithm searches all `2^(num_data_bits - 1)` sign-flip combinations across
-the data bits in the window.
+The algorithm searches all `2^(num_bits - 1)` sign-flip combinations across
+the bits in the window.
 
-**Pilot channels** (e.g. GPS L5-Q, Galileo E1-C): no data bit constraint; set
+**Pilot channels** (e.g. GPS L5-Q, Galileo E1-C): no bit constraint; set
 `num_coherently_integrated_code_periods` freely.
 
 ### Sub-sample Interpolation

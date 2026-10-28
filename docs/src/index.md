@@ -59,7 +59,7 @@ the search grid is. The full power surface only exists if you request it with
 - **Streaming, tile-based reduction**: The search surface is processed one cache-resident column block at a time — plan memory stays in the MiB range even for wide searches, and the full power surface is only materialised on request (`store_power_bins = true`)
 - **Multi-threaded**: PRNs processed in parallel — start Julia with `-t N` to use N threads; extra threads cost only tile-sized scratch
 - **Non-coherent integration**: Accumulate power across multiple signal segments to improve sensitivity at low CN0
-- **Data bit handling**: Bit-edge search and sign-combination search for coherent integration spanning multiple data bits
+- **Bit handling**: Bit-edge search and sign-combination search for coherent integration spanning multiple bits
 - **Sub-sample interpolation**: Parabolic interpolation for Doppler and code-phase refinement below grid resolution
 - **Plotting support**: Visualise acquisition results with Plots.jl
 
