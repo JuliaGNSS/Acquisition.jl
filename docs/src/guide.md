@@ -557,7 +557,7 @@ which the [`recommend_sampling_freqs`](@ref) helper accounts for.
 Acquisition's cost is dominated by FFTs, and FFTW runs fastest when the
 transform lengths factor into small primes (2, 3, 5, 7) and slower when they
 carry a large prime (11, 13, 31, 257, …). Both lengths are ultimately set by the
-sampling frequency, since `samples_per_code = ceil(code_length × fs / code_freq)`.
+sampling frequency, since `samples_per_code = ceil(code_length × fs / chip_rate)`.
 There are two FFT stages, and they behave very differently:
 
 - **Inner double-block FFT** (size `2 × block_size`) — handled automatically.
@@ -644,7 +644,7 @@ recommend_sampling_freqs(GPSL1CA();
 ```
 
 For a custom code geometry (e.g. a non-standard signal) pass `code_length` and
-`code_freq` directly:
+`chip_rate` directly:
 
 ```@example guide
 recommend_sampling_freqs(10_000, 36e6Hz;

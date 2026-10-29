@@ -550,14 +550,14 @@ function _acquire_multistep!(plan, samples, prns, segment_length, interm_freq_hz
     end
 
     results = resize!(plan.acq_results_buf, length(prns))
-    code_freq_hz = ustrip(Hz, get_chip_rate(plan.signal))
+    chip_rate_hz = ustrip(Hz, get_chip_rate(plan.signal))
     code_length = get_code_length(plan.signal)
     code_period = code_length / get_chip_rate(plan.signal)
     num_doppler_bins = length(plan.doppler_freqs)
     doppler_step = step(plan.doppler_freqs)
     _foreach_prn_chunk(plan, eachindex(prns), results, results_channel) do result_idx
         _acquire_one_multistep!(plan, results, prns, result_idx, samples,
-            interm_freq_hz, sampling_freq_hz, code_freq_hz, code_length,
+            interm_freq_hz, sampling_freq_hz, chip_rate_hz, code_length,
             code_period, num_doppler_bins, doppler_step,
             subsample_interpolation, store_power_bins)
     end
@@ -568,7 +568,7 @@ end
 # non-coherent step into its accumulator, extract, release. Kept out of the
 # spawned chunk task's body so that body stays a plain function call.
 function _acquire_one_multistep!(plan, results, prns, result_idx, samples,
-        interm_freq_hz, sampling_freq_hz, code_freq_hz, code_length, code_period,
+        interm_freq_hz, sampling_freq_hz, chip_rate_hz, code_length, code_period,
         num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
     prn = @inbounds prns[result_idx]
     prn_idx = findfirst(==(prn), plan.avail_prns)
@@ -583,7 +583,7 @@ function _acquire_one_multistep!(plan, results, prns, result_idx, samples,
         end
         results[result_idx] = _extract_result!(plan, scratch, prn, prn_idx, accumulator,
             samples, interm_freq_hz,
-            sampling_freq_hz, code_freq_hz, code_length, code_period,
+            sampling_freq_hz, chip_rate_hz, code_length, code_period,
             num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
     finally
         _release_scratch!(plan, slot)
@@ -616,7 +616,7 @@ function _acquire_sequential!(plan, samples, prns, segment_length, interm_freq_h
     )
 
     results = resize!(plan.acq_results_buf, length(prns))
-    code_freq_hz = ustrip(Hz, get_chip_rate(plan.signal))
+    chip_rate_hz = ustrip(Hz, get_chip_rate(plan.signal))
     code_length = get_code_length(plan.signal)
     code_period = code_length / get_chip_rate(plan.signal)
     num_doppler_bins = length(plan.doppler_freqs)
@@ -624,7 +624,7 @@ function _acquire_sequential!(plan, samples, prns, segment_length, interm_freq_h
 
     _foreach_prn_chunk(plan, eachindex(prns), results, results_channel) do result_idx
         _acquire_one_sequential!(plan, results, prns, result_idx, samples,
-            interm_freq_hz, sampling_freq_hz, code_freq_hz, code_length,
+            interm_freq_hz, sampling_freq_hz, chip_rate_hz, code_length,
             code_period, num_doppler_bins, doppler_step,
             subsample_interpolation, store_power_bins)
     end
@@ -634,7 +634,7 @@ end
 # One PRN of the sequential (N_nc == 1) path. Kept out of the spawned chunk
 # task's body so that body stays a plain function call.
 function _acquire_one_sequential!(plan, results, prns, result_idx, samples,
-        interm_freq_hz, sampling_freq_hz, code_freq_hz, code_length, code_period,
+        interm_freq_hz, sampling_freq_hz, chip_rate_hz, code_length, code_period,
         num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
     prn = @inbounds prns[result_idx]
     prn_idx = findfirst(==(prn), plan.avail_prns)
@@ -648,7 +648,7 @@ function _acquire_one_sequential!(plan, results, prns, result_idx, samples,
         results[result_idx] = _extract_result_streamed!(plan, scratch, prn,
             peak_power, peak_doppler_bin, peak_col, store_buf,
             samples, interm_freq_hz,
-            sampling_freq_hz, code_freq_hz, code_length, code_period,
+            sampling_freq_hz, chip_rate_hz, code_length, code_period,
             num_doppler_bins, doppler_step, subsample_interpolation)
     finally
         _release_scratch!(plan, slot)
@@ -986,14 +986,14 @@ end
 # is the per-thread accumulator (and is reused by the next PRN), so the
 # store_power_bins copy must happen here before this function returns.
 function _extract_result!(plan, scratch, prn, prn_idx, power_bins, samples, interm_freq_hz,
-                          sampling_freq_hz, code_freq_hz, code_length, code_period,
+                          sampling_freq_hz, chip_rate_hz, code_length, code_period,
                           num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
     col_sums_buf = scratch.col_sums_buf
 
     signal_power, noise_power, code_bin_idx, doppler_bin_idx = est_signal_noise_power(
         power_bins,
         sampling_freq_hz,
-        code_freq_hz,
+        chip_rate_hz,
         col_sums_buf,
         plan.noise_estimator,
     )
@@ -1032,7 +1032,7 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins, samples, inte
     rotation_block = (code_bin_idx - 1) ÷ samples_per_code
     scrambled_col = (code_bin_idx - 1) % samples_per_code
     delay_samples = _fmdbzp_column_to_tau(scrambled_col, plan.num_blocks, plan.block_size)
-    code_phase = mod(-delay_samples * code_freq_hz / sampling_freq_hz, code_length)
+    code_phase = mod(-delay_samples * chip_rate_hz / sampling_freq_hz, code_length)
 
     if subsample_interpolation
         # Neighbouring columns for parabolic interpolation must stay within the
@@ -1047,7 +1047,7 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins, samples, inte
         if max(power_left, power_right) > sqrt(noise_power)
             fractional_col_offset = _parabolic_interp(power_left, power_peak, power_right)
             delay_samples_interp = delay_samples + fractional_col_offset
-            code_phase = mod(-delay_samples_interp * code_freq_hz / sampling_freq_hz, code_length)
+            code_phase = mod(-delay_samples_interp * chip_rate_hz / sampling_freq_hz, code_length)
         end
     end
 
@@ -1125,11 +1125,11 @@ end
 function _extract_result_streamed!(plan, scratch, prn,
                                    peak_power, peak_doppler_bin, peak_col,
                                    store_buf, samples, interm_freq_hz,
-                                   sampling_freq_hz, code_freq_hz, code_length, code_period,
+                                   sampling_freq_hz, chip_rate_hz, code_length, code_period,
                                    num_doppler_bins, doppler_step, subsample_interpolation)
     num_cp_cols = plan.samples_per_code_eff
     noise_power = if plan.noise_estimator isa GlobalMeanNoiseEstimator
-        samples_per_chip = floor(Int, sampling_freq_hz / code_freq_hz)
+        samples_per_chip = floor(Int, sampling_freq_hz / chip_rate_hz)
         _global_mean_from_colsums(scratch.col_sums_buf, num_doppler_bins,
             peak_col, samples_per_chip)
     else
@@ -1151,7 +1151,7 @@ function _extract_result_streamed!(plan, scratch, prn,
     rotation_block = (peak_col - 1) ÷ samples_per_code
     scrambled_col = (peak_col - 1) % samples_per_code
     delay_samples = _fmdbzp_column_to_tau(scrambled_col, plan.num_blocks, plan.block_size)
-    code_phase = mod(-delay_samples * code_freq_hz / sampling_freq_hz, code_length)
+    code_phase = mod(-delay_samples * chip_rate_hz / sampling_freq_hz, code_length)
 
     doppler = plan.doppler_freqs[peak_doppler_bin]
 
@@ -1182,7 +1182,7 @@ function _extract_result_streamed!(plan, scratch, prn,
         if max(power_left, power_right) > sqrt(noise_power)
             fractional_col_offset = _parabolic_interp(power_left, peak_power, power_right)
             delay_samples_interp = delay_samples + fractional_col_offset
-            code_phase = mod(-delay_samples_interp * code_freq_hz / sampling_freq_hz, code_length)
+            code_phase = mod(-delay_samples_interp * chip_rate_hz / sampling_freq_hz, code_length)
         end
         if max(dop_left, dop_right) > sqrt(noise_power)
             fractional_doppler_offset = _parabolic_interp(dop_left, peak_power, dop_right)

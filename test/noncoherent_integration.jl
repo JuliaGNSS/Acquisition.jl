@@ -167,7 +167,7 @@ end
     # Validate the early-exit that lets the multistep simple path skip the
     # fused-drift kernel and run the SIMD-friendly slice-5 kernel when every
     # row's rounded drift is zero. Two scenarios:
-    #   (a) L1CA / 5 MHz / N_coh=1: doppler×step×T_coh×fs/fc rounds to 0 for
+    #   (a) L1CA / 5 MHz / N_coh=1: doppler×step×T_coh×fs/chip_rate rounds to 0 for
     #       every row up to N_nc≈8. has_drift must stay false → dispatcher
     #       must produce the same output as the non-drift kernel run direct.
     #   (b) L1CA / 2.048 MHz / N_coh=20: drift is large enough that some
@@ -185,7 +185,7 @@ end
     @test Acquisition._fill_code_drift_shifts!(shifts_a, plan_a, 0) == false
     @test all(iszero, shifts_a)
 
-    # step 7: doppler×step×T_coh×fs/fc < 0.5 for every row at this grid →
+    # step 7: doppler×step×T_coh×fs/chip_rate < 0.5 for every row at this grid →
     # rounds to 0. has_drift must STILL be false.
     @test Acquisition._fill_code_drift_shifts!(shifts_a, plan_a, 7) == false
     @test all(iszero, shifts_a)

@@ -127,8 +127,8 @@ function _fft_cost(samples_per_code, num_blocks, num_doppler_bins, inner_fft_siz
 end
 
 """
-    recommend_sampling_freqs(code_length, code_freq;
-        fs_min = code_freq,
+    recommend_sampling_freqs(code_length, chip_rate;
+        fs_min = chip_rate,
         fs_max = 1.5 * fs_min,
         min_doppler_coverage = 7000Hz,
         num_coherently_integrated_code_periods = 1,
@@ -150,7 +150,7 @@ deduplicated — the first matching `sampling_freq` is reported.
 # Arguments
 
   - `code_length`: Number of chips per PRN code period
-  - `code_freq`: Code chipping rate (a frequency, e.g. `1.023e6Hz`)
+  - `chip_rate`: Nominal chip rate of the primary code (e.g. `1.023e6Hz`)
 
 # Keyword Arguments
 
@@ -197,8 +197,8 @@ This mirrors the per-PRN per coherent-step work, ignoring constant factors.
 """
 function recommend_sampling_freqs(
     code_length::Integer,
-    code_freq;
-    fs_min = code_freq,
+    chip_rate;
+    fs_min = chip_rate,
     fs_max = 1.5 * fs_min,
     min_doppler_coverage = 7000Hz,
     num_coherently_integrated_code_periods::Int = 1,
@@ -218,7 +218,7 @@ function recommend_sampling_freqs(
     fs_min_hz = ustrip(Hz, fs_min)
     fs_max_hz = ustrip(Hz, fs_max)
     fs_step_hz = ustrip(Hz, fs_step)
-    code_freq_hz = ustrip(Hz, code_freq)
+    chip_rate_hz = ustrip(Hz, chip_rate)
     min_doppler_coverage_hz = ustrip(Hz, min_doppler_coverage)
 
     fs_min_hz <= fs_max_hz || throw(ArgumentError("fs_min must be <= fs_max"))
@@ -230,7 +230,7 @@ function recommend_sampling_freqs(
         fs_max_hz = min(fs_max_hz, plan_max)
     end
 
-    T_code = code_length / code_freq_hz
+    T_code = code_length / chip_rate_hz
     seen_spc = Set{Int}()
     candidates = SamplingFreqRecommendation[]
 
@@ -294,7 +294,7 @@ end
 """
     recommend_sampling_freqs(signal::AbstractGNSSSignal; kwargs...) -> Vector{SamplingFreqRecommendation}
 
-Convenience method that derives `code_length` and `code_freq` from `signal` via
+Convenience method that derives `code_length` and `chip_rate` from `signal` via
 `get_code_length(signal)` and `get_chip_rate(signal)`.
 
 All keyword arguments are forwarded to

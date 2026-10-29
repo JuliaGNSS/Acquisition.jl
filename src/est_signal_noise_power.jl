@@ -175,7 +175,7 @@ end
 # ============================================================================
 
 """
-    est_signal_noise_power(power_bins, sampling_freq, code_freq, col_sums,
+    est_signal_noise_power(power_bins, sampling_freq, chip_rate, col_sums,
                            estimator = OppositeRowNoiseEstimator())
 
 Estimate `(signal_power, noise_power, peak_code_phase_bin, peak_doppler_bin)`
@@ -212,7 +212,7 @@ function is exposed mainly for tests and custom pipelines.
 function est_signal_noise_power(
     power_bins::AbstractMatrix{T},
     sampling_freq,
-    code_freq,
+    chip_rate,
     col_sums::Vector{T},
     ::OppositeRowNoiseEstimator = OppositeRowNoiseEstimator(),
 ) where {T<:AbstractFloat}
@@ -230,11 +230,11 @@ end
 function est_signal_noise_power(
     power_bins::AbstractMatrix{T},
     sampling_freq,
-    code_freq,
+    chip_rate,
     col_sums::Vector{T},
     ::GlobalMeanNoiseEstimator,
 ) where {T<:AbstractFloat}
-    samples_per_chip = floor(Int, sampling_freq / code_freq)
+    samples_per_chip = floor(Int, sampling_freq / chip_rate)
     num_doppler_bins = size(power_bins, 1)
     peak_power, peak_doppler_bin, peak_code_phase_bin =
         _findmax_and_colsums!(col_sums, power_bins)

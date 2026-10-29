@@ -1,7 +1,7 @@
 # test/recommend_sampling_freq.jl
 # Tests for recommend_sampling_freqs
 
-@testset "recommend_sampling_freqs — code_length / code_freq form" begin
+@testset "recommend_sampling_freqs — code_length / chip_rate form" begin
     # Worked example: fs=40 MHz, code 36 MHz × 10000 chips has
     # samples_per_code=11112 = 2³·3·463. The inner FFT is zero-padded to a fast
     # size, so `samples_per_code`'s factorization no longer disqualifies a rate;
@@ -89,7 +89,7 @@ end
 end
 
 @testset "recommend_sampling_freqs — signal convenience method" begin
-    # GPS L1 C/A: code_length=1023, code_freq=1.023 MHz, T_code=1 ms
+    # GPS L1 C/A: code_length=1023, chip_rate=1.023 MHz, T_code=1 ms
     rs = recommend_sampling_freqs(
         GPSL1CA();
         fs_min = 2e6Hz,
