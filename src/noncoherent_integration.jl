@@ -710,8 +710,10 @@ function _accumulate_sign_tile!(
     rotation_active = plan.num_secondary_rotations > 1 &&
                       plan.num_coherently_integrated_code_periods > 1
     num_bit_combos = 1 << (plan.num_bits - 1)
-    code_blocks_per_bit = plan.num_coherently_integrated_code_periods ÷ plan.num_bits
-    edge_step = code_blocks_per_bit * plan.num_blocks ÷ plan.bit_edge_search_steps
+    # Code periods per sign sub-block: a bit period when the window spans whole
+    # bits, the whole window in sub-bit mode (num_bits == 1).
+    code_blocks_per_sub_block = plan.num_coherently_integrated_code_periods ÷ plan.num_bits
+    edge_step = code_blocks_per_sub_block * plan.num_blocks ÷ plan.bit_edge_search_steps
     use_max = num_bit_combos > 1 || plan.bit_edge_search_steps > 1
     patterns = plan.sign_patterns_by_prn[prn]
     tiled_re = rotation_active ? plan.tiled_phase_patterns_re_by_prn[prn] :
@@ -862,8 +864,10 @@ function _accumulate_noncoherent_integration_step!(
         # locally — production streams this per column instead.
         noncoherent_integration_buf =
             zeros(Float32, num_doppler_bins, size(noncoherent_integration_matrix, 2))
-        code_blocks_per_bit = plan.num_coherently_integrated_code_periods ÷ plan.num_bits
-        edge_step = code_blocks_per_bit * plan.num_blocks ÷ plan.bit_edge_search_steps
+        # Code periods per sign sub-block: a bit period when the window spans whole
+        # bits, the whole window in sub-bit mode (num_bits == 1).
+        code_blocks_per_sub_block = plan.num_coherently_integrated_code_periods ÷ plan.num_bits
+        edge_step = code_blocks_per_sub_block * plan.num_blocks ÷ plan.bit_edge_search_steps
         num_bit_combos = 1 << (plan.num_bits - 1)
         if plan.bit_edge_search_steps == 1
             if rotation_search_active

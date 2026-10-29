@@ -738,8 +738,10 @@ function _acquire_prn_streamed!(
         num_slices = size(stage, 2)
         samples_per_code = plan.samples_per_code
         num_bit_combos = 1 << (plan.num_bits - 1)
-        code_blocks_per_bit = plan.num_coherently_integrated_code_periods ÷ plan.num_bits
-        edge_step = code_blocks_per_bit * plan.num_blocks ÷ plan.bit_edge_search_steps
+        # Code periods per sign sub-block: a bit period when the window spans whole
+        # bits, the whole window in sub-bit mode (num_bits == 1).
+        code_blocks_per_sub_block = plan.num_coherently_integrated_code_periods ÷ plan.num_bits
+        edge_step = code_blocks_per_sub_block * plan.num_blocks ÷ plan.bit_edge_search_steps
         use_max = num_bit_combos > 1 || plan.bit_edge_search_steps > 1
         patterns = plan.sign_patterns_by_prn[prn]
         tiled_re = rotation_active ? plan.tiled_phase_patterns_re_by_prn[prn] :
@@ -913,8 +915,10 @@ function _recompute_column_power!(
         stage = scratch.stage_buf
         fill!(stage, 0f0)
         num_bit_combos = 1 << (plan.num_bits - 1)
-        code_blocks_per_bit = plan.num_coherently_integrated_code_periods ÷ plan.num_bits
-        edge_step = code_blocks_per_bit * plan.num_blocks ÷ plan.bit_edge_search_steps
+        # Code periods per sign sub-block: a bit period when the window spans whole
+        # bits, the whole window in sub-bit mode (num_bits == 1).
+        code_blocks_per_sub_block = plan.num_coherently_integrated_code_periods ÷ plan.num_bits
+        edge_step = code_blocks_per_sub_block * plan.num_blocks ÷ plan.bit_edge_search_steps
         use_max = num_bit_combos > 1 || plan.bit_edge_search_steps > 1
         patterns = plan.sign_patterns_by_prn[prn]
         tiled_re = rotation_active ? plan.tiled_phase_patterns_re_by_prn[prn] :
