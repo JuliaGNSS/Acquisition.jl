@@ -174,10 +174,16 @@ end
         num_coherently_integrated_code_periods = 30)
     # bit_edge_search_steps does not divide code_blocks_per_bit (20)
     @test_throws ArgumentError plan_acquire(signal, sampling_freq, [1];
-        num_coherently_integrated_code_periods = 20, bit_edge_search_steps = 3)
-    # bit_edge_search_steps > 1 only makes sense when num_coherently_integrated_code_periods > 1
-    @test_throws ArgumentError plan_acquire(signal, sampling_freq, [1];
-        num_coherently_integrated_code_periods = 1, bit_edge_search_steps = 2)
+        num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 3)
+    # bit_edge_search_steps > 1 has nothing to search in a window of one bit
+    # sub-block: a single code period, a sub-bit window, exactly one bit, a pilot
+    for N in (1, 10, 20)
+        @test_throws ArgumentError plan_acquire(signal, sampling_freq, [1];
+            num_coherently_integrated_code_periods = N, bit_edge_search_steps = 2)
+    end
+    @test_throws ArgumentError plan_acquire(GalileoE1C(), 4.092e6Hz, [1];
+        num_coherently_integrated_code_periods = 4, use_secondary_code = false,
+        bit_edge_search_steps = 2)
     # Other basic guard checks
     @test_throws ArgumentError plan_acquire(signal, sampling_freq, [1];
         num_noncoherent_accumulations = 0)

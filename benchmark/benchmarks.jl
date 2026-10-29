@@ -162,12 +162,12 @@ if INCLUDE_BATCH_FFT_CROSSOVER
 end
 
 # ============================================================================
-# BitEdgeSearch — cost of bit_edge_search_steps for a 20 ms coherent window.
+# BitEdgeSearch — cost of bit_edge_search_steps for a 40 ms coherent window.
 #
-# 20 ms is the GPS L1 C/A bit period, so num_bits = 1 but a bit transition
-# can still land inside the window. bit_edge_search_steps runs the bit
-# path over N candidate alignments and keeps the strongest. Values must divide
-# code_blocks_per_bit (= 20), so 1, 2, 5, 10 all apply.
+# 40 ms spans two GPS L1 C/A bits, so num_bits = 2. bit_edge_search_steps runs
+# the bit path over N candidate alignments of the bit boundaries and keeps the
+# strongest. Values must divide the 20 code periods per bit, so 1, 2, 5, 10 all
+# apply.
 # ============================================================================
 
 SUITE["BitEdgeSearch"] = BenchmarkGroup()
@@ -175,7 +175,7 @@ SUITE["BitEdgeSearch"] = BenchmarkGroup()
 for N_be in [1, 2, 5, 10]
     plan = plan_acquire(l1ca, 2.048e6Hz, [1];
         min_doppler_coverage = 10_000Hz,
-        num_coherently_integrated_code_periods = 20,
+        num_coherently_integrated_code_periods = 40,
         bit_edge_search_steps = N_be,
         num_noncoherent_accumulations = 1)
     samples = _make_samples(plan, 1)

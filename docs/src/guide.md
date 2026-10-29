@@ -693,23 +693,26 @@ reachable BBPLL). Other SDRs can be supported by subtyping
 GPS L1 C/A bits flip every 20 ms. Integrating across a bit transition cancels
 signal energy. The library handles this automatically:
 
-**Sub-bit integration** (`num_coherently_integrated_code_periods < 20`):
-At most one bit transition can fall in the window. Use `bit_edge_search_steps > 1`
-to search over candidate alignment positions:
+**Sub-bit integration** (`num_coherently_integrated_code_periods ≤ 20`):
+At most one bit transition can fall in the window, and it is not searched for:
+a transition costs the part of the energy on its far side. Keep the window short,
+and accumulate non-coherently for sensitivity. `bit_edge_search_steps` must stay
+`1`, since a window of one bit sub-block has no boundary to align.
 
-```julia
-plan = plan_acquire(signal, sampling_freq, prns;
-    num_coherently_integrated_code_periods = 10,
-    bit_edge_search_steps = 10)
-```
-
-**Multi-bit integration** (`num_coherently_integrated_code_periods ≥ 20`):
+**Multi-bit integration** (`num_coherently_integrated_code_periods ≥ 40`):
 The window spans whole bit periods. Two constraints apply:
 1. `num_coherently_integrated_code_periods` must be divisible by `get_code_blocks_per_bit(signal)` (= 20 for GPS L1 C/A)
 2. `get_code_blocks_per_bit(signal)` must be divisible by `bit_edge_search_steps`
 
 The algorithm searches all `2^(num_bits - 1)` sign-flip combinations across
-the bits in the window.
+the bits in the window, and `bit_edge_search_steps > 1` additionally tries
+that many alignments of the bit boundaries:
+
+```julia
+plan = plan_acquire(signal, sampling_freq, prns;
+    num_coherently_integrated_code_periods = 40,
+    bit_edge_search_steps = 4)
+```
 
 A BeiDou B1I or B3I GEO satellite broadcasts D2 bits every 2 ms, where the
 other satellites broadcast D1 every 20 ms (`get_code_blocks_per_bit(signal, prn)`).

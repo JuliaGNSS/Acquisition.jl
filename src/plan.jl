@@ -371,7 +371,9 @@ multi-threaded acquisition. Scratch buffers are tile-sized (nothing scales with
   `bin_spacing = 1 / (num_coherently_integrated_code_periods × T_code)`.
 - `bit_edge_search_steps`: Number of bit-edge alignment candidates to search
   (default: `1`, disabled). Must divide `get_code_blocks_per_bit(signal)`. Only valid when
-  `num_coherently_integrated_code_periods > 1`.
+  the window spans at least two bits (`num_coherently_integrated_code_periods ≥
+  2 × get_code_blocks_per_bit(signal)`): a pilot's window, or one of a single bit or
+  less, has no boundary between bits to align.
 - `num_noncoherent_accumulations`: Number of successive incoherent integration
   steps (default: `1`). The samples passed to `acquire!` must contain at least
   `num_noncoherent_accumulations` full segments.
@@ -451,9 +453,6 @@ function plan_acquire(
     num_noncoherent_accumulations >= 1 || throw(ArgumentError("num_noncoherent_accumulations must be >= 1, got $num_noncoherent_accumulations"))
     num_coherently_integrated_code_periods >= 1 || throw(ArgumentError("num_coherently_integrated_code_periods must be >= 1"))
     bit_edge_search_steps >= 1 || throw(ArgumentError("bit_edge_search_steps must be >= 1, got $bit_edge_search_steps"))
-    if num_coherently_integrated_code_periods == 1 && bit_edge_search_steps > 1
-        throw(ArgumentError("bit_edge_search_steps must be 1 when num_coherently_integrated_code_periods == 1 (sub-bit mode; no bit boundary search applies), got $bit_edge_search_steps"))
-    end
 
     # Secondary-code rotation search cap. Fires before any heavy allocation so a
     # user who hits the cap on a large-L signal (e.g. GPS L1C-P, L=1800) is not
@@ -565,6 +564,15 @@ function plan_acquire(
             "spans a different number of bits on each. Plan the GEO PRNs separately, or set " *
             "num_coherently_integrated_code_periods <= $(minimum(code_blocks_per_bit_by_prn))."))
     end
+    # The bit-edge search moves the boundaries between the window's bit sub-blocks. A
+    # window of one sub-block has none: moving its start only rotates it circularly,
+    # which leaves the power unchanged, so there is nothing to search.
+    num_bits > 1 || bit_edge_search_steps == 1 || throw(ArgumentError(
+        "bit_edge_search_steps=$bit_edge_search_steps has nothing to search: the window " *
+        "spans a single bit sub-block (num_bits = 1; a pilot, or " *
+        "num_coherently_integrated_code_periods=$num_coherently_integrated_code_periods " *
+        "below twice the code periods per bit), so it has no bit boundary to align. " *
+        "Set bit_edge_search_steps = 1, or span at least two bits."))
 
     block_size = samples_per_code ÷ num_blocks
     double_block_size = 2 * block_size
