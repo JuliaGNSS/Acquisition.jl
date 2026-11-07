@@ -707,6 +707,10 @@ end
         ("rotation+drift", plan_acquire(GPSL5I(), 10.24e6Hz, [prn];
             max_doppler_passes = 1, num_coherently_integrated_code_periods = 10,
             num_noncoherent_accumulations = 4, fft_flag = FFTL.ESTIMATE), 3),
+        # Rotation × data-bit polarities × bit-edge alignments, with drift.
+        ("rotation+data+bitedge+drift", plan_acquire(GPSL5I(), 10.24e6Hz, [prn];
+            num_coherently_integrated_code_periods = 20, bit_edge_search_steps = 2,
+            num_noncoherent_accumulations = 2, fft_flag = FFTL.ESTIMATE), 1),
         # Data-bit + bit-edge search (max across alignments), no drift at step 0.
         ("bitedge", plan_acquire(GPSL1CA(), 2.048e6Hz, [prn];
             max_doppler_passes = 1, min_doppler_coverage = 10_000Hz,
@@ -748,9 +752,104 @@ end
             if step_idx > 0
                 shifts = zeros(Int, ndop)
                 @test Acquisition._fill_code_drift_shifts!(shifts, plan, step_idx,
-                    Acquisition.PassRows(length(shifts))) ==
-                    (label != "bitedge")
+                    Acquisition.PassRows(length(shifts)))
             end
         end
     end
+end
+
+@testset "Rotation tile kernel matches the per-column reference kernel (N_nc=1, streamed)" begin
+    # Production computes each secondary-code pattern as ONE Doppler FFT of the
+    # sign-modulated transposed tile (`_rotation_tile_power!`); the reference
+    # dispatcher runs the original per-column kernel (`_rotation_column!`:
+    # sub-block FFTs combined with phase-ramped patterns). The two are the same
+    # sum, so the streamed surface must match to FFT rounding.
+    prn = 1
+    cases = [
+        ("rotation", GPSL5I(), 10.24e6Hz, 10, 1),
+        ("rotation+data", GPSL5I(), 10.24e6Hz, 20, 1),
+        ("rotation+data+bitedge", GPSL5I(), 10.24e6Hz, 20, 2),
+        ("rotation NH20 pilot", GPSL5Q(), 10.24e6Hz, 20, 1),
+    ]
+    for (label, system, fs, ncoh, edges) in cases
+        @testset "$label" begin
+            plan = plan_acquire(system, fs, [prn];
+                num_coherently_integrated_code_periods = ncoh,
+                bit_edge_search_steps = edges, fft_flag = FFTL.ESTIMATE,
+                max_doppler_passes = 1)   # the reference dispatcher needs one grid
+            @test plan.num_secondary_rotations > 1
+            @test plan.bit_edge_search_steps == edges
+            scratch = Acquisition._default_scratch(plan)
+            ndop = length(plan.doppler_freqs)
+            (; signal) = generate_test_signal(system, prn;
+                num_samples = ncoh * plan.samples_per_code,
+                doppler = 1270Hz, code_phase = 3210.4,
+                sampling_freq = fs, interm_freq = 0.0Hz, CN0 = 45, seed = 3)
+            plan.sig_buf .= ComplexF32.(signal)
+            Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, plan.sig_buf,
+                plan.samples_per_code, plan.num_blocks, plan.block_size, ncoh,
+                scratch.double_block_buf, plan.double_block_fft_plan)
+
+            stored = zeros(Float32, ndop, plan.samples_per_code_eff)
+            peak_power, peak_row, peak_col =
+                Acquisition._acquire_prn_streamed!(plan, scratch, prn, stored)
+
+            cim = zeros(ComplexF32, ndop, plan.samples_per_code)
+            Acquisition._build_coherent_integration_matrix!(cim, plan.signal_block_ffts,
+                plan.prn_conj_ffts[prn], plan.samples_per_code, plan.num_blocks,
+                plan.block_size, ncoh, scratch.corr_buf, scratch.double_block_bfft_plan)
+            ref = zeros(Float32, ndop, plan.samples_per_code_eff)
+            Acquisition._accumulate_noncoherent_integration_step!(ref, cim, plan, scratch, prn, 0)
+
+            @test maximum(abs.(stored .- ref)) <= 1e-5 * maximum(ref)
+            # Not `argmax(stored) == argmax(ref)`: with bit-edge alignments, rotation
+            # r + 5 at the other alignment of `rotation+data+bitedge` is the same
+            # cyclic sign sequence, so two cells tie exactly and rounding decides.
+            @test ref[argmax(stored)] >= (1 - 1e-5) * maximum(ref)
+            @test (peak_row, peak_col) == Tuple(argmax(stored))
+            @test peak_power == maximum(stored)
+            # Streamed row sums are the stored surface's.
+            @test scratch.row_sums_buf ≈ vec(sum(stored; dims = 2))
+
+            # The column recompute (subsample interpolation without stored bins)
+            # runs the same transform, so it reproduces stored cells exactly.
+            col = zeros(Float32, ndop)
+            for c in (peak_col, 1, plan.samples_per_code_eff)
+                Acquisition._recompute_column_power!(col, plan, scratch, prn, c, 1)
+                @test col == stored[:, c]
+            end
+        end
+    end
+end
+
+@testset "Rotation tile offsets equal the per-column block alignment" begin
+    # `_rotation_tile_offsets` replaces the per-column row-offset snap of
+    # `_rotation_column!` with two contiguous code-phase ranges per tile.
+    for (num_blocks, block_size) in ((10, 1024), (10, 1023), (25, 160), (7, 1))
+        half_block = block_size >> 1
+        for col_block_idx in 0:num_blocks-1
+            off_lo, off_hi, split = Acquisition._rotation_tile_offsets(
+                col_block_idx, num_blocks, block_size)
+            for local_col in 1:block_size
+                pc = col_block_idx * block_size + local_col - 1
+                wrap_sample = ((num_blocks - div(pc, block_size)) % num_blocks) * block_size +
+                              (pc % block_size)
+                expected = div(wrap_sample + half_block, block_size) % num_blocks
+                @test expected == (local_col <= split ? off_lo : off_hi)
+            end
+        end
+    end
+end
+
+@testset "Streamed peak ties go to the lowest code phase, then the lowest rotation" begin
+    # `_fold_tile_peaks` folds a tile's per-(code phase, rotation) maxima
+    # code-phase-major — the order of the former per-column rotation kernel.
+    samples_per_code = 100
+    col_max = Float32[1 5; 5 1]          # (local code phase, rotation)
+    col_max_row = [1 2; 3 4]
+    @test Acquisition._fold_tile_peaks(col_max, col_max_row, 20, samples_per_code,
+        -Inf32, 1, 1) == (5f0, 2, 20 + samples_per_code + 1)   # cp 1, rotation 1
+    # A strictly larger running peak from an earlier tile is kept.
+    @test Acquisition._fold_tile_peaks(col_max, col_max_row, 20, samples_per_code,
+        5f0, 7, 3) == (5f0, 7, 3)
 end

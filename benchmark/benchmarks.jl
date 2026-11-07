@@ -265,8 +265,8 @@ if _is_fmdbzp
     end
 
     # Secondary-code rotation search path — exercises
-    # `_sign_search_step_with_rotations!` and the (samples_per_code × L)-wide
-    # noncoherent buffer. L5I at 12 MHz / N_coh=10 is the canonical rotation
+    # `_rotation_tile_power!` and the (samples_per_code × L)-wide effective
+    # code-phase axis. L5I at 12 MHz / N_coh=10 is the canonical rotation
     # workload (the case the rotation-vs-LongL5I sensitivity work in
     # `claude_scratch/sensitivity-fix.md` is tuned for). Without this entry,
     # the default L5I bench above runs at N_coh=1 and never touches the sign-

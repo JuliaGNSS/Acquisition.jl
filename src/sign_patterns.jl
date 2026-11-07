@@ -51,8 +51,10 @@ end
         -> Array{ComplexF32, 3}  # (num_coh_periods, num_patterns, num_coh_periods)
 
 Pre-multiply each per-period ±1 sign pattern by the inter-sub-block DFT phase
-ramp so the rotation kernel's combination across sub-blocks becomes a full
-length-`num_doppler_bins` column FFT (LongL5I-equivalent). Without this ramp,
+ramp so the reference rotation kernel's ([`_rotation_column!`](@ref))
+combination across sub-blocks becomes a full length-`num_doppler_bins` column
+FFT (LongL5I-equivalent). Test/reference only: production computes that FFT
+directly ([`_rotation_tile_power!`](@ref)). Without this ramp,
 the kernel's `Σ_p sign[p] · sub_block_FFT_p[ω]` combination is matched-filter
 optimal only when the true Doppler lands on the coarse 1-kHz sub-block FFT
 grid — between grid points the inter-sub-block phase rotates by some
@@ -97,8 +99,9 @@ end
         -> Array{ComplexF32, 3}  # (num_doppler_bins, num_coh_periods, num_patterns)
 
 Expand the compact `(num_coh_periods, num_patterns, num_coh_periods)` phasor
-table from [`combined_phase_patterns`](@ref) into the kernel-consumed tiled
-form indexed by `(ω, p, q)`. Each row block of `num_coh_periods` ω-entries
+table from [`combined_phase_patterns`](@ref) into the tiled form indexed by
+`(ω, p, q)` that the reference rotation kernel ([`_rotation_column!`](@ref))
+consumes. Test/reference only. Each row block of `num_coh_periods` ω-entries
 shares the same fine-bin class `s = (ω-1) mod num_coh_periods`, so the tile
 is just `num_blocks = num_doppler_bins / num_coh_periods` copies of the
 compact phasor.

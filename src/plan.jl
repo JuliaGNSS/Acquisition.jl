@@ -31,21 +31,23 @@ struct AcquisitionScratch{P2,P3,P4}
     coherent_tile::Matrix{ComplexF32}
     # The same memory as `coherent_tile`, reshaped to the transposed
     # (block_size, pass_fft_bins) layout used by the simple (pilot / sub-bit)
-    # path — see `_build_doppler_tile_t!`. Only one of the two layouts is live
-    # at a time (simple path vs sign-search path), so sharing costs nothing.
+    # path and the secondary-code rotation search — see `_build_coherent_tile_t!`.
+    # Only one of the two layouts is live at a time (the data-bit sign search
+    # uses `coherent_tile`, everything else `coherent_tile_t`), so sharing
+    # costs nothing.
     coherent_tile_t::Matrix{ComplexF32}
     # Per-code-phase running max / argmax (sorted Doppler row) over one
-    # transposed tile, for the streamed peak search. length block_size.
-    col_max_buf::Vector{Float32}
-    col_max_row_buf::Vector{Int}
+    # transposed tile, for the streamed peak search: (block_size,
+    # num_secondary_rotations), one column per rotation hypothesis so a tile's
+    # rotations are folded into the peak code-phase-major (`_fold_tile_peaks`).
+    col_max_buf::Matrix{Float32}
+    col_max_row_buf::Matrix{Int}
     col_buf::Vector{ComplexF32}                     # length pass_fft_bins
-    # Per-column staging for the sign-search kernels:
-    # (pass_fft_bins, num_secondary_rotations), in one pass's sorted order. Holds ONE code-phase column's
-    # power per rotation hypothesis, max-reduced across bit-edge alignments and
-    # data-bit polarities, before it is consumed (streamed at N_nc == 1,
-    # scattered into the accumulator at N_nc > 1). Replaces the full-surface
-    # `noncoherent_integration_buf`/`sign_search_max_buf` pair.
-    # 0×0 when the simple/pilot path is taken.
+    # Per-column staging for the data-bit sign search: (pass_fft_bins, 1).
+    # Holds ONE code-phase column's power, max-reduced across bit-edge
+    # alignments and data-bit polarities, before it is consumed (streamed at
+    # N_nc == 1, scattered into the accumulator at N_nc > 1).
+    # 0×0 on the simple/pilot path and on the rotation search.
     stage_buf::Matrix{Float32}
     # Multistep (N_nc > 1) power accumulator: (num_doppler_bins,
     # samples_per_code_eff) over the whole stitched Doppler grid. The multistep PRN loop is PRN-outer — one claimed
@@ -64,13 +66,20 @@ struct AcquisitionScratch{P2,P3,P4}
     # rows) for the on-demand column recompute used by subsample interpolation
     # on the streamed path.
     col_power_buf::Vector{Float32}
-    sub_block_ffts::Matrix{ComplexF32}              # (pass_fft_bins, num_sub_blocks) — 0x0 when simple path is taken (see plan_acquire). Scratch for the sign-search kernels.
-    # Real/imag-split accumulator for the rotation-kernel's complex-MAC combine loop.
-    # Each is length pass_fft_bins, sized 0 when the rotation kernel is not active.
-    # Split storage drives Float32 SIMD on the tiled phasor inner loop —
-    # ComplexF32 storage is ~3× slower because the compiler can't pack the MAC.
-    combine_buf_re::Vector{Float32}
-    combine_buf_im::Vector{Float32}
+    sub_block_ffts::Matrix{ComplexF32}              # (pass_fft_bins, num_data_bits) — scratch for the data-bit sign search; 0x0 otherwise.
+    # Secondary-code rotation search (`_rotation_tile_power!`), all 0-sized
+    # when it is not active:
+    # one sign-modulated, Doppler-transformed copy of `coherent_tile_t`,
+    # (block_size, pass_fft_bins) — the tile itself is reused by every pattern;
+    rotation_tile::Matrix{ComplexF32}
+    # the power of a rotation's patterns max-reduced, (block_size,
+    # pass_fft_bins) — only when a rotation has more than one pattern (data-bit
+    # polarities or bit-edge alignments), otherwise `rotation_tile` is reduced
+    # directly;
+    rotation_power::Matrix{Float32}
+    # the per-row pattern signs for the tile's two code-phase ranges,
+    # (pass_fft_bins, 2).
+    rotation_signs::Matrix{Float32}
     # length samples_per_code_eff when per-column sums are consumed — multistep
     # extraction via `est_signal_noise_power`, or the GlobalMean noise estimator
     # on the streamed path. length 0 at N_nc == 1 with the (default) OppositeRow
@@ -206,23 +215,13 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     # Derived: number of secondary-code rotation phases to enumerate. Equals
     # get_secondary_code_length(system) when the search is active, else 1.
     num_secondary_rotations::Int
-    # Pre-computed ±1 sign-pattern matrix per PRN, consumed by `_sign_search_step!`
-    # / `_sign_search_step_with_rotations!`. Built once in `plan_acquire`. Empty
+    # Pre-computed ±1 sign-pattern matrix per PRN, consumed by
+    # `_sign_search_column!` / `_rotation_tile_power!`. Built once in `plan_acquire`. Empty
     # when the sign-search path is inactive (i.e. simple/pilot path with no
     # rotation search). For PRN-independent patterns (no rotation, or shared
     # secondary code) the same matrix value is stored under every PRN key — keeps
     # the lookup uniform without per-call allocation.
     sign_patterns_by_prn::Dict{Int,Matrix{Float32}}
-    # Pre-computed phase-ramp-multiplied patterns per PRN, pre-tiled along the
-    # Doppler-bin axis AND split into separate real/imag Float32 arrays. The
-    # tiled form makes the inner ω loop contiguous; the real/imag split lets
-    # the compiler pack the complex MAC into Float32 SIMD lanes (~3× faster
-    # than the ComplexF32 form, even with the same per-iteration FLOP count).
-    # Both arrays have shape `(pass_fft_bins, num_coh_periods, num_patterns)`,
-    # indexed `[ω, p, q]`. Empty when the rotation kernel is not active. See
-    # [`combined_phase_patterns`](@ref) and [`tile_phase_patterns`](@ref).
-    tiled_phase_patterns_re_by_prn::Dict{Int,Array{Float32,3}}
-    tiled_phase_patterns_im_by_prn::Dict{Int,Array{Float32,3}}
 end
 
 """
@@ -707,27 +706,25 @@ function plan_acquire(
     fftshift_perm = [mod(r - 1 + pass_fft_bins ÷ 2, pass_fft_bins) + 1 for r in 1:pass_fft_bins]
     result_buffers = Union{Nothing,Matrix{Float32}}[nothing for _ in prns]
 
-    # The sign-search path runs when num_data_bits > 1, bit_edge_search_steps > 1,
+    # The sign-pattern search runs when num_data_bits > 1, bit_edge_search_steps > 1,
     # or the secondary-code rotation search is active. Otherwise the simple/pilot
-    # path is taken, which never reads `stage_buf` or `sub_block_ffts`.
+    # path is taken. The rotation search covers data-bit polarities and bit-edge
+    # alignments itself (`_rotation_tile_power!`); only without it does the
+    # per-column data-bit sign search run, which alone reads `stage_buf` and
+    # `sub_block_ffts`.
     sign_search_path_active = num_data_bits > 1 || bit_edge_search_steps > 1 ||
                               rotation_search_active
-    # Per-column staging for the sign-search kernels: ONE column of power per
-    # rotation hypothesis. Bit-edge alignments and data-bit polarities are
-    # max-reduced into it column-locally, so neither search needs a buffer
-    # proportional to `samples_per_code` anymore.
-    stage_rows = sign_search_path_active ? pass_fft_bins       : 0
-    stage_cols = sign_search_path_active ? num_secondary_rotations : 0
-    # The data-bit kernel needs one sub-block FFT column per data bit; the
-    # rotation kernel needs one per coherent period. Size to the max so the same
-    # scratch matrix serves both code paths.
-    sub_block_rows = sign_search_path_active ? pass_fft_bins : 0
-    sub_block_cols = if sign_search_path_active
-        rotation_search_active ? max(num_data_bits, num_coherently_integrated_code_periods) :
-                                 num_data_bits
-    else
-        0
-    end
+    data_bit_search_active = sign_search_path_active && !rotation_search_active
+    stage_rows = data_bit_search_active ? pass_fft_bins : 0
+    stage_cols = data_bit_search_active ? 1 : 0
+    sub_block_rows = data_bit_search_active ? pass_fft_bins : 0
+    sub_block_cols = data_bit_search_active ? num_data_bits : 0
+    # Rotation-search tile buffers. The max-reduced power tile is needed only
+    # when a rotation has several patterns to fold.
+    rotation_tile_size = rotation_search_active ? (block_size, pass_fft_bins) : (0, 0)
+    patterns_per_rotation = (1 << (num_data_bits - 1)) * bit_edge_search_steps
+    rotation_power_size = rotation_search_active && patterns_per_rotation > 1 ?
+        (block_size, pass_fft_bins) : (0, 0)
 
     # Streaming-reduction state exists only on the sequential (N_nc == 1) path;
     # the multistep path reduces from the per-scratch accumulator surface.
@@ -780,16 +777,18 @@ function plan_acquire(
             zeros(ComplexF32, fft_size),
             tile,
             tile_t,
-            zeros(Float32, block_size),
-            zeros(Int, block_size),
+            zeros(Float32, block_size, num_secondary_rotations),
+            ones(Int, block_size, num_secondary_rotations),
             zeros(ComplexF32, pass_fft_bins),
             zeros(Float32, stage_rows, stage_cols),
             zeros(Float32, accumulator_rows, accumulator_cols),
             zeros(Float32, row_sums_len),
             zeros(Float32, sequential_prn_mode ? pass_fft_bins : 0),
             zeros(ComplexF32, sub_block_rows, sub_block_cols),
-            zeros(Float32, rotation_search_active ? pass_fft_bins : 0),
-            zeros(Float32, rotation_search_active ? pass_fft_bins : 0),
+            zeros(ComplexF32, rotation_tile_size),
+            zeros(Float32, rotation_power_size),
+            zeros(Float32, rotation_search_active ? pass_fft_bins : 0,
+                rotation_search_active ? 2 : 0),
             zeros(Float32, col_sums_len),
             zeros(Int, code_drift_shifts_len),
         )
@@ -809,29 +808,10 @@ function plan_acquire(
         0f0, 0f0, 0, nothing, doppler_freqs, num_blocks, block_size, num_secondary_rotations)
     acq_results_buf = Vector{typeof(dummy_result)}(undef, length(prns))
 
-    # Pre-compute the ±1 sign-pattern matrix once per PRN. The dispatcher in
-    # `_accumulate_noncoherent_integration_step!` reads from this dict instead
-    # of recomputing per accumulation step. Patterns that don't depend on PRN
-    # (no rotation, or shared secondary code) still get a per-PRN entry — the
-    # underlying matrix object can be shared to avoid duplicate storage.
+    # Pre-compute the ±1 sign-pattern matrix once per PRN. Patterns that don't
+    # depend on PRN (no rotation, or shared secondary code) still get a per-PRN
+    # entry — the underlying matrix object is shared to avoid duplicate storage.
     sign_patterns_by_prn = Dict{Int,Matrix{Float32}}()
-    # The rotation kernel consumes the phase-ramp-multiplied patterns, pre-
-    # tiled along the Doppler-bin axis so the inner combine loop is contiguous
-    # SIMD. The non-rotation sign-search kernel (`_sign_search_step!`) keeps
-    # using the plain ±1 `sign_patterns_by_prn`. Both dicts are populated for
-    # sign_search_path PRNs so the dispatcher can look up the right form
-    # without a branch.
-    tiled_phase_patterns_re_by_prn = Dict{Int,Array{Float32,3}}()
-    tiled_phase_patterns_im_by_prn = Dict{Int,Array{Float32,3}}()
-    empty_tile = Array{Float32,3}(undef, 0, 0, 0)
-    function _build_tiled(p)
-        rotation_search_active || return (empty_tile, empty_tile)
-        compact = combined_phase_patterns(p, num_coherently_integrated_code_periods)
-        tiled = tile_phase_patterns(compact, pass_fft_bins)
-        # Split into Float32 real/imag arrays so the kernel inner loop runs as
-        # Float32 SIMD (≈3× faster than ComplexF32 storage with the same MACs).
-        Float32.(real.(tiled)), Float32.(imag.(tiled))
-    end
     if sign_search_path_active
         secondary_code_obj = use_secondary_code ? get_secondary_code(system) : nothing
         # When patterns are PRN-independent, build once and alias under every key.
@@ -842,21 +822,14 @@ function plan_acquire(
                                    num_secondary_rotations,
                                    num_coherently_integrated_code_periods,
                                    use_secondary_code)
-            shared_re, shared_im = _build_tiled(shared)
             for prn in prns
                 sign_patterns_by_prn[prn] = shared
-                tiled_phase_patterns_re_by_prn[prn] = shared_re
-                tiled_phase_patterns_im_by_prn[prn] = shared_im
             end
         else
             for prn in prns
-                p = sign_patterns(secondary_code_obj, prn,
+                sign_patterns_by_prn[prn] = sign_patterns(secondary_code_obj, prn,
                     num_data_bits, num_secondary_rotations,
                     num_coherently_integrated_code_periods, use_secondary_code)
-                sign_patterns_by_prn[prn] = p
-                re, im = _build_tiled(p)
-                tiled_phase_patterns_re_by_prn[prn] = re
-                tiled_phase_patterns_im_by_prn[prn] = im
             end
         end
     end
@@ -889,8 +862,6 @@ function plan_acquire(
         max_secondary_code_rotations,
         num_secondary_rotations,
         sign_patterns_by_prn,
-        tiled_phase_patterns_re_by_prn,
-        tiled_phase_patterns_im_by_prn,
     )
 
     _precompile_search(plan)
