@@ -12,12 +12,53 @@ function _parabolic_interp(left::Real, peak::Real, right::Real)
     (right - left) / denom
 end
 
-# The (double_block_size, num_coh*num_blocks) slice of the plan's all-segment
-# signal-block FFT cache belonging to 1-based accumulation step `step_idx`.
-@inline function _signal_block_ffts_for_step(plan::AcquisitionPlan, step_idx::Int)
+# The (fft_size, num_coh*num_blocks) slice of the plan's signal-block FFT cache
+# belonging to 1-based accumulation step `step_idx` of 1-based Doppler pass
+# `pass_idx` (pass-major layout).
+@inline function _signal_block_ffts_for_step(plan::AcquisitionPlan, step_idx::Int,
+                                             pass_idx::Int = 1)
     cols_per_segment = plan.num_coherently_integrated_code_periods * plan.num_blocks
-    view(plan.signal_block_ffts, :,
-        (step_idx - 1) * cols_per_segment + 1 : step_idx * cols_per_segment)
+    first_col = ((pass_idx - 1) * plan.num_noncoherent_accumulations + step_idx - 1) *
+                cols_per_segment
+    view(plan.signal_block_ffts, :, first_col + 1 : first_col + cols_per_segment)
+end
+
+# Fill the signal-block FFT cache for every Doppler pass and accumulation step:
+# pass `k` sees the signal downconverted by `interm_freq + doppler_pass_offsets_hz[k]`,
+# which moves the band its FM-DBZP grid searches to baseband. The downconverted
+# segment lives in the plan's single `sig_buf`; the per-FFT temp comes from
+# thread 1's scratch slot — `_default_scratch(plan)` names that convention.
+function _fill_signal_block_ffts!(plan::AcquisitionPlan, signal, segment_length,
+                                  interm_freq_hz, sampling_freq_hz)
+    main_scratch = _default_scratch(plan)
+    sig_buf = plan.sig_buf
+    for pass_idx in 1:plan.num_doppler_passes
+        pass_freq_hz = interm_freq_hz + plan.doppler_pass_offsets_hz[pass_idx]
+        for step_idx in 1:plan.num_noncoherent_accumulations
+            seg_start = (step_idx - 1) * segment_length + 1
+            _downconvert!(sig_buf, signal, seg_start, segment_length, pass_freq_hz,
+                sampling_freq_hz)
+            _precompute_signal_block_ffts!(
+                _signal_block_ffts_for_step(plan, step_idx, pass_idx),
+                sig_buf,
+                plan.samples_per_code,
+                plan.num_blocks,
+                plan.block_size,
+                plan.num_coherently_integrated_code_periods,
+                main_scratch.double_block_buf,
+                plan.double_block_fft_plan,
+            )
+        end
+    end
+    return plan.signal_block_ffts
+end
+
+# Map a row of the stitched Doppler grid to `(pass_idx, pass_row)`: the Doppler
+# pass that produced it and its sorted row within that pass's own grid.
+@inline function _doppler_row_to_pass(plan::AcquisitionPlan, row::Int)
+    K = plan.doppler_bins_per_pass
+    pass_idx = (row - 1) ÷ K + 1
+    return pass_idx, plan.pass_row_offset + (row - 1) % K + 1
 end
 
 """
@@ -380,11 +421,14 @@ end
 # throughput at 8 threads and ~22% at 4, pays that cost even when nothing else
 # is running, and needs to be told how many other runnable tasks exist — with
 # two tracking channels a one-thread reserve is worse than doing nothing.
-@inline function _maybe_yield_block(plan::AcquisitionPlan, col_block_idx::Int)
+#
+# `block_idx` counts code blocks across Doppler passes (`(pass_idx - 1) *
+# num_blocks + col_block_idx`), so the stride holds across pass boundaries too.
+@inline function _maybe_yield_block(plan::AcquisitionPlan, block_idx::Int)
     stride = plan.preempt_block_stride[]
     stride == 0 && return nothing
-    col_block_idx == plan.num_blocks - 1 && return nothing
-    (col_block_idx + 1) % stride == 0 && yield()
+    block_idx == plan.num_blocks * plan.num_doppler_passes - 1 && return nothing
+    (block_idx + 1) % stride == 0 && yield()
     return nothing
 end
 
@@ -531,25 +575,8 @@ _prn_emitter(results, channel) = result_idx -> put!(channel, results[result_idx]
 function _acquire_multistep!(plan, signal, prns, segment_length, interm_freq_hz,
                               sampling_freq_hz, subsample_interpolation, store_power_bins,
                               results_channel)
-    # Fill the all-segment signal-block FFT cache. The downconverted segment
-    # lives in the plan's single `sig_buf`; the per-FFT temp comes from thread
-    # 1's scratch slot — `_default_scratch(plan)` names that convention.
-    main_scratch = _default_scratch(plan)
-    sig_buf = plan.sig_buf
-    for step_idx in 1:plan.num_noncoherent_accumulations
-        seg_start = (step_idx - 1) * segment_length + 1
-        _downconvert!(sig_buf, signal, seg_start, segment_length, interm_freq_hz, sampling_freq_hz)
-        _precompute_signal_block_ffts!(
-            _signal_block_ffts_for_step(plan, step_idx),
-            sig_buf,
-            plan.samples_per_code,
-            plan.num_blocks,
-            plan.block_size,
-            plan.num_coherently_integrated_code_periods,
-            main_scratch.double_block_buf,
-            plan.double_block_fft_plan,
-        )
-    end
+    # Fill the all-segment, all-pass signal-block FFT cache.
+    _fill_signal_block_ffts!(plan, signal, segment_length, interm_freq_hz, sampling_freq_hz)
 
     results = resize!(plan.acq_results_buf, length(prns))
     code_freq_hz = ustrip(Hz, get_code_frequency(plan.system))
@@ -578,10 +605,11 @@ function _acquire_one_multistep!(plan, results, prns, result_idx, signal,
     try
         accumulator = scratch.noncoherent_accumulator
         fill!(accumulator, 0f0)
-        for step_idx in 1:plan.num_noncoherent_accumulations
+        for pass_idx in 1:plan.num_doppler_passes,
+            step_idx in 1:plan.num_noncoherent_accumulations
             _accumulate_prn_step_tiled!(accumulator,
-                _signal_block_ffts_for_step(plan, step_idx),
-                plan, scratch, prn, step_idx - 1)
+                _signal_block_ffts_for_step(plan, step_idx, pass_idx),
+                plan, scratch, prn, step_idx - 1, pass_idx)
         end
         results[result_idx] = _extract_result!(plan, scratch, prn, prn_idx, accumulator,
             signal, interm_freq_hz,
@@ -602,20 +630,7 @@ end
 function _acquire_sequential!(plan, signal, prns, segment_length, interm_freq_hz,
                                sampling_freq_hz, subsample_interpolation, store_power_bins,
                                results_channel)
-    main_scratch = _default_scratch(plan)
-    sig_buf = plan.sig_buf
-
-    _downconvert!(sig_buf, signal, 1, segment_length, interm_freq_hz, sampling_freq_hz)
-    _precompute_signal_block_ffts!(
-        plan.signal_block_ffts,
-        sig_buf,
-        plan.samples_per_code,
-        plan.num_blocks,
-        plan.block_size,
-        plan.num_coherently_integrated_code_periods,
-        main_scratch.double_block_buf,
-        plan.double_block_fft_plan,
-    )
+    _fill_signal_block_ffts!(plan, signal, segment_length, interm_freq_hz, sampling_freq_hz)
 
     results = resize!(plan.acq_results_buf, length(prns))
     code_freq_hz = ustrip(Hz, get_code_frequency(plan.system))
@@ -689,7 +704,9 @@ function _acquire_prn_streamed!(
     prn::Int,
     store_buf::Union{Nothing,Matrix{Float32}},
 )
-    num_doppler_bins = length(plan.doppler_freqs)
+    pass_doppler_bins = plan.pass_doppler_bins
+    bins_per_pass = plan.doppler_bins_per_pass
+    pass_row_offset = plan.pass_row_offset
     block_size = plan.block_size
     rotation_active = plan.num_secondary_rotations > 1 &&
                       plan.num_coherently_integrated_code_periods > 1
@@ -699,6 +716,7 @@ function _acquire_prn_streamed!(
     fill!(row_sums, 0f0)
     col_sums = scratch.col_sums_buf
     collect_col_sums = !isempty(col_sums)
+    collect_col_sums && fill!(col_sums, 0f0)
     prn_conj_fft = plan.prn_conj_ffts[prn]
     tile = scratch.coherent_tile
 
@@ -706,67 +724,80 @@ function _acquire_prn_streamed!(
     peak_doppler_bin = 1
     peak_col = 1
 
-    if simple_path
-        tile_t = scratch.coherent_tile_t
-        for col_block_idx in 0:plan.num_blocks-1
-            _build_doppler_tile_t!(tile_t, plan.signal_block_ffts, prn_conj_fft,
-                col_block_idx, plan.num_blocks, block_size,
-                plan.num_coherently_integrated_code_periods,
-                scratch.corr_buf, scratch.double_block_bfft_plan,
-                scratch.doppler_fft_plan)
-            peak_power, peak_doppler_bin, peak_col = _stream_power_tile_t!(
-                row_sums, col_sums, collect_col_sums, store_buf, tile_t,
-                col_block_idx * block_size, num_doppler_bins,
-                scratch.col_max_buf, scratch.col_max_row_buf,
-                peak_power, peak_doppler_bin, peak_col)
-            _maybe_yield_block(plan, col_block_idx)
-        end
-    else
-        stage = scratch.stage_buf
-        num_slices = size(stage, 2)
-        samples_per_code = plan.samples_per_code
-        num_data_combos = 1 << (plan.num_data_bits - 1)
-        bit_period_codes = plan.num_coherently_integrated_code_periods ÷ plan.num_data_bits
-        edge_step = bit_period_codes * plan.num_blocks ÷ plan.bit_edge_search_steps
-        use_max = num_data_combos > 1 || plan.bit_edge_search_steps > 1
-        patterns = plan.sign_patterns_by_prn[prn]
-        tiled_re = rotation_active ? plan.tiled_phase_patterns_re_by_prn[prn] :
-            _EMPTY_TILED_PATTERNS
-        tiled_im = rotation_active ? plan.tiled_phase_patterns_im_by_prn[prn] :
-            _EMPTY_TILED_PATTERNS
-        for col_block_idx in 0:plan.num_blocks-1
-            _build_coherent_tile!(tile, plan.signal_block_ffts, prn_conj_fft,
-                col_block_idx, plan.num_blocks, block_size,
-                plan.num_coherently_integrated_code_periods,
-                scratch.corr_buf, scratch.double_block_bfft_plan)
-            for local_col in 1:block_size
-                cp_col = col_block_idx * block_size + local_col
-                fill!(stage, 0f0)
-                _fill_sign_stage_column!(stage, tile, local_col, cp_col, plan, scratch,
-                    patterns, tiled_re, tiled_im, rotation_active, num_data_combos,
-                    edge_step, use_max)
-                for s in 0:num_slices-1
-                    peak_power, peak_doppler_bin, peak_col = _stream_stage_column!(
-                        row_sums, col_sums, collect_col_sums, store_buf,
-                        view(stage, :, s + 1), cp_col + s * samples_per_code,
-                        num_doppler_bins, peak_power, peak_doppler_bin, peak_col)
-                end
+    # Doppler passes run one after another, each over the full code-phase
+    # range, and each fills its own `bins_per_pass` rows of the stitched grid.
+    for pass_idx in 1:plan.num_doppler_passes
+        signal_block_ffts = _signal_block_ffts_for_step(plan, 1, pass_idx)
+        dest_row_offset = (pass_idx - 1) * bins_per_pass
+        block_idx_offset = (pass_idx - 1) * plan.num_blocks
+        if simple_path
+            tile_t = scratch.coherent_tile_t
+            for col_block_idx in 0:plan.num_blocks-1
+                _build_doppler_tile_t!(tile_t, signal_block_ffts, prn_conj_fft,
+                    col_block_idx, plan.num_blocks, block_size,
+                    plan.num_coherently_integrated_code_periods,
+                    scratch.corr_buf, scratch.double_block_bfft_plan,
+                    scratch.doppler_fft_plan)
+                peak_power, peak_doppler_bin, peak_col = _stream_power_tile_t!(
+                    row_sums, col_sums, collect_col_sums, store_buf, tile_t,
+                    col_block_idx * block_size, pass_doppler_bins,
+                    pass_row_offset, bins_per_pass, dest_row_offset,
+                    scratch.col_max_buf, scratch.col_max_row_buf,
+                    peak_power, peak_doppler_bin, peak_col)
+                _maybe_yield_block(plan, block_idx_offset + col_block_idx)
             end
-            _maybe_yield_block(plan, col_block_idx)
+        else
+            stage = scratch.stage_buf
+            num_slices = size(stage, 2)
+            samples_per_code = plan.samples_per_code
+            num_data_combos = 1 << (plan.num_data_bits - 1)
+            bit_period_codes = plan.num_coherently_integrated_code_periods ÷ plan.num_data_bits
+            edge_step = bit_period_codes * plan.num_blocks ÷ plan.bit_edge_search_steps
+            use_max = num_data_combos > 1 || plan.bit_edge_search_steps > 1
+            patterns = plan.sign_patterns_by_prn[prn]
+            tiled_re = rotation_active ? plan.tiled_phase_patterns_re_by_prn[prn] :
+                _EMPTY_TILED_PATTERNS
+            tiled_im = rotation_active ? plan.tiled_phase_patterns_im_by_prn[prn] :
+                _EMPTY_TILED_PATTERNS
+            for col_block_idx in 0:plan.num_blocks-1
+                _build_coherent_tile!(tile, signal_block_ffts, prn_conj_fft,
+                    col_block_idx, plan.num_blocks, block_size,
+                    plan.num_coherently_integrated_code_periods,
+                    scratch.corr_buf, scratch.double_block_bfft_plan)
+                for local_col in 1:block_size
+                    cp_col = col_block_idx * block_size + local_col
+                    fill!(stage, 0f0)
+                    _fill_sign_stage_column!(stage, tile, local_col, cp_col, plan, scratch,
+                        patterns, tiled_re, tiled_im, rotation_active, num_data_combos,
+                        edge_step, use_max)
+                    for s in 0:num_slices-1
+                        peak_power, peak_doppler_bin, peak_col = _stream_stage_column!(
+                            row_sums, col_sums, collect_col_sums, store_buf,
+                            view(stage, :, s + 1), cp_col + s * samples_per_code,
+                            pass_row_offset, bins_per_pass, dest_row_offset,
+                            peak_power, peak_doppler_bin, peak_col)
+                    end
+                end
+                _maybe_yield_block(plan, block_idx_offset + col_block_idx)
+            end
         end
     end
     return peak_power, peak_doppler_bin, peak_col
 end
 
-# Reduce one Doppler-transformed transposed tile `(block_size, num_doppler_bins)`
+# Reduce one Doppler-transformed transposed tile `(block_size, pass_doppler_bins)`
 # (see `_build_doppler_tile_t!`) into the streaming statistics: per sorted
 # (fftshifted) Doppler row sums, optional per-code-phase column sums and stored
-# power, and the running peak. Equivalent to scanning the tile's `block_size`
-# code-phase columns in ascending order, each in sorted-row order: the
-# per-column maxima (first max in sorted-row order) are tracked in
+# power, and the running peak. Only the pass's kept rows are reduced — sorted
+# rows `src_row_offset+1 : src_row_offset+num_rows` of the pass grid, which land
+# on stitched-grid rows `dest_row_offset+1 : dest_row_offset+num_rows` (with one
+# pass both offsets are 0 and every row is kept). Equivalent to scanning the
+# tile's `block_size` code-phase columns in ascending order, each in sorted-row
+# order: the per-column maxima (first max in sorted-row order) are tracked in
 # `col_max`/`col_max_row` while sweeping sorted rows, each over a contiguous
 # code-phase run, and folded into the running peak column by column afterwards
-# — so peak tie-breaking matches a column-by-column scan.
+# — so peak tie-breaking matches a column-by-column scan. `col_sums`
+# accumulates across passes; the caller zeroes it once per PRN.
 function _stream_power_tile_t!(
     row_sums::Vector{Float32},
     col_sums::Vector{Float32},
@@ -774,7 +805,10 @@ function _stream_power_tile_t!(
     store_buf::Union{Nothing,Matrix{Float32}},
     tile_t::AbstractMatrix{ComplexF32},
     dest_col_offset::Int,
-    num_doppler_bins::Int,
+    pass_doppler_bins::Int,
+    src_row_offset::Int,
+    num_rows::Int,
+    dest_row_offset::Int,
     col_max::Vector{Float32},
     col_max_row::Vector{Int},
     peak_power::Float32,
@@ -782,13 +816,13 @@ function _stream_power_tile_t!(
     peak_col::Int,
 )
     block_size = size(tile_t, 1)
-    shift = num_doppler_bins ÷ 2
-    front = num_doppler_bins - shift
+    shift = pass_doppler_bins ÷ 2
+    front = pass_doppler_bins - shift
     fill!(col_max, -Inf32)
     fill!(col_max_row, 1)
-    collect_col_sums && fill!(view(col_sums, dest_col_offset+1:dest_col_offset+block_size), 0f0)
-    @inbounds for dst in 1:num_doppler_bins
-        r = _raw_doppler_bin(dst, shift, front)
+    @inbounds for i in 1:num_rows
+        r = _raw_doppler_bin(src_row_offset + i, shift, front)
+        dst = dest_row_offset + i
         row_sum = 0f0
         @simd for c in 1:block_size
             v = abs2(tile_t[c, r])
@@ -819,9 +853,11 @@ function _stream_power_tile_t!(
     return peak_power, peak_doppler_bin, peak_col
 end
 
-# Streaming consumer for one sign-search stage column (already |x|² in sorted
-# row order): same statistics update as `_stream_power_tile_t!` for a single
-# code-phase column, without the fftshift fold.
+# Streaming consumer for one sign-search stage column (already |x|² in the
+# pass's sorted row order): same statistics update as `_stream_power_tile_t!`
+# for a single code-phase column, without the fftshift fold. Like it, it reduces the pass's
+# kept rows `src_row_offset+1 : src_row_offset+num_rows` into stitched-grid rows
+# `dest_row_offset+1 : …`, and `col_sums` accumulates across passes.
 @inline function _stream_stage_column!(
     row_sums::Vector{Float32},
     col_sums::Vector{Float32},
@@ -829,7 +865,9 @@ end
     store_buf::Union{Nothing,Matrix{Float32}},
     stage_col::AbstractVector{Float32},
     dest_col::Int,
-    num_doppler_bins::Int,
+    src_row_offset::Int,
+    num_rows::Int,
+    dest_row_offset::Int,
     peak_power::Float32,
     peak_doppler_bin::Int,
     peak_col::Int,
@@ -837,19 +875,20 @@ end
     col_sum = 0f0
     col_max = -Inf32
     col_max_row = 1
-    @inbounds for r in 1:num_doppler_bins
-        v = stage_col[r]
-        row_sums[r] += v
+    @inbounds for i in 1:num_rows
+        v = stage_col[src_row_offset + i]
+        dst = dest_row_offset + i
+        row_sums[dst] += v
         col_sum += v
         if v > col_max
             col_max = v
-            col_max_row = r
+            col_max_row = dst
         end
     end
-    collect_col_sums && (col_sums[dest_col] = col_sum)
+    collect_col_sums && (col_sums[dest_col] += col_sum)
     if store_buf !== nothing
-        @inbounds for r in 1:num_doppler_bins
-            store_buf[r, dest_col] = stage_col[r]
+        @inbounds for i in 1:num_rows
+            store_buf[dest_row_offset + i, dest_col] = stage_col[src_row_offset + i]
         end
     end
     if col_max > peak_power
@@ -859,20 +898,24 @@ end
 end
 
 # Recompute the Doppler-power column `global_col` (index into the effective cp
-# axis, i.e. including the rotation-slice offset) into `dest`, in sorted-Doppler
-# row order. Rebuilds the one tile the column lives in — num_doppler_bins
-# double-block IFFTs plus one column reduction, ~1/block_size of a full PRN
-# pass — so subsample interpolation can read peak-neighbour cells without the
-# power surface ever having been materialised. Used only when store_power_bins
-# is off (otherwise the neighbours are read back from the stored buffer).
+# axis, i.e. including the rotation-slice offset) of Doppler pass `pass_idx`
+# into `dest`, in that pass's sorted-Doppler row order (all
+# `pass_doppler_bins` rows; see `_doppler_row_to_pass`). Rebuilds the one tile
+# the column lives in — pass_doppler_bins double-block IFFTs plus one column
+# reduction, ~1/block_size of a full pass — so subsample interpolation can read
+# peak-neighbour cells without the power surface ever having been
+# materialised. Used only when store_power_bins is off (otherwise the
+# neighbours are read back from the stored buffer).
 function _recompute_column_power!(
     dest::Vector{Float32},
     plan::AcquisitionPlan,
     scratch,
     prn::Int,
     global_col::Int,
+    pass_idx::Int = 1,
 )
-    num_doppler_bins = length(plan.doppler_freqs)
+    num_doppler_bins = plan.pass_doppler_bins
+    signal_block_ffts = _signal_block_ffts_for_step(plan, 1, pass_idx)
     samples_per_code = plan.samples_per_code
     block_size = plan.block_size
     cp_col0 = (global_col - 1) % samples_per_code       # 0-based cp column
@@ -887,7 +930,7 @@ function _recompute_column_power!(
         # Same transform as the streamed pass (`_build_doppler_tile_t!`), so the
         # interpolation neighbours are bit-identical to the cells the peak search saw.
         tile_t = scratch.coherent_tile_t
-        _build_doppler_tile_t!(tile_t, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
+        _build_doppler_tile_t!(tile_t, signal_block_ffts, plan.prn_conj_ffts[prn],
             col_block_idx, plan.num_blocks, block_size,
             plan.num_coherently_integrated_code_periods,
             scratch.corr_buf, scratch.double_block_bfft_plan,
@@ -899,7 +942,7 @@ function _recompute_column_power!(
         end
     else
         tile = scratch.coherent_tile
-        _build_coherent_tile!(tile, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
+        _build_coherent_tile!(tile, signal_block_ffts, plan.prn_conj_ffts[prn],
             col_block_idx, plan.num_blocks, block_size,
             plan.num_coherently_integrated_code_periods,
             scratch.corr_buf, scratch.double_block_bfft_plan)
@@ -1165,12 +1208,21 @@ function _extract_result_streamed!(plan, scratch, prn,
             dop_left  = store_buf[dop_row_left, peak_col]
             dop_right = store_buf[dop_row_right, peak_col]
         else
+            # Each neighbour is read from the Doppler pass that produced it: the
+            # Doppler neighbours of a pass's edge row live in the adjacent pass.
             col_power = scratch.col_power_buf
-            _recompute_column_power!(col_power, plan, scratch, prn, peak_col)
-            dop_left  = col_power[dop_row_left]
-            dop_right = col_power[dop_row_right]
-            power_left  = _recompute_column_power!(col_power, plan, scratch, prn, col_left + 1)[peak_doppler_bin]
-            power_right = _recompute_column_power!(col_power, plan, scratch, prn, col_right + 1)[peak_doppler_bin]
+            peak_pass, peak_pass_row = _doppler_row_to_pass(plan, peak_doppler_bin)
+            left_pass, left_pass_row = _doppler_row_to_pass(plan, dop_row_left)
+            right_pass, right_pass_row = _doppler_row_to_pass(plan, dop_row_right)
+            _recompute_column_power!(col_power, plan, scratch, prn, peak_col, left_pass)
+            dop_left = col_power[left_pass_row]
+            right_pass == left_pass ||
+                _recompute_column_power!(col_power, plan, scratch, prn, peak_col, right_pass)
+            dop_right = col_power[right_pass_row]
+            power_left  = _recompute_column_power!(col_power, plan, scratch, prn,
+                col_left + 1, peak_pass)[peak_pass_row]
+            power_right = _recompute_column_power!(col_power, plan, scratch, prn,
+                col_right + 1, peak_pass)[peak_pass_row]
         end
         if max(power_left, power_right) > sqrt(noise_power)
             fractional_col_offset = _parabolic_interp(power_left, peak_power, power_right)

@@ -4,8 +4,11 @@
 @testset "plan_acquire parameters — GPS L1 at 2.048 MHz" begin
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
+    # Single-grid geometry (with passes allowed, 2048's power-of-two divisors
+    # make a multi-pass layout cheaper at ±10 kHz — see the Doppler-pass tests).
     plan = plan_acquire(system, sampling_freq, [1];
-        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 1, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
+        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 1, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1,
+        max_doppler_passes = 1)
 
     @test plan.samples_per_code == 2048      # ceil(1023/1.023e6 * 2.048e6)
     @test plan.num_blocks == 32              # smallest divisor of 2048 >= ceil(20000/1000 + 2/1)=22 → 32
@@ -27,7 +30,8 @@ end
     sampling_freq = 2.048e6Hz
     # num_coherently_integrated_code_periods=40 → num_data_bits = 40÷20 = 2 data bits
     plan = plan_acquire(system, sampling_freq, [1];
-        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4, num_noncoherent_accumulations = 5)
+        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4, num_noncoherent_accumulations = 5,
+        max_doppler_passes = 1)
 
     @test plan.samples_per_code == 2048
     @test plan.num_blocks == 32              # smallest divisor of 2048 >= ceil(20000/1000 + 2/40)=21 → 32
@@ -213,7 +217,8 @@ end
         @testset "sampling_freq=$(ustrip(Hz, sampling_freq) / 1e6) MHz" begin
             samples_per_code = ceil(Int, get_code_length(system) / ustrip(Hz, get_code_frequency(system)) * ustrip(Hz, sampling_freq))
             plan = plan_acquire(system, sampling_freq, [prn];
-                min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = num_periods, num_noncoherent_accumulations = 1)
+                min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = num_periods, num_noncoherent_accumulations = 1,
+                max_doppler_passes = 1)
 
             @test plan.num_blocks * plan.block_size == samples_per_code
             @test plan.num_blocks  == expected_num_blocks
@@ -302,7 +307,8 @@ end
             num_coherently_integrated_code_periods = 10),
     ]
     for plan in cases
-        ndop = length(plan.doppler_freqs)
+        # The tile holds one Doppler pass's grid.
+        ndop = plan.pass_doppler_bins
         for scratch in plan.thread_scratch
             @test size(scratch.coherent_tile) == (ndop, plan.block_size)
             # The transposed simple-path tile aliases the same memory.
@@ -314,7 +320,8 @@ end
             @test size(scratch.stage_buf, 2) <= plan.num_secondary_rotations
             @test size(scratch.sub_block_ffts, 2) <=
                 max(plan.num_data_bits, plan.num_coherently_integrated_code_periods)
-            @test length(scratch.row_sums_buf) <= ndop
+            # Row sums span the stitched grid of all Doppler passes.
+            @test length(scratch.row_sums_buf) <= length(plan.doppler_freqs)
             @test length(scratch.col_power_buf) <= ndop
             if plan.num_noncoherent_accumulations == 1
                 @test size(scratch.noncoherent_accumulator) == (0, 0)
@@ -393,9 +400,9 @@ end
         num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4)
     search_scratch = Acquisition._default_scratch(search_plan)
     @test size(search_scratch.stage_buf) ==
-        (length(search_plan.doppler_freqs), search_plan.num_secondary_rotations)
+        (search_plan.pass_doppler_bins, search_plan.num_secondary_rotations)
     @test size(search_scratch.sub_block_ffts) ==
-        (length(search_plan.doppler_freqs), search_plan.num_data_bits)
+        (search_plan.pass_doppler_bins, search_plan.num_data_bits)
 
     # Rotation search: one stage column per secondary-code rotation.
     rot_plan = plan_acquire(GPSL5I(), 10.24e6Hz, [1];
@@ -502,10 +509,12 @@ end
     plan = plan_acquire(system, sampling_freq, prns; base...)
     @test plan.preempt_block_stride[] == 0
 
-    # A bound is converted to a block stride, always within the loop it guards.
+    # A bound is converted to a block stride, always within the loop it guards
+    # (a PRN runs `num_blocks` code blocks per Doppler pass).
+    num_prn_blocks(p) = p.num_blocks * p.num_doppler_passes
     for t in (1u"µs", 35u"µs", 70u"µs", 1u"ms")
         p = plan_acquire(system, sampling_freq, prns; base..., max_blocking_time = t)
-        @test 1 <= p.preempt_block_stride[] <= p.num_blocks
+        @test 1 <= p.preempt_block_stride[] <= num_prn_blocks(p)
     end
 
     # The stride is derived from a timing measurement, so its value in between is
@@ -516,13 +525,13 @@ end
     @test plan_acquire(system, sampling_freq, prns; base...,
         max_blocking_time = 1u"ns").preempt_block_stride[] == 1
     @test plan_acquire(system, sampling_freq, prns; base...,
-        max_blocking_time = 1u"s").preempt_block_stride[] == plan.num_blocks
+        max_blocking_time = 1u"s").preempt_block_stride[] == num_prn_blocks(plan)
 
     # Budgets decades apart, so calibration noise cannot reorder them.
     strides = [plan_acquire(system, sampling_freq, prns; base...,
                             max_blocking_time = t).preempt_block_stride[]
                for t in (1u"ns", 10u"µs", 1u"s")]
-    @test all(s -> 1 <= s <= plan.num_blocks, strides)
+    @test all(s -> 1 <= s <= num_prn_blocks(plan), strides)
     @test issorted(strides)
 
     @test_throws ArgumentError plan_acquire(system, sampling_freq, prns; base...,

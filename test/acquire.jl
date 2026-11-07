@@ -294,11 +294,14 @@ end
 
     # 40 ms coherent × min_doppler=10kHz forces num_blocks=16, num_doppler_bins=640,
     # which takes the individual-column-FFT branch in _accumulate_noncoherent_integration_step!.
+    # Pinned to one Doppler grid: with passes allowed this splits into narrow
+    # passes and never builds the large grid this test is about.
     plan = plan_acquire(system, sampling_freq, [prn];
         min_doppler_coverage = 10_000Hz,
         num_coherently_integrated_code_periods = 40,
         bit_edge_search_steps = 1,
-        fft_flag = FFTL.ESTIMATE)
+        fft_flag = FFTL.ESTIMATE,
+        max_doppler_passes = 1)
     @test plan.num_coherently_integrated_code_periods * plan.num_blocks > 320
 
     (; signal) = generate_test_signal(system, prn;
@@ -497,11 +500,17 @@ end
                 interm_freq = 0.0Hz,
                 CN0 = true_cn0,
             )
+            # One Doppler grid: at 4 MHz it has 80 blocks, far more than ±25 kHz
+            # needs, so 1234 Hz sits near its loss-free centre. Doppler passes
+            # would put it ~1 dB down (still within an ideal rate's edge loss),
+            # which at N = 1 drops this marginal signal below the detection
+            # count asserted here. This test is about CN0 across `N`, not layout.
             plan = plan_acquire(
                 system, sampling_freq, [prn];
                 num_coherently_integrated_code_periods = n,
                 min_doppler_coverage = 25_000Hz,
                 fft_flag = FFTL.ESTIMATE,
+                max_doppler_passes = 1,
             )
             res = acquire!(plan, signal, prn; interm_freq = 0.0Hz,
                            subsample_interpolation = true)
