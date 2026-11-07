@@ -66,7 +66,9 @@ function acquire!(
     # `acquire_stream!` on this plan is still running — see `PlanInUseError`.
     _claim_plan!(plan)
     try
-        _acquire!(plan, signal, prns, segment_length, ustrip(Hz, interm_freq),
+        # Float64 whatever unit/number type the caller used, so a search compiled
+        # once (e.g. in a precompile workload) serves every caller.
+        _acquire!(plan, signal, prns, segment_length, Float64(ustrip(Hz, interm_freq)),
             subsample_interpolation, store_power_bins, nothing)
     finally
         _release_plan!(plan)
@@ -233,7 +235,7 @@ function _start_acquire_stream(
     # otherwise a unitless `interm_freq` — an easy slip — would return a channel
     # happily and only fail later, out of the iteration.
     segment_length = _validate_acquire_inputs(plan, signal, prns_vec)
-    interm_freq_hz = ustrip(Hz, interm_freq)
+    interm_freq_hz = Float64(ustrip(Hz, interm_freq))   # see `acquire!`
     # Held until the search task finishes, not until this call returns.
     _claim_plan!(plan)
     try
