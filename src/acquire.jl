@@ -718,7 +718,7 @@ function _acquire_prn_streamed!(
     pass_fft_bins = plan.pass_fft_bins
     block_size = plan.block_size
     samples_per_code = plan.samples_per_code
-    rotation_active = _rotation_search_active(plan)
+    tile_search = _tile_sign_search_active(plan)
     simple_path = _simple_path_active(plan)
     num_slices = _num_search_slices(plan)
     row_sums = scratch.row_sums_buf
@@ -743,7 +743,7 @@ function _acquire_prn_streamed!(
         signal_block_ffts = _signal_block_ffts_for_step(plan, 1, pass_idx)
         rows = _pass_rows(plan, pass_idx)
         block_idx_offset = (pass_idx - 1) * plan.num_blocks
-        if simple_path || rotation_active
+        if simple_path || tile_search
             for col_block_idx in 0:plan.num_blocks-1
                 col_offset = col_block_idx * block_size
                 tile_t = _build_search_tile_t!(scratch, signal_block_ffts, prn_conj_fft,
@@ -957,7 +957,7 @@ function _recompute_column_power!(
     col_block_idx = cp_col0 ÷ block_size
     local_col = cp_col0 % block_size + 1
     simple_path = _simple_path_active(plan)
-    if simple_path || _rotation_search_active(plan)
+    if simple_path || _tile_sign_search_active(plan)
         tile_t = _build_search_tile_t!(scratch, signal_block_ffts,
             plan.prn_conj_ffts[prn], col_block_idx, plan, simple_path)
         patterns = simple_path ? _EMPTY_SIGN_PATTERNS : plan.sign_patterns_by_prn[prn]

@@ -155,6 +155,12 @@ end
     # bit_edge_search_steps > 1 only makes sense when num_coherently_integrated_code_periods > 1
     @test_throws ArgumentError plan_acquire(system, sampling_freq, [1];
         num_coherently_integrated_code_periods = 1, bit_edge_search_steps = 2)
+    # Sub-bit window: bit_edge_search_steps must divide the window (10 code periods)
+    @test_throws ArgumentError plan_acquire(system, sampling_freq, [1];
+        num_coherently_integrated_code_periods = 10, bit_edge_search_steps = 4)
+    # No data bits → no bit edge to search
+    @test_throws ArgumentError plan_acquire(GPSL5Q(), 10.24e6Hz, [1];
+        num_coherently_integrated_code_periods = 20, bit_edge_search_steps = 2)
     # Other basic guard checks
     @test_throws ArgumentError plan_acquire(system, sampling_freq, [1];
         num_noncoherent_accumulations = 0)
@@ -402,6 +408,19 @@ end
     @test size(search_scratch.rotation_tile) == (0, 0)
     @test size(search_scratch.sub_block_ffts) ==
         (search_plan.pass_fft_bins, search_plan.num_data_bits)
+
+    # Bit-transition search of a one-bit window: runs per tile like the
+    # rotation search, with one "rotation" of `bit_edge_search_steps` patterns.
+    transition_plan = plan_acquire(system, sampling_freq, [1];
+        num_coherently_integrated_code_periods = 20, bit_edge_search_steps = 5)
+    transition_scratch = Acquisition._default_scratch(transition_plan)
+    transition_ndop = length(transition_plan.doppler_freqs)
+    @test transition_plan.num_data_bits == 1
+    @test size(transition_scratch.stage_buf) == (0, 0)
+    @test size(transition_scratch.sub_block_ffts) == (0, 0)
+    @test size(transition_scratch.rotation_tile) == (transition_plan.block_size, transition_ndop)
+    @test size(transition_scratch.rotation_power) == (transition_plan.block_size, transition_ndop)
+    @test size(transition_scratch.col_max_buf) == (transition_plan.block_size, 1)
 
     # Rotation search: runs per tile, so none of the per-column sign-search
     # buffers; the max-reduced power tile only when a rotation has several

@@ -67,7 +67,8 @@ struct AcquisitionScratch{P2,P3,P4}
     # on the streamed path.
     col_power_buf::Vector{Float32}
     sub_block_ffts::Matrix{ComplexF32}              # (pass_fft_bins, num_data_bits) — scratch for the data-bit sign search; 0x0 otherwise.
-    # Secondary-code rotation search (`_rotation_tile_power!`), all 0-sized
+    # Tile sign search (`_rotation_tile_power!`: the secondary-code rotation
+    # search, or the bit-transition search of a one-bit window), all 0-sized
     # when it is not active:
     # one sign-modulated, Doppler-transformed copy of `coherent_tile_t`,
     # (block_size, pass_fft_bins) — the tile itself is reused by every pattern;
@@ -420,8 +421,14 @@ multi-threaded acquisition. Scratch buffers are tile-sized (nothing scales with
   integration block (default: `1`). Determines Doppler resolution:
   `bin_spacing = 1 / (num_coherently_integrated_code_periods × T_code)`.
 - `bit_edge_search_steps`: Number of bit-edge alignment candidates to search
-  (default: `1`, disabled). Must divide `bit_period_codes`. Only valid when
-  `num_coherently_integrated_code_periods > 1`.
+  (default: `1`, disabled). Only valid for signals with data bits and
+  `num_coherently_integrated_code_periods > 1`. When the window holds at most
+  one data bit (`num_coherently_integrated_code_periods ≤ bit_period_codes`),
+  it searches for one bit transition at `bit_edge_search_steps − 1` evenly
+  spaced code-period boundaries, plus the no-transition hypothesis, and must
+  divide `min(num_coherently_integrated_code_periods, bit_period_codes)`. For
+  longer windows it shifts the data-bit partition and must divide
+  `bit_period_codes`.
 - `num_noncoherent_accumulations`: Number of successive incoherent integration
   steps (default: `1`). Signal passed to `acquire!` must contain at least
   `num_noncoherent_accumulations` full segments.
@@ -632,6 +639,21 @@ function plan_acquire(
         bit_period_codes % bit_edge_search_steps == 0 || throw(ArgumentError(
             "bit_edge_search_steps=$bit_edge_search_steps must divide bit_period_codes=$bit_period_codes."))
     end
+    # Sub-bit windows search a single transition at `bit_edge_search_steps`
+    # evenly spaced code-period boundaries (see `_bit_edge_period`), so the step
+    # count must divide the window.
+    if has_data && num_coherently_integrated_code_periods < bit_period_codes
+        num_coherently_integrated_code_periods % bit_edge_search_steps == 0 || throw(ArgumentError(
+            "bit_edge_search_steps=$bit_edge_search_steps must divide " *
+            "num_coherently_integrated_code_periods=$num_coherently_integrated_code_periods " *
+            "when the window is shorter than a data bit (bit_period_codes=$bit_period_codes)."))
+    end
+    # A signal without data bits has no bit edge to search.
+    if !has_data && bit_edge_search_steps > 1
+        throw(ArgumentError(
+            "bit_edge_search_steps must be 1 for $(typeof(system).name.name), which carries no data bits, " *
+            "got $bit_edge_search_steps."))
+    end
 
     block_size = samples_per_code ÷ num_blocks
     double_block_size = 2 * block_size
@@ -708,22 +730,25 @@ function plan_acquire(
 
     # The sign-pattern search runs when num_data_bits > 1, bit_edge_search_steps > 1,
     # or the secondary-code rotation search is active. Otherwise the simple/pilot
-    # path is taken. The rotation search covers data-bit polarities and bit-edge
-    # alignments itself (`_rotation_tile_power!`); only without it does the
-    # per-column data-bit sign search run, which alone reads `stage_buf` and
-    # `sub_block_ffts`.
+    # path is taken. The tile kernel (`_rotation_tile_power!`) runs the rotation
+    # search, with its data-bit polarities and bit-edge alignments, and the
+    # bit-transition search of a one-bit window (`num_data_bits == 1`). Only the
+    # remaining multi-bit data search runs per column (`_sign_search_column!`),
+    # which alone reads `stage_buf` and `sub_block_ffts`.
     sign_search_path_active = num_data_bits > 1 || bit_edge_search_steps > 1 ||
                               rotation_search_active
-    data_bit_search_active = sign_search_path_active && !rotation_search_active
+    transition_search_active = num_data_bits == 1 && bit_edge_search_steps > 1
+    tile_sign_search_active = rotation_search_active || transition_search_active
+    data_bit_search_active = sign_search_path_active && !tile_sign_search_active
     stage_rows = data_bit_search_active ? pass_fft_bins : 0
     stage_cols = data_bit_search_active ? 1 : 0
     sub_block_rows = data_bit_search_active ? pass_fft_bins : 0
     sub_block_cols = data_bit_search_active ? num_data_bits : 0
-    # Rotation-search tile buffers. The max-reduced power tile is needed only
-    # when a rotation has several patterns to fold.
-    rotation_tile_size = rotation_search_active ? (block_size, pass_fft_bins) : (0, 0)
+    # Tile-kernel buffers. The max-reduced power tile is needed only when a
+    # rotation has several patterns to fold.
+    rotation_tile_size = tile_sign_search_active ? (block_size, pass_fft_bins) : (0, 0)
     patterns_per_rotation = _num_data_combos(num_data_bits) * bit_edge_search_steps
-    rotation_power_size = rotation_search_active && patterns_per_rotation > 1 ?
+    rotation_power_size = tile_sign_search_active && patterns_per_rotation > 1 ?
         (block_size, pass_fft_bins) : (0, 0)
 
     # Streaming-reduction state exists only on the sequential (N_nc == 1) path;
@@ -787,8 +812,8 @@ function plan_acquire(
             zeros(ComplexF32, sub_block_rows, sub_block_cols),
             zeros(ComplexF32, rotation_tile_size),
             zeros(Float32, rotation_power_size),
-            zeros(Float32, rotation_search_active ? pass_fft_bins : 0,
-                rotation_search_active ? 2 : 0),
+            zeros(Float32, tile_sign_search_active ? pass_fft_bins : 0,
+                tile_sign_search_active ? 2 : 0),
             zeros(Float32, col_sums_len),
             zeros(Int, code_drift_shifts_len),
         )
