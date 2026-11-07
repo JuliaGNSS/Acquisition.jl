@@ -781,9 +781,14 @@ reachable BBPLL). Other SDRs can be supported by subtyping
 GPS L1 C/A data bits flip every 20 ms. Integrating across a bit transition cancels
 signal energy. The library handles this automatically:
 
-**Sub-bit integration** (`num_coherently_integrated_code_periods < 20`):
+**Windows of at most one bit** (`num_coherently_integrated_code_periods ≤ 20`):
 At most one bit transition can fall in the window. Use `bit_edge_search_steps > 1`
-to search over candidate alignment positions:
+to search for it: the window is split into `bit_edge_search_steps` equal parts,
+and a sign flip is tried at each of the `bit_edge_search_steps − 1` inner part
+boundaries, next to the no-transition hypothesis. Each hypothesis costs one
+Doppler FFT, so the search runs about `bit_edge_search_steps` times as long as
+without it. `bit_edge_search_steps` must divide the window length in code
+periods:
 
 ```julia
 plan = plan_acquire(system, sampling_freq, prns;

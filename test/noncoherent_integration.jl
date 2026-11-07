@@ -712,6 +712,15 @@ end
             max_doppler_passes = 1, num_coherently_integrated_code_periods = 20,
             bit_edge_search_steps = 2,
             num_noncoherent_accumulations = 2, fft_flag = FFTL.ESTIMATE), 1),
+        # Bit-transition search of a one-bit window, with drift.
+        ("transition+drift", plan_acquire(GPSL1CA(), 2.048e6Hz, [prn];
+            min_doppler_coverage = 12_000Hz,
+            num_coherently_integrated_code_periods = 20, bit_edge_search_steps = 4,
+            num_noncoherent_accumulations = 8, fft_flag = FFTL.ESTIMATE), 7),
+        # Rotation × bit transition (L5I, one 10 ms symbol per window), with drift.
+        ("rotation+transition+drift", plan_acquire(GPSL5I(), 10.24e6Hz, [prn];
+            num_coherently_integrated_code_periods = 10, bit_edge_search_steps = 5,
+            num_noncoherent_accumulations = 3, fft_flag = FFTL.ESTIMATE), 2),
         # Data-bit + bit-edge search (max across alignments), no drift at step 0.
         ("bitedge", plan_acquire(GPSL1CA(), 2.048e6Hz, [prn];
             max_doppler_passes = 1, min_doppler_coverage = 10_000Hz,
@@ -771,6 +780,7 @@ end
         ("rotation+data", GPSL5I(), 10.24e6Hz, 20, 1),
         ("rotation+data+bitedge", GPSL5I(), 10.24e6Hz, 20, 2),
         ("rotation NH20 pilot", GPSL5Q(), 10.24e6Hz, 20, 1),
+        ("rotation+transition", GPSL5I(), 10.24e6Hz, 10, 2),
     ]
     for (label, system, fs, ncoh, edges) in cases
         @testset "$label" begin
@@ -810,8 +820,10 @@ end
             # break the tie the other way.
             @test ref[argmax(stored)] >= (1 - 1e-5) * maximum(ref)
             @test (peak_row, peak_col) == Tuple(argmax(stored))
-            if edges > 1
-                # Pin the end-to-end tie-break on a real tie: the streamed peak is
+            if edges > 1 && plan.num_data_bits > 1
+                # Pin the end-to-end tie-break on a real tie (multi-bit windows
+                # only: a one-bit window's alignments are sign flips, not cyclic
+                # shifts, so no rotation ties there): the streamed peak is
                 # the lowest rotation of the tied cells (`argmax` is column-major,
                 # and the tied cells share their row and code phase).
                 spc = plan.samples_per_code
@@ -833,6 +845,94 @@ end
             end
         end
     end
+end
+
+@testset "Bit-transition search matches the per-column reference (N_nc=1, streamed)" begin
+    # One-bit windows (num_data_bits == 1) search a sign flip at each candidate
+    # bit edge with the tile kernel; the reference applies the same flip per
+    # column with a plain column FFT (`_transition_search_step!`).
+    prn = 1
+    for (label, ncoh, edges) in (("one bit period", 20, 5), ("sub-bit", 10, 10))
+        @testset "$label" begin
+            plan = plan_acquire(GPSL1CA(), 2.048e6Hz, [prn];
+                num_coherently_integrated_code_periods = ncoh,
+                bit_edge_search_steps = edges, fft_flag = FFTL.ESTIMATE,
+                max_doppler_passes = 1)   # the reference dispatcher needs one grid
+            @test plan.num_data_bits == 1
+            @test plan.num_secondary_rotations == 1
+            scratch = Acquisition._default_scratch(plan)
+            ndop = length(plan.doppler_freqs)
+            (; signal) = generate_test_signal(GPSL1CA(), prn;
+                num_samples = ncoh * plan.samples_per_code,
+                doppler = 1270Hz, code_phase = 321.4,
+                sampling_freq = 2.048e6Hz, interm_freq = 0.0Hz, CN0 = 45, seed = 3)
+            plan.sig_buf .= ComplexF32.(signal)
+            Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, plan.sig_buf,
+                plan.samples_per_code, plan.num_blocks, plan.block_size, ncoh,
+                scratch.double_block_buf, plan.double_block_fft_plan)
+
+            stored = zeros(Float32, ndop, plan.samples_per_code_eff)
+            peak_power, peak_row, peak_col =
+                Acquisition._acquire_prn_streamed!(plan, scratch, prn, stored)
+
+            cim = zeros(ComplexF32, ndop, plan.samples_per_code)
+            Acquisition._build_coherent_integration_matrix!(cim, plan.signal_block_ffts,
+                plan.prn_conj_ffts[prn], plan.samples_per_code, plan.num_blocks,
+                plan.block_size, ncoh, scratch.corr_buf, scratch.double_block_bfft_plan)
+            ref = zeros(Float32, ndop, plan.samples_per_code_eff)
+            Acquisition._accumulate_noncoherent_integration_step!(ref, cim, plan, scratch, prn, 0)
+
+            @test maximum(abs.(stored .- ref)) <= 1e-5 * maximum(ref)
+            @test (peak_row, peak_col) == Tuple(argmax(stored))
+            @test peak_power == maximum(stored)
+            # Streamed and recomputed columns agree exactly.
+            col = zeros(Float32, ndop)
+            Acquisition._recompute_column_power!(col, plan, scratch, prn, peak_col, 1)
+            @test col == stored[:, peak_col]
+        end
+    end
+end
+
+@testset "Bit-transition search recovers the power a mid-window bit flip cancels" begin
+    # GPS L1 C/A, a 20 ms window (one bit period) with the bit transition
+    # exactly 10 code periods after the first code-period boundary: without
+    # the search the two halves cancel at the true Doppler; with
+    # bit_edge_search_steps = 10 one hypothesis flips there and the full
+    # coherent power returns. Without a transition the search never loses
+    # power (its no-transition hypothesis is the simple path's FFT).
+    system = GPSL1CA()
+    fs = 2.048e6Hz
+    prn = 1
+    code_phase = 300.25
+    true_doppler = 1250Hz
+    spc = 2048
+    common = (; min_doppler_coverage = 5000Hz,
+        num_coherently_integrated_code_periods = 20, fft_flag = FFTL.ESTIMATE)
+    plan_plain = plan_acquire(system, fs, [prn]; common...)
+    plan_search = plan_acquire(system, fs, [prn]; common..., bit_edge_search_steps = 10)
+    (; signal) = generate_test_signal(system, prn; num_samples = 20 * spc,
+        doppler = true_doppler, code_phase, sampling_freq = fs, interm_freq = 0.0Hz,
+        CN0 = 42, seed = 7)
+    first_boundary = round(Int, (1023 - code_phase) / 1023 * spc) + 1
+
+    peak_power(r) = r.peak_to_noise_ratio * r.noise_power
+
+    flipped = ComplexF32.(signal)
+    flipped[first_boundary + 10 * spc:end] .*= -1
+    plain = only(acquire!(plan_plain, flipped, [prn]; interm_freq = 0.0Hz))
+    search = only(acquire!(plan_search, flipped, [prn]; interm_freq = 0.0Hz))
+    # Without the search the peak sits on a side lobe of the cancelled
+    # carrier, one Doppler bin off.
+    @test plain.carrier_doppler != true_doppler
+    @test search.carrier_doppler == true_doppler
+    @test abs(search.code_phase - code_phase) < 0.5
+    @test peak_power(search) > 2 * peak_power(plain)
+
+    unflipped = ComplexF32.(signal)
+    plain = only(acquire!(plan_plain, unflipped, [prn]; interm_freq = 0.0Hz))
+    search = only(acquire!(plan_search, unflipped, [prn]; interm_freq = 0.0Hz))
+    @test search.carrier_doppler == true_doppler
+    @test peak_power(search) >= peak_power(plain) * (1 - 1e-6)
 end
 
 @testset "Rotation tile offsets equal the per-column block alignment" begin
