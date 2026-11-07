@@ -705,32 +705,18 @@ function _acquire_prn_streamed!(
     peak_col = 1
 
     if simple_path
-        batched = num_doppler_bins <= BATCH_FFT_THRESHOLD
+        tile_t = scratch.coherent_tile_t
         for col_block_idx in 0:plan.num_blocks-1
-            _build_coherent_tile!(tile, plan.signal_block_ffts, prn_conj_fft,
+            _build_doppler_tile_t!(tile_t, plan.signal_block_ffts, prn_conj_fft,
                 col_block_idx, plan.num_blocks, block_size,
                 plan.num_coherently_integrated_code_periods,
-                scratch.corr_buf, plan.double_block_bfft_plan)
-            dest_col_offset = col_block_idx * block_size
-            if batched
-                mul!(tile, plan.col_batch_fft_plan, tile)
-                for local_col in 1:block_size
-                    peak_power, peak_doppler_bin, peak_col = _stream_power_column!(
-                        row_sums, col_sums, collect_col_sums, store_buf,
-                        view(tile, :, local_col), dest_col_offset + local_col,
-                        num_doppler_bins, peak_power, peak_doppler_bin, peak_col)
-                end
-            else
-                col_buf = scratch.col_buf
-                for local_col in 1:block_size
-                    copyto!(col_buf, 1, tile, (local_col - 1) * num_doppler_bins + 1, num_doppler_bins)
-                    mul!(col_buf, plan.col_fft_plan, col_buf)
-                    peak_power, peak_doppler_bin, peak_col = _stream_power_column!(
-                        row_sums, col_sums, collect_col_sums, store_buf,
-                        col_buf, dest_col_offset + local_col,
-                        num_doppler_bins, peak_power, peak_doppler_bin, peak_col)
-                end
-            end
+                scratch.corr_buf, scratch.double_block_bfft_plan,
+                scratch.doppler_fft_plan)
+            peak_power, peak_doppler_bin, peak_col = _stream_power_tile_t!(
+                row_sums, col_sums, collect_col_sums, store_buf, tile_t,
+                col_block_idx * block_size, num_doppler_bins,
+                scratch.col_max_buf, scratch.col_max_row_buf,
+                peak_power, peak_doppler_bin, peak_col)
             _maybe_yield_block(plan, col_block_idx)
         end
     else
@@ -750,7 +736,7 @@ function _acquire_prn_streamed!(
             _build_coherent_tile!(tile, plan.signal_block_ffts, prn_conj_fft,
                 col_block_idx, plan.num_blocks, block_size,
                 plan.num_coherently_integrated_code_periods,
-                scratch.corr_buf, plan.double_block_bfft_plan)
+                scratch.corr_buf, scratch.double_block_bfft_plan)
             for local_col in 1:block_size
                 cp_col = col_block_idx * block_size + local_col
                 fill!(stage, 0f0)
@@ -770,67 +756,70 @@ function _acquire_prn_streamed!(
     return peak_power, peak_doppler_bin, peak_col
 end
 
-# Reduce one Doppler-domain column (raw FFT row order) into the streaming
-# statistics, folding the fftshift row permutation inline. Iterates destination
-# rows in ascending sorted order — first half [1, shift] from raw bins
-# [front+1, N], second half from [1, front] — so peak tie-breaking and the
-# Float32 order of `col_sum`/`row_sums` additions are identical to scanning a
-# materialised, fftshifted surface row by row.
-@inline function _stream_power_column!(
+# Reduce one Doppler-transformed transposed tile `(block_size, num_doppler_bins)`
+# (see `_build_doppler_tile_t!`) into the streaming statistics: per sorted
+# (fftshifted) Doppler row sums, optional per-code-phase column sums and stored
+# power, and the running peak. Equivalent to scanning the tile's `block_size`
+# code-phase columns in ascending order, each in sorted-row order: the
+# per-column maxima (first max in sorted-row order) are tracked in
+# `col_max`/`col_max_row` while sweeping sorted rows, each over a contiguous
+# code-phase run, and folded into the running peak column by column afterwards
+# — so peak tie-breaking matches a column-by-column scan.
+function _stream_power_tile_t!(
     row_sums::Vector{Float32},
     col_sums::Vector{Float32},
     collect_col_sums::Bool,
     store_buf::Union{Nothing,Matrix{Float32}},
-    x::AbstractVector{ComplexF32},
-    dest_col::Int,
+    tile_t::AbstractMatrix{ComplexF32},
+    dest_col_offset::Int,
     num_doppler_bins::Int,
+    col_max::Vector{Float32},
+    col_max_row::Vector{Int},
     peak_power::Float32,
     peak_doppler_bin::Int,
     peak_col::Int,
 )
+    block_size = size(tile_t, 1)
     shift = num_doppler_bins ÷ 2
     front = num_doppler_bins - shift
-    col_sum = 0f0
-    col_max = -Inf32
-    col_max_row = 1
-    @inbounds for r in front+1:num_doppler_bins
-        v = abs2(x[r])
-        dst = r - front
-        row_sums[dst] += v
-        col_sum += v
-        if v > col_max
-            col_max = v
-            col_max_row = dst
+    fill!(col_max, -Inf32)
+    fill!(col_max_row, 1)
+    collect_col_sums && fill!(view(col_sums, dest_col_offset+1:dest_col_offset+block_size), 0f0)
+    @inbounds for dst in 1:num_doppler_bins
+        r = _raw_doppler_bin(dst, shift, front)
+        row_sum = 0f0
+        @simd for c in 1:block_size
+            v = abs2(tile_t[c, r])
+            row_sum += v
+            better = v > col_max[c]
+            col_max[c] = ifelse(better, v, col_max[c])
+            col_max_row[c] = ifelse(better, dst, col_max_row[c])
+        end
+        row_sums[dst] += row_sum
+        if collect_col_sums
+            @simd for c in 1:block_size
+                col_sums[dest_col_offset + c] += abs2(tile_t[c, r])
+            end
+        end
+        if store_buf !== nothing
+            for c in 1:block_size
+                store_buf[dst, dest_col_offset + c] = abs2(tile_t[c, r])
+            end
         end
     end
-    @inbounds for r in 1:front
-        v = abs2(x[r])
-        dst = r + shift
-        row_sums[dst] += v
-        col_sum += v
-        if v > col_max
-            col_max = v
-            col_max_row = dst
+    @inbounds for c in 1:block_size
+        if col_max[c] > peak_power
+            peak_power = col_max[c]
+            peak_doppler_bin = col_max_row[c]
+            peak_col = dest_col_offset + c
         end
-    end
-    collect_col_sums && (col_sums[dest_col] = col_sum)
-    if store_buf !== nothing
-        @inbounds for r in front+1:num_doppler_bins
-            store_buf[r - front, dest_col] = abs2(x[r])
-        end
-        @inbounds for r in 1:front
-            store_buf[r + shift, dest_col] = abs2(x[r])
-        end
-    end
-    if col_max > peak_power
-        return col_max, col_max_row, dest_col
     end
     return peak_power, peak_doppler_bin, peak_col
 end
 
 # Streaming consumer for one sign-search stage column (already |x|² in sorted
-# row order): same statistics update as `_stream_power_column!` without the
-# fftshift fold.
+# row order): same statistics update as `_stream_power_tile_t!` for a single
+# code-phase column, without the fftshift fold.
 @inline function _stream_stage_column!(
     row_sums::Vector{Float32},
     col_sums::Vector{Float32},
@@ -888,28 +877,30 @@ function _recompute_column_power!(
     rotation_idx = (global_col - 1) ÷ samples_per_code
     col_block_idx = cp_col0 ÷ block_size
     local_col = cp_col0 % block_size + 1
-    tile = scratch.coherent_tile
-    _build_coherent_tile!(tile, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
-        col_block_idx, plan.num_blocks, block_size,
-        plan.num_coherently_integrated_code_periods,
-        scratch.corr_buf, plan.double_block_bfft_plan)
     rotation_active = plan.num_secondary_rotations > 1 &&
                       plan.num_coherently_integrated_code_periods > 1
     simple_path = plan.num_data_bits == 1 && plan.bit_edge_search_steps == 1 &&
                   !rotation_active
     if simple_path
-        col_buf = scratch.col_buf
-        copyto!(col_buf, 1, tile, (local_col - 1) * num_doppler_bins + 1, num_doppler_bins)
-        mul!(col_buf, plan.col_fft_plan, col_buf)
+        # Same transform as the streamed pass (`_build_doppler_tile_t!`), so the
+        # interpolation neighbours are bit-identical to the cells the peak search saw.
+        tile_t = scratch.coherent_tile_t
+        _build_doppler_tile_t!(tile_t, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
+            col_block_idx, plan.num_blocks, block_size,
+            plan.num_coherently_integrated_code_periods,
+            scratch.corr_buf, scratch.double_block_bfft_plan,
+            scratch.doppler_fft_plan)
         shift = num_doppler_bins ÷ 2
         front = num_doppler_bins - shift
-        @inbounds for r in front+1:num_doppler_bins
-            dest[r - front] = abs2(col_buf[r])
-        end
-        @inbounds for r in 1:front
-            dest[r + shift] = abs2(col_buf[r])
+        @inbounds for dst in 1:num_doppler_bins
+            dest[dst] = abs2(tile_t[local_col, _raw_doppler_bin(dst, shift, front)])
         end
     else
+        tile = scratch.coherent_tile
+        _build_coherent_tile!(tile, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
+            col_block_idx, plan.num_blocks, block_size,
+            plan.num_coherently_integrated_code_periods,
+            scratch.corr_buf, scratch.double_block_bfft_plan)
         stage = scratch.stage_buf
         fill!(stage, 0f0)
         num_data_combos = 1 << (plan.num_data_bits - 1)
@@ -1263,7 +1254,8 @@ Convenience wrapper: calls [`plan_acquire`](@ref) then [`acquire!`](@ref).
     Requires `num_coherently_integrated_code_periods` to be a whole multiple of the
     secondary-code length `L`; a partial period is rejected to avoid the ±Doppler sign
     ambiguity (issue #68). See [`plan_acquire`](@ref).
-  - `fft_flag`: FFTW planning flag (default: `FFTW.MEASURE`)
+  - `fft_flag`: FFT planning flag, accepted for compatibility and ignored
+    (default: `FFTL.MEASURE`)
 
 # Keyword Arguments forwarded to `acquire!`:
 
@@ -1293,7 +1285,7 @@ function acquire(
     num_noncoherent_accumulations::Int = 1,
     use_secondary_code::Bool = true,
     max_secondary_code_rotations::Int = 32,
-    fft_flag = FFTW.MEASURE,
+    fft_flag = FFTL.MEASURE,
     subsample_interpolation::Bool = false,
     store_power_bins::Bool = false,
 )
@@ -1329,10 +1321,9 @@ Takes the same keyword arguments as [`acquire`](@ref), plus `buffer_size` (see
 [`acquire_stream!`](@ref)). The channel is closed when the last PRN has been published,
 or with the exception if the search fails.
 
-Planning happens before the channel is returned, so the `FFTW.MEASURE` default is paid
-by the caller, not by the first result. Pass `fft_flag = FFTW.ESTIMATE` for a one-shot
-search, or hoist the plan out with [`plan_acquire`](@ref) and use
-[`acquire_stream!`](@ref) when acquiring repeatedly.
+Planning happens before the channel is returned, so its cost is paid by the caller, not
+by the first result. When acquiring repeatedly, hoist the plan out with
+[`plan_acquire`](@ref) and use [`acquire_stream!`](@ref).
 
 # See also
 
@@ -1350,7 +1341,7 @@ function acquire_stream(
     num_noncoherent_accumulations::Int = 1,
     use_secondary_code::Bool = true,
     max_secondary_code_rotations::Int = 32,
-    fft_flag = FFTW.MEASURE,
+    fft_flag = FFTL.MEASURE,
     subsample_interpolation::Bool = false,
     store_power_bins::Bool = false,
     buffer_size::Int = length(prns),
@@ -1405,7 +1396,7 @@ function acquire_stream(
     num_noncoherent_accumulations::Int = 1,
     use_secondary_code::Bool = true,
     max_secondary_code_rotations::Int = 32,
-    fft_flag = FFTW.MEASURE,
+    fft_flag = FFTL.MEASURE,
     subsample_interpolation::Bool = false,
     store_power_bins::Bool = false,
     buffer_size::Int = length(prns),

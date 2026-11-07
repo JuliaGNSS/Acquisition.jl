@@ -544,8 +544,8 @@ rises by ~26 %. The gap widens with longer coherent integration, because
 so every extra divisor unit costs `num_coherently_integrated_code_periods` extra
 column-FFT bins.
 
-The inner FFT size no longer factors into this choice. It is zero-padded to an
-FFTW-fast length regardless of `block_size` (see
+The inner FFT size no longer factors into this choice. It is zero-padded to a
+fast length regardless of `block_size` (see
 [Sampling Frequency and FFT Performance](#Sampling-Frequency-and-FFT-Performance)),
 so a `block_size` with a large prime factor no longer penalises a smaller
 divisor — the smallest valid divisor is unconditionally the right default. The
@@ -554,19 +554,20 @@ which the [`recommend_sampling_freqs`](@ref) helper accounts for.
 
 ### Sampling Frequency and FFT Performance
 
-Acquisition's cost is dominated by FFTs, and FFTW runs fastest when the
-transform lengths factor into small primes (2, 3, 5, 7) and slower when they
-carry a large prime (11, 13, 31, 257, …). Both lengths are ultimately set by the
+Acquisition's cost is dominated by FFTs (computed with
+[FFTL.jl](https://github.com/JuliaMath/FFTL.jl)), which run fastest when the
+transform lengths factor into small primes — best of all powers of two — and
+slower when they carry a large prime (11, 13, 31, 257, …). Both lengths are ultimately set by the
 sampling frequency, since `samples_per_code = ceil(code_length × fs / code_freq)`.
 There are two FFT stages, and they behave very differently:
 
 - **Inner double-block FFT** (size `2 × block_size`) — handled automatically.
-  `plan_acquire` zero-pads it up to the next `2·3·5·7`-smooth length
-  (`fft_size = nextprod((2, 3, 5, 7), 2 × block_size)`), so a `block_size` with a
-  large prime factor no longer selects a slow FFTW kernel. The padded transform
-  runs in the fast regime and returns **bit-identical results**: any length
-  `≥ 2 × block_size` preserves the kept correlation lags, and the inverse FFT is
-  normalised by the actual length. This used to be the biggest trap — e.g.
+  `plan_acquire` zero-pads it up to the next length of the form `2^a` times at
+  most two factors from `{3, 5, 7}` (e.g. `250 → 256`, `1250 → 1280`,
+  `2046 → 2048`), so neither a `block_size` with a large prime factor nor one
+  with a long radix-5 chain selects a slow kernel. The padded transform returns
+  the same correlation values: any length `≥ 2 × block_size` preserves the kept
+  correlation lags, and the inverse FFT is normalised by the actual length. This used to be the biggest trap — e.g.
   16.368 MHz (= 16 × 1.023 MHz) gives `block_size 1023 → 2046 = 2·3·11·31`, whose
   radix-31 FFT was ~5× slower than the neighbouring 16.384 MHz rate; padding to
   `2048 = 2¹¹` closes that gap. You no longer need to avoid a rate on the inner
@@ -659,7 +660,7 @@ recommend_sampling_freqs(10_000, 36e6Hz;
 By default candidates are ranked by estimated FFT cost; pass
 `sort_by = :smoothness` to rank by largest prime factor of `num_doppler_bins`
 (the column FFT) instead. Use `max_prime` to tighten or relax the smoothness
-budget (default `7`, FFTW's "fast" regime). Both apply to the column FFT only —
+budget (default `7`). Both apply to the column FFT only —
 the inner FFT is zero-padded to a fast size regardless, so a rate like
 16.368 MHz (non-smooth `samples_per_code`, but smooth `num_doppler_bins`) is now
 recommended rather than rejected.

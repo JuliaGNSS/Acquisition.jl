@@ -6,7 +6,7 @@ authors = ["Soeren Schoenbrod <soeren.schoenbrod@nav.rwth-aachen.de>"]
 [deps]
 CPUSummary = "2a0fbf3d-bb9c-48f3-b0a9-814d99fd7ab9"
 DocStringExtensions = "ffbed154-4ef7-542d-bbb7-c09d3a79fcae"
-FFTW = "7a1cc6ca-52ef-59f5-83cd-3a7055c09341"
+FFTL = "b53ef638-a7f0-46a4-97a9-16ee08a896af"
 GNSSSignals = "52c80523-2a4e-5c38-8979-05588f836870"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
@@ -16,11 +16,14 @@ RecipesBase = "3cdcf5f2-1ef4-517c-9805-6587b60abb01"
 SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
 Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 
+[sources]
+FFTL = {rev = "main", url = "https://github.com/JuliaMath/FFTL.jl"}
+
 [compat]
 Aqua = "0.8"
 CPUSummary = "0.2, 0.3"
 DocStringExtensions = "0.6, 0.7, 0.8, 0.9"
-FFTW = "1.0"
+FFTL = "0.1"
 GNSSSignals = "3, 4"
 LinearAlgebra = "1"
 PrecompileTools = "1.2"

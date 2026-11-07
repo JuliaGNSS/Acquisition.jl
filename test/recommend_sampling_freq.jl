@@ -31,8 +31,8 @@
         # Sanity: divisibility, geometry, and coverage
         @test r.samples_per_code % r.num_blocks == 0
         @test r.block_size == r.samples_per_code ÷ r.num_blocks
-        # inner_fft_size is the padded (7-smooth) length, >= the raw 2*block_size
-        @test r.inner_fft_size == nextprod((2, 3, 5, 7), 2 * r.block_size)
+        # inner_fft_size is the length plan_acquire pads to, >= the raw 2*block_size
+        @test r.inner_fft_size == Acquisition._inner_fft_size(2 * r.block_size)
         @test r.inner_fft_size >= 2 * r.block_size
         @test r.num_doppler_bins == 36 * r.num_blocks
         @test ustrip(Hz, r.doppler_coverage) >= 2 * 10_000  # ±10 kHz minimum

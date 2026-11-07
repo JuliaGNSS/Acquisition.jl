@@ -88,7 +88,7 @@ end
         min_doppler_coverage = 7000Hz,
         num_coherently_integrated_code_periods = 1,
         num_noncoherent_accumulations = 1,
-        fft_flag = FFTW.ESTIMATE,
+        fft_flag = FFTL.ESTIMATE,
     )
 
     result_with_if    = only(acquire!(plan, ComplexF32.(signal), [prn]; interm_freq))
@@ -121,7 +121,7 @@ end
         min_doppler_coverage = 7000Hz,
         num_coherently_integrated_code_periods = 1,
         num_noncoherent_accumulations = 1,
-        fft_flag = FFTW.ESTIMATE,
+        fft_flag = FFTL.ESTIMATE,
     )
     results = acquire!(plan, mixed_signal, [1, 2]; interm_freq = 0.0Hz)
 
@@ -143,7 +143,7 @@ end
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     plan = plan_acquire(system, sampling_freq, [1, 2];
-        num_noncoherent_accumulations = 2, fft_flag = FFTW.ESTIMATE)
+        num_noncoherent_accumulations = 2, fft_flag = FFTL.ESTIMATE)
     (; signal, code_phase) = generate_test_signal(system, 1;
         num_samples = 2 * plan.samples_per_code, doppler = 800Hz, code_phase = 150.0,
         sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 13)
@@ -176,10 +176,10 @@ end
 
     plan_seq = plan_acquire(system, sampling_freq, [prn];
         num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 1,
-        fft_flag = FFTW.ESTIMATE)
+        fft_flag = FFTL.ESTIMATE)
     plan_multi = plan_acquire(system, sampling_freq, [prn];
         num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 2,
-        fft_flag = FFTW.ESTIMATE)
+        fft_flag = FFTL.ESTIMATE)
 
     # Sequential path consumes the first segment.
     res_seq = only(acquire!(plan_seq, ComplexF32.(signal[1:2048]), [prn]; interm_freq = 0.0Hz))
@@ -217,7 +217,7 @@ end
 
     plan = plan_acquire(system, sampling_freq, [prn];
         num_coherently_integrated_code_periods = 40, num_noncoherent_accumulations = 1,
-        fft_flag = FFTW.ESTIMATE)
+        fft_flag = FFTL.ESTIMATE)
     @test plan.num_data_bits == 2   # confirm the sign-search path is exercised
 
     result = acquire!(plan, signal, prn; interm_freq = 0.0Hz)
@@ -234,7 +234,7 @@ end
     sampling_freq = 2.048e6Hz
 
     plan = plan_acquire(system, sampling_freq, [1, 2];
-        fft_flag = FFTW.ESTIMATE)
+        fft_flag = FFTL.ESTIMATE)
     signal = randn(ComplexF32, plan.samples_per_code)
 
     @test_throws ArgumentError acquire!(plan, signal, [3])
@@ -246,7 +246,7 @@ end
     sampling_freq = 2.048e6Hz
     prn = 1
 
-    plan = plan_acquire(system, sampling_freq, [prn]; fft_flag = FFTW.ESTIMATE)
+    plan = plan_acquire(system, sampling_freq, [prn]; fft_flag = FFTL.ESTIMATE)
     (; signal) = generate_test_signal(system, prn;
         num_samples = plan.samples_per_code, sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
 
@@ -260,7 +260,7 @@ end
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
 
-    plan = plan_acquire(system, sampling_freq, [1, 2]; fft_flag = FFTW.ESTIMATE)
+    plan = plan_acquire(system, sampling_freq, [1, 2]; fft_flag = FFTL.ESTIMATE)
     (; signal) = generate_test_signal(system, 1;
         num_samples = plan.samples_per_code, sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
     results = acquire!(plan, ComplexF32.(signal), [1, 2]; interm_freq = 0.0Hz)
@@ -298,7 +298,7 @@ end
         min_doppler_coverage = 10_000Hz,
         num_coherently_integrated_code_periods = 40,
         bit_edge_search_steps = 1,
-        fft_flag = FFTW.ESTIMATE)
+        fft_flag = FFTL.ESTIMATE)
     @test plan.num_coherently_integrated_code_periods * plan.num_blocks > 320
 
     (; signal) = generate_test_signal(system, prn;
@@ -310,10 +310,9 @@ end
     @test is_detected(result)
 end
 
-@testset "acquire! — fused simple-path kernel above batch threshold (num_doppler_bins > 320)" begin
-    # Forces the per-column fused kernel `_accumulate_fftshifted_power_pilot!`
-    # (the only fused-kernel path no other test hits): simple/pilot routing +
-    # num_doppler_bins > BATCH_FFT_THRESHOLD. N_coh=10 keeps num_data_bits=1
+@testset "acquire! — simple path with many Doppler bins (num_doppler_bins > 320)" begin
+    # Simple/pilot routing with a large Doppler axis (formerly the per-column
+    # FFT side of a batched/per-column crossover). N_coh=10 keeps num_data_bits=1
     # (GPS L1CA bit_period_codes=20), bit_edge_search_steps=1 keeps the simple
     # path, and a 20 kHz doppler request inflates num_blocks past 32 →
     # num_doppler_bins = 10 × num_blocks > 320.
@@ -325,10 +324,10 @@ end
         min_doppler_coverage = 20_000Hz,
         num_coherently_integrated_code_periods = 10,
         bit_edge_search_steps = 1,
-        fft_flag = FFTW.ESTIMATE)
+        fft_flag = FFTL.ESTIMATE)
     @test plan.num_data_bits == 1
     @test plan.bit_edge_search_steps == 1
-    @test length(plan.doppler_freqs) > Acquisition.BATCH_FFT_THRESHOLD
+    @test length(plan.doppler_freqs) > 320
 
     (; signal) = generate_test_signal(system, prn;
         num_samples = 10 * plan.samples_per_code,
@@ -364,8 +363,8 @@ end
         sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 21)
 
     plan_gm = plan_acquire(system, sampling_freq, [prn];
-        noise_estimator = GlobalMeanNoiseEstimator(), fft_flag = FFTW.ESTIMATE)
-    plan_or = plan_acquire(system, sampling_freq, [prn]; fft_flag = FFTW.ESTIMATE)
+        noise_estimator = GlobalMeanNoiseEstimator(), fft_flag = FFTL.ESTIMATE)
+    plan_or = plan_acquire(system, sampling_freq, [prn]; fft_flag = FFTL.ESTIMATE)
     res_gm = acquire!(plan_gm, ComplexF32.(signal), prn; interm_freq = 0.0Hz)
     res_or = acquire!(plan_or, ComplexF32.(signal), prn; interm_freq = 0.0Hz)
 
@@ -378,7 +377,7 @@ end
     # stored surface via est_signal_noise_power. The two sum the same cells in
     # the same order, but only one of the loops is vectorised, so the Float32
     # column sums can reassociate and land one ULP apart — on which surfaces
-    # that happens shifts with the FFTW plan, so an exact `==` here fails a few
+    # that happens shifts with the FFT kernels, so an exact `==` here fails a few
     # runs in ten. One ULP of headroom still pins the estimator; anything
     # actually wrong is orders of magnitude away.
     res_stored = acquire!(plan_gm, ComplexF32.(signal), prn;
@@ -403,17 +402,16 @@ end
         (; signal) = generate_test_signal(system, prn;
             num_samples = 2048, doppler = 250Hz, code_phase = 300.7,
             sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 5)
-        plan = plan_acquire(system, sampling_freq, [prn]; fft_flag = FFTW.ESTIMATE)
+        plan = plan_acquire(system, sampling_freq, [prn]; fft_flag = FFTL.ESTIMATE)
         r_nostore = acquire!(plan, ComplexF32.(signal), prn;
             interm_freq = 0.0Hz, subsample_interpolation = true)
         r_store = acquire!(plan, ComplexF32.(signal), prn;
             interm_freq = 0.0Hz, subsample_interpolation = true, store_power_bins = true)
-        # The recompute uses the per-column FFT plan while the stored surface
-        # came from the batched tile FFT; FFTW's two algorithms differ in the
-        # last bits, so the interpolated estimates match to ~1e-7 relative,
-        # not exactly. Tolerances far below a bin still catch logic errors.
-        @test r_nostore.code_phase ≈ r_store.code_phase atol = 1e-3
-        @test abs(r_nostore.carrier_doppler - r_store.carrier_doppler) < 0.01Hz
+        # The recompute rebuilds the peak's tile with the same transform the
+        # streamed pass used (`_build_doppler_tile_t!`), so the interpolation
+        # neighbours — and hence the estimates — are bit-identical.
+        @test r_nostore.code_phase == r_store.code_phase
+        @test r_nostore.carrier_doppler == r_store.carrier_doppler
     end
     @testset "rotation path (L5I NH10)" begin
         system = GPSL5I()
@@ -423,7 +421,7 @@ end
             num_samples = 10 * 10240, doppler = 850Hz, code_phase = 5115.3,
             sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 6)
         plan = plan_acquire(system, sampling_freq, [prn];
-            num_coherently_integrated_code_periods = 10, fft_flag = FFTW.ESTIMATE)
+            num_coherently_integrated_code_periods = 10, fft_flag = FFTL.ESTIMATE)
         @test plan.num_secondary_rotations == 10   # rotation search active
         r_nostore = acquire!(plan, ComplexF32.(signal), prn;
             interm_freq = 0.0Hz, subsample_interpolation = true)
@@ -448,7 +446,7 @@ end
         num_samples = 4 * 2048, doppler = 500Hz, code_phase = true_cp,
         sampling_freq, interm_freq = 0.0Hz, CN0 = 42, seed = 8)
     plan = plan_acquire(system, sampling_freq, [prn];
-        num_noncoherent_accumulations = 4, fft_flag = FFTW.ESTIMATE)
+        num_noncoherent_accumulations = 4, fft_flag = FFTL.ESTIMATE)
     result = acquire!(plan, ComplexF32.(signal), prn;
         interm_freq = 0.0Hz, subsample_interpolation = true, store_power_bins = true)
     @test is_detected(result)
@@ -503,7 +501,7 @@ end
                 system, sampling_freq, [prn];
                 num_coherently_integrated_code_periods = n,
                 min_doppler_coverage = 25_000Hz,
-                fft_flag = FFTW.ESTIMATE,
+                fft_flag = FFTL.ESTIMATE,
             )
             res = acquire!(plan, signal, prn; interm_freq = 0.0Hz,
                            subsample_interpolation = true)
@@ -551,7 +549,7 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
         num_samples = 2048, doppler = 1000Hz, code_phase = 200.0,
         sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 21,
     )
-    plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTW.ESTIMATE)
+    plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTL.ESTIMATE)
 
     # Reference: the same search through the batch API.
     batch = acquire!(plan, signal, prns; interm_freq)
@@ -612,7 +610,7 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
 
     @testset "multistep path (N_nc > 1)" begin
         plan_ms = plan_acquire(system, sampling_freq, prns;
-            num_noncoherent_accumulations = 2, fft_flag = FFTW.ESTIMATE)
+            num_noncoherent_accumulations = 2, fft_flag = FFTL.ESTIMATE)
         long_signal = generate_test_signal(system, 1;
             num_samples = 2 * 2048, doppler = 800Hz, code_phase = 150.0,
             sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 13).signal
@@ -728,7 +726,7 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
 
     @testset "acquire_stream plans and streams in one call" begin
         streamed = collect(acquire_stream(system, signal, sampling_freq, [1, 2];
-            interm_freq, fft_flag = FFTW.ESTIMATE))
+            interm_freq, fft_flag = FFTL.ESTIMATE))
         @test sort(getfield.(streamed, :prn)) == [1, 2]
         @test is_detected(only(filter(r -> r.prn == 1, streamed)))
     end
@@ -755,7 +753,7 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
         # `break` out of `for result in acquire_stream!(...)` does NOT close the
         # channel, so the search is still running and still owns the plan. The point
         # is that the next call says so instead of interleaving with it.
-        own_plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTW.ESTIMATE)
+        own_plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTL.ESTIMATE)
         channel = acquire_stream!(own_plan, signal, prns; interm_freq, buffer_size = 1)
         for _ in channel
             break
@@ -766,7 +764,7 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
     @testset "the do-block form frees the plan however the block is left" begin
         # `break`, an early `return`, and a throw all have to reach the same teardown:
         # cancel, drain what is in flight, join the search.
-        own_plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTW.ESTIMATE)
+        own_plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTL.ESTIMATE)
 
         acquire_stream!(own_plan, signal, prns; interm_freq, buffer_size = 1) do results
             for _ in results
@@ -801,7 +799,7 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
     end
 
     @testset "the do-block form returns the block's value and still streams fully" begin
-        own_plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTW.ESTIMATE)
+        own_plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTL.ESTIMATE)
         got = acquire_stream!(own_plan, signal, prns; interm_freq) do results
             sort([r.prn for r in results])
         end
@@ -810,14 +808,14 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
 
         # And the convenience wrapper that plans for you.
         scoped = acquire_stream(system, signal, sampling_freq, [1, 2];
-                                interm_freq, fft_flag = FFTW.ESTIMATE) do results
+                                interm_freq, fft_flag = FFTL.ESTIMATE) do results
             sort([r.prn for r in results])
         end
         @test scoped == [1, 2]
     end
 
     @testset "a failed search still frees the plan" begin
-        own_plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTW.ESTIMATE)
+        own_plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTL.ESTIMATE)
         channel = acquire_stream!(own_plan, FaultySignal(ComplexF32.(signal)), prns;
             interm_freq)
         @test_throws Exception collect(channel)
@@ -829,7 +827,7 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
         # The claim is taken before the channel is built, so anything that throws
         # between the two has to hand it back — otherwise one bad call would brick
         # the plan for good.
-        own_plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTW.ESTIMATE)
+        own_plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTL.ESTIMATE)
         @test_throws ArgumentError acquire_stream!(own_plan, signal, [1, 99]; interm_freq)
         @test !own_plan.in_use[]
         @test_throws Exception acquire_stream!(own_plan, signal, prns; interm_freq,
@@ -847,7 +845,7 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
         # The flag is checked before each PRN, so a cancelled stream does not run a
         # further full PRN search per chunk on its way out. With a capacity-1 channel
         # over 8 PRNs, stopping after the first result must leave most PRNs unsearched.
-        own_plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTW.ESTIMATE)
+        own_plan = plan_acquire(system, sampling_freq, prns; fft_flag = FFTL.ESTIMATE)
         published = 0
         acquire_stream!(own_plan, signal, prns; interm_freq, buffer_size = 1) do results
             for _ in results

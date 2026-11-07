@@ -246,6 +246,10 @@ end
         num_coherently_integrated_code_periods = 1)
     duplicated_fields = (
         :coherent_tile,
+        :coherent_tile_t,
+        :col_max_buf,
+        :col_max_row_buf,
+        :doppler_fft_plan,
         :stage_buf,
         :sub_block_ffts,
         :col_buf,
@@ -299,6 +303,9 @@ end
         ndop = length(plan.doppler_freqs)
         for scratch in plan.thread_scratch
             @test size(scratch.coherent_tile) == (ndop, plan.block_size)
+            # The transposed simple-path tile aliases the same memory.
+            @test size(scratch.coherent_tile_t) == (plan.block_size, ndop)
+            @test pointer(scratch.coherent_tile_t) == pointer(scratch.coherent_tile)
             # Nothing else may exceed the tile's column count except the
             # 1-D col_sums and — at N_nc>1 only — the per-slot accumulator
             # (bounded by min(threads, cores, num_prns) slots, never per PRN).
@@ -332,7 +339,7 @@ end
     # filled it stays cached for the next call (reuse contract).
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
-    plan = plan_acquire(system, sampling_freq, [1, 2]; fft_flag = FFTW.ESTIMATE)
+    plan = plan_acquire(system, sampling_freq, [1, 2]; fft_flag = FFTL.ESTIMATE)
     @test all(b -> b === nothing, plan.result_buffers)
 
     (; signal) = generate_test_signal(system, 1;
@@ -487,7 +494,7 @@ end
     sampling_freq = 2.048e6Hz
     prns = collect(1:4)
     base = (min_doppler_coverage = 10_000Hz, use_secondary_code = false,
-            fft_flag = FFTW.ESTIMATE)
+            fft_flag = FFTL.ESTIMATE)
 
     # Default is off: today's behaviour, no yields anywhere.
     plan = plan_acquire(system, sampling_freq, prns; base...)
@@ -534,7 +541,7 @@ end
     # Both per-PRN kernels: streamed (N_nc == 1) and multistep (N_nc > 1).
     for n_nc in (1, 3)
         base = (min_doppler_coverage = 10_000Hz, use_secondary_code = false,
-                num_noncoherent_accumulations = n_nc, fft_flag = FFTW.ESTIMATE)
+                num_noncoherent_accumulations = n_nc, fft_flag = FFTL.ESTIMATE)
         plain = plan_acquire(system, sampling_freq, prns; base...)
         # Stride 1 — a yield after every single code block, the most disruptive
         # setting the knob can produce.
@@ -555,4 +562,22 @@ end
         # the task holds one.
         @test length(preempt.scratch_free) == length(preempt.thread_scratch)
     end
+end
+
+@testset "_inner_fft_size pads to 2^a times at most two of {3, 5, 7}" begin
+    # Radix-5 chains and large primes are padded away; already-fast sizes stay.
+    @test Acquisition._inner_fft_size(250) == 256      # 2·5³
+    @test Acquisition._inner_fft_size(1250) == 1280    # 2·5⁴ → 2⁸·5
+    @test Acquisition._inner_fft_size(2046) == 2048    # 2·3·11·31
+    @test Acquisition._inner_fft_size(6250) == 6272    # 2·5⁵ → 2⁷·7²
+    @test Acquisition._inner_fft_size(400) == 400      # 2⁴·5²
+    @test Acquisition._inner_fft_size(4096) == 4096
+    for n in 2:2:5000
+        m = Acquisition._inner_fft_size(n)
+        @test m >= n
+        @test Acquisition._num_odd_small_factors(m) <= 2
+    end
+    # plan_acquire uses it for the inner FFT
+    plan = plan_acquire(GPSL1CA(), 5e6Hz, [1])
+    @test size(plan.signal_block_ffts, 1) == Acquisition._inner_fft_size(2 * plan.block_size)
 end
