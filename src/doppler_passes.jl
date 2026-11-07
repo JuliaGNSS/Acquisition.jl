@@ -62,29 +62,35 @@ _min_num_blocks(min_doppler_coverage_hz, bin_width_hz, num_coherently_integrated
               2 / num_coherently_integrated_code_periods)
 
 """
-    _search_cost(samples_per_code, num_blocks, num_coherently_integrated_code_periods, num_passes) -> Float64
+    _search_cost(samples_per_code, num_blocks, num_coherently_integrated_code_periods, num_passes, num_prns) -> Float64
 
-Relative per-PRN cost of one coherent FM-DBZP search, used to choose between
-Doppler layouts and to rank sampling frequencies.
+Relative per-PRN cost of one coherent FM-DBZP search over `num_prns` PRNs,
+used to choose between Doppler layouts and to rank sampling frequencies.
 
 Per pass, the pipeline runs `N_coh·B²` inner IFFTs of the padded length
 `F = _inner_fft_size(2·samples_per_code/B)` and `B` Doppler FFTs of length
 `M = N_coh·B` over `block_size` code phases each:
 
 ```
-cost = P × ( N_coh·B² × (561 + F·log₂F) + samples_per_code·M·log₂M × w(M) )
-w(M) = 0.75 if M is 7-smooth, else 1.18
+per_prn = N_coh·B² × (561 + F·log₂F) + samples_per_code·M·log₂M × w(M)
+prep    = N_coh·B × (561 + F·log₂F) + 23 × N_coh·samples_per_code
+cost    = P × ( per_prn + prep / num_prns )
+w(M)    = 0.75 if M is 7-smooth, else 1.18
 ```
 
 The per-call constant is the fixed overhead of a small inner transform, which
-dominates when blocks are short. The constants are a weighted least-squares
+dominates when blocks are short. `prep` is the per-pass signal preparation that
+all PRNs share — downconverting the segment and its `N_coh·B` forward
+double-block FFTs — so it matters when few PRNs are searched: many passes over
+a long coherent window cost little per PRN at 32 PRNs but can dominate at one. The constants are a weighted least-squares
 fit to single-threaded 32-PRN `acquire!` timings over 117 layouts (GPS L1 C/A,
 1.024–16.368 MHz, `N_coh ∈ {1, 10}`, FFTL, AMD Zen 5): median error 7%, and
 the cheapest layout by this model is within 12% of the measured fastest
 everywhere. Only the ranking matters.
 """
 function _search_cost(samples_per_code::Integer, num_blocks::Integer,
-                      num_coherently_integrated_code_periods::Integer, num_passes::Integer)
+                      num_coherently_integrated_code_periods::Integer, num_passes::Integer,
+                      num_prns::Integer)
     B = num_blocks
     block_size = samples_per_code ÷ B
     F = _inner_fft_size(2 * block_size)
@@ -94,12 +100,15 @@ function _search_cost(samples_per_code::Integer, num_blocks::Integer,
     doppler_fft = M <= 1 ? 0.0 :
         float(samples_per_code) * M * log2(M) *
         (_largest_prime_factor(M) > 7 ? _ROUGH_DOPPLER_FFT_WEIGHT : _SMOOTH_DOPPLER_FFT_WEIGHT)
-    return num_passes * (inner + doppler_fft)
+    prep = num_coherently_integrated_code_periods * B * (_INNER_FFT_CALL_COST + F * log2(F)) +
+           _DOWNCONVERT_COST * num_coherently_integrated_code_periods * samples_per_code
+    return num_passes * (inner + doppler_fft + prep / max(1, num_prns))
 end
 
 const _INNER_FFT_CALL_COST = 561.0
 const _SMOOTH_DOPPLER_FFT_WEIGHT = 0.75
 const _ROUGH_DOPPLER_FFT_WEIGHT = 1.18
+const _DOWNCONVERT_COST = 23.0
 
 # A multi-pass layout replaces the single grid only when the model expects it
 # to be at least this much cheaper. Passes keep every Doppler within the loss of
@@ -109,7 +118,8 @@ const _MULTI_PASS_MIN_GAIN = 0.9
 
 """
     _doppler_search_layout(samples_per_code, bin_width_hz, min_doppler_coverage_hz,
-                           num_coherently_integrated_code_periods, max_doppler_passes) -> DopplerLayout
+                           num_coherently_integrated_code_periods, max_doppler_passes,
+                           num_prns) -> DopplerLayout
 
 Choose `num_blocks` and the pass layout for a search reaching
 `±min_doppler_coverage_hz`. The single-grid layout (smallest divisor of
@@ -124,14 +134,14 @@ needs).
 function _doppler_search_layout(samples_per_code::Integer, bin_width_hz::Real,
                                 min_doppler_coverage_hz::Real,
                                 num_coherently_integrated_code_periods::Integer,
-                                max_doppler_passes::Integer)
+                                max_doppler_passes::Integer, num_prns::Integer)
     N_coh = num_coherently_integrated_code_periods
     min_num_blocks = _min_num_blocks(min_doppler_coverage_hz, bin_width_hz, N_coh)
     single_num_blocks = _smallest_valid_num_blocks(samples_per_code, min_num_blocks)
     best = single_num_blocks === nothing ? nothing :
         DopplerLayout(single_num_blocks, 1, N_coh * single_num_blocks)
     best_cost = best === nothing ? Inf :
-        _MULTI_PASS_MIN_GAIN * _search_cost(samples_per_code, single_num_blocks, N_coh, 1)
+        _MULTI_PASS_MIN_GAIN * _search_cost(samples_per_code, single_num_blocks, N_coh, 1, num_prns)
     max_doppler_passes > 1 || return best
 
     # Grid the passes must fill: the fewest bins (odd, so symmetric about 0)
@@ -156,7 +166,7 @@ function _doppler_search_layout(samples_per_code::Integer, bin_width_hz::Real,
         max_bins_per_pass = min(M, 2 * half + 1)
         num_passes = cld(min_grid_bins, max_bins_per_pass)
         num_passes <= max_doppler_passes || continue
-        cost = _search_cost(samples_per_code, B, N_coh, num_passes)
+        cost = _search_cost(samples_per_code, B, N_coh, num_passes, num_prns)
         if cost < best_cost
             best_cost = cost
             best = DopplerLayout(B, num_passes, cld(min_grid_bins, num_passes))
