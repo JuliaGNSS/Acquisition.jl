@@ -6,7 +6,7 @@ name: Benchmark this PR
 # doesn't manufacture phantom regressions when the head build lands on a busier window).
 # The table is built by `.github/scripts/bench_table.jl`.
 #
-# Runs on both x86 (Ubuntu) and ARM (Apple Silicon, macos-14), so FFT-kernel and SIMD
+# Runs on both x86 (Ubuntu) and ARM (Apple Silicon, macos-15), so FFT-kernel and SIMD
 # changes are measured on NEON hardware as well as on the x86 AVX2/AVX-512 paths — the two
 # can rank the same change differently.
 #
@@ -14,7 +14,7 @@ name: Benchmark this PR
 # `julia --project=... --startup-file=no $exeflags`, and its `--exeflags` defaults to *none*
 # — so without it the suite runs with ONE thread and the multi-PRN cases never exercise the
 # parallel PRN loop. `auto` rather than a fixed count because the two runners differ
-# (ubuntu-latest 4 vCPU, macos-14 3 cores) while the base and head revisions of one PR
+# (ubuntu-latest 4 vCPU, macos-15 3 cores) while the base and head revisions of one PR
 # always run on the same runner, so the comparison stays fair.
 #
 # Security: runs as pull_request_target so the comment-posting token has write access. The
@@ -41,12 +41,13 @@ permissions:
 
 jobs:
   benchmark:
-    # Run on both x86 (Ubuntu) and ARM (Apple Silicon: macos-14 is M-series).
+    # Run on both x86 (Ubuntu) and ARM (Apple Silicon: macos-15 is M-series; the macos-14
+    # image is retired and its jobs are rejected before they start).
     # fail-fast: false so a flake on one platform doesn't cancel the other's results.
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-latest, macos-14]
+        runner: [ubuntu-latest, macos-15]
     runs-on: ${{ matrix.runner }}
     steps:
       # Base (trusted) checkout — provides .github/scripts/bench_table.jl. The PR's own
