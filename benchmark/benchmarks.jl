@@ -288,3 +288,23 @@ if _is_fmdbzp
                 num_coherently_integrated_code_periods = $N_coh)
     end
 end
+
+# ============================================================================
+# SparseDivisorRates — sampling frequencies whose `samples_per_code` has sparse
+# divisors (issue #101). At 1.542 MHz (1542 = 2·3·257) the smallest divisor
+# reaching ±7 kHz in one FM-DBZP grid is 257; at 3.069 MHz (3069 = 3·11·31) it
+# is 31. Doppler passes cover the same range with 6 and 11 blocks. GPS L1 C/A,
+# default ±7 kHz, 32 PRNs. 1.500 MHz is the well-behaved neighbour (20 blocks)
+# that 1.542 MHz should now land next to. FM-DBZP only.
+# ============================================================================
+
+if _is_fmdbzp
+    SUITE["SparseDivisorRates"] = BenchmarkGroup()
+    for (fs, fs_label) in [(1.5e6Hz, "1.500MHz"), (1.542e6Hz, "1.542MHz"),
+                           (3.069e6Hz, "3.069MHz")]
+        plan = plan_acquire(system, fs, collect(1:32))
+        signal = _make_signal(plan, 1)
+        SUITE["SparseDivisorRates"][fs_label] =
+            @benchmarkable _acquire!($plan, $signal, $(1:32))
+    end
+end
