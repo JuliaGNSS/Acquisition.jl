@@ -566,9 +566,11 @@ be a power of two and Doppler coverage is always a multiple of the bin spacing.
 At 5 MHz (`samples_per_code = 5000`) the divisors include 5, 10, 20, 25, … —
 giving more choices but potentially a larger jump to the next valid `num_blocks`.
 
-If `plan_acquire` cannot find a valid `num_blocks` for your sampling frequency and
-`min_doppler_coverage`, it throws an `ArgumentError`. Try a slightly different
-sampling frequency or reduce `min_doppler_coverage`.
+When the divisors of `samples_per_code` are far apart, the smallest one that
+reaches the coverage can be far larger than needed. `plan_acquire` then searches
+the Doppler range in several narrow passes with a smaller divisor instead (see
+[Doppler Passes](#Doppler-Passes)). It throws an `ArgumentError` only when the
+requested coverage is wider than the sampling frequency itself.
 
 #### Why the *smallest* valid divisor?
 
@@ -616,6 +618,10 @@ divisor — the smallest valid divisor is unconditionally the right default. The
 only prime-factorization concern left is the column FFT length `num_doppler_bins`,
 which the [`recommend_sampling_freqs`](@ref) helper accounts for.
 
+This is the rule for a *single* Doppler grid. `plan_acquire` also weighs every
+smaller divisor split into narrow passes, and picks that instead when it is
+clearly cheaper (see [Doppler Passes](#Doppler-Passes)).
+
 ### Sampling Frequency and FFT Performance
 
 Acquisition's cost is dominated by FFTs (computed with
@@ -639,61 +645,72 @@ There are two FFT stages, and they behave very differently:
 
 - **Column FFT** (size `num_doppler_bins = num_coherently_integrated_code_periods ×
   num_blocks`) — **not** zero-paddable, because it is a true DFT over the Doppler
-  axis and padding would move its bins. This is the remaining sampling-frequency
-  sensitivity, and it bites in two ways at once: an unlucky `fs` inflates
-  `num_doppler_bins` *and* lands it on a large prime. `num_blocks` is the smallest
-  divisor of `samples_per_code` that meets `min_doppler_coverage` (see
-  [The `num_blocks` Divisibility Constraint](#The-num_blocks-Divisibility-Constraint)).
-  When `samples_per_code` is smooth it has divisors packed closely together, so
-  that smallest admissible divisor sits just above `min_num_blocks`; when its
-  factorization is sparse the divisors are far apart and the constraint is forced
-  to jump to the next one up, which is both larger *and* carries the large prime.
-  The pathological case is 1.542 MHz (`1542 = 2·3·257`): its only divisors are
-  `1, 2, 3, 6, 257, 514, 771, 1542`, so the smallest one `≥ min_num_blocks` leaps
-  straight from 6 to 257 — a length that is simultaneously ~13× more Doppler bins
-  than the smooth neighbour's 20 and a radix-257 kernel. (At 1.500 MHz,
-  `1500 = 2²·3·5³` has divisors every few integers, so the same constraint lands
-  on 20.)
+  axis and padding would move its bins. With a single Doppler grid, an unlucky `fs`
+  inflates `num_doppler_bins` *and* lands it on a large prime: `num_blocks` must
+  divide `samples_per_code` (see
+  [The `num_blocks` Divisibility Constraint](#The-num_blocks-Divisibility-Constraint)),
+  and when its factorization is sparse the smallest divisor that reaches the
+  coverage can be far too large. The pathological case is 1.542 MHz
+  (`1542 = 2·3·257`): its only divisors are `1, 2, 3, 6, 257, 514, 771, 1542`, so
+  one grid reaching ±7 kHz needs 257 blocks — 257 Doppler bins of 6-sample blocks,
+  ~13× more cells than the 20 bins of the 1.500 MHz neighbour. `plan_acquire`
+  avoids this automatically by splitting the search into Doppler passes, below.
 
-How costly is that? Measured on GPS L1 C/A, 32 PRNs, `min_doppler_coverage =
-7000Hz` (illustrative — absolute times are machine- and thread-dependent, the
-adjacent-rate ratios much less so):
+#### Doppler Passes
 
-| Sampling freq | `num_doppler_bins` | `acquire!(1:32)` | vs. smooth neighbour |
-|:--------------|:------------------:|:----------------:|:--------------------:|
-| 1.500 MHz | 20 (`2²·5`) | 0.6 ms | — |
-| **1.542 MHz** | **257** (prime) | **21 ms** | **~35× slower** |
-| 3.000 MHz | 20 (`2²·5`) | 0.9 ms | — |
-| **3.069 MHz** | **31** (prime) | **3.0 ms** | **~3× slower** |
+Instead of one wide grid, `plan_acquire` can cover the Doppler range with `P`
+narrow passes that use a small divisor `B`. Pass `k` downconverts the signal by
+an extra offset `f_k`, which moves the band around `f_k` to baseband, and runs the
+unchanged FM-DBZP pipeline with `B` blocks. Each pass keeps its central bins, and
+the passes tile one uniform Doppler grid, so `power_bins`, the noise estimators
+and the CFAR cell count work exactly as with a single grid. The samples are never
+resampled. At 1.542 MHz, ±7 kHz becomes 3 passes of 6 blocks (each keeping 5 of
+its 6 bins), a 15-bin grid from −7 to +7 kHz.
 
-The inner FFT is padded in every row, so the whole gap is the column FFT: a
-0.1 % change in `fs` (1.500 → 1.542 MHz) can cost ~35×. Most of that factor is
-the bin-count jump, not the prime kernel. The power reduction sweeps
-`num_doppler_bins × samples_per_code` cells, which alone grows `(257×1542) /
-(20×1500) ≈ 13×` with no dependence on FFT smoothness, and the column FFT stage
-grows `(257·log₂257) / (20·log₂20) ≈ 24×` from size alone — i.e. even if 257 were
-smooth. The non-smooth (prime) length adds only a further ~5× on top of the FFT
-stage itself. So the remedy is a rate with a *small smooth* admissible divisor
-(fewer bins), not merely a smooth `num_doppler_bins` of the same size: a
-hypothetical smooth 256-bin rate would still be far slower than the 20-bin
-neighbour. (Rates that *used* to be slow only because of the inner FFT — e.g.
-6.138 MHz, or 16.368 MHz above — are no longer affected: padding handles them and
-`num_blocks` lands on a small smooth value.)
+FM-DBZP correlates block by block, so a Doppler `f` away from the grid centre
+loses `sinc²(f · T_block)` (`T_block` = block duration). A pass with few blocks
+has long blocks, so its edges lose more. The passes therefore keep only bins
+whose loss stays within what a single grid loses at its coverage edge on an
+*ideal* rate — one where the smallest divisor reaching the coverage is exactly
+the minimum needed (−2.9 dB for ±7 kHz at 1 ms, e.g. 16 blocks at 2.048 MHz). No
+Doppler in the searched range is worse off than on a well-chosen rate. Near
+0 Hz, though, a rate whose single grid has far more blocks than it needs used to
+be nearly loss-free, and passes give up some of that: at 4 MHz with ±25 kHz,
+1234 Hz loses about 1 dB.
 
-As a rule of thumb for GPS L1 C/A, prefer a sampling frequency whose
-`samples_per_code` (≈ `fs / 1000` in Hz, rounded up) is smooth. Powers of two
-(2.048, 4.096, 8.192, 16.384 MHz) and `2^a · 5^b` rates (2, 2.5, 5, 10.24 MHz)
-are always safe: every divisor is smooth, so `num_blocks` and the column FFT are
-smooth too. The inner FFT is already taken care of by padding, so the only rates
-worth avoiding now are those that force a large prime into `num_blocks`.
+`plan_acquire` chooses between the single grid and every pass layout with a cost
+model fitted to measured `acquire!` timings (see [`recommend_sampling_freqs`](@ref)),
+and only leaves the single grid when passes are expected to be at least 10%
+cheaper. Pass `max_doppler_passes = 1` to always use one grid.
+
+Measured on GPS L1 C/A, 32 PRNs, `min_doppler_coverage = 7000Hz`, one thread
+(illustrative — absolute times are machine-dependent):
+
+| Sampling freq | single grid | `acquire!(1:32)` | with Doppler passes | `acquire!(1:32)` |
+|:--------------|:-----------:|:----------------:|:-------------------:|:----------------:|
+| 1.500 MHz | 20 blocks | 2.10 ms | 3 × 6 blocks | 1.46 ms |
+| **1.542 MHz** | **257 blocks** | **111.4 ms** | **3 × 6 blocks** | **1.83 ms** |
+| **3.069 MHz** | **31 blocks** | **12.6 ms** | **2 × 11 blocks** | **4.53 ms** |
+
+So a 0.1 % change in `fs` (1.500 → 1.542 MHz) no longer costs ~50×. The same
+applies at longer coherent integration: 1.542 MHz with
+`num_coherently_integrated_code_periods = 10` goes from 1.29 s to 18 ms.
+Well-behaved rates are unaffected — 2.048, 5 and 16.368 MHz at ±7 kHz keep their
+single grid.
+
+Doppler passes change only the carrier. The code Doppler inside a coherent
+window is uncompensated exactly as with a single grid, and the code-drift
+correction between noncoherent steps uses each bin's true Doppler.
 
 ### Picking a Good Sampling Frequency
 
 When you have flexibility in the front-end clock,
 [`recommend_sampling_freqs`](@ref) sweeps a frequency range and returns the
 candidates with the smoothest FFT factorizations and lowest estimated cost.
-It accounts for the [`num_blocks` divisibility constraint](#The-num_blocks-Divisibility-Constraint)
-and both FFT stages of the algorithm (inner double-block + column FFT).
+It accounts for the [`num_blocks` divisibility constraint](#The-num_blocks-Divisibility-Constraint),
+both FFT stages of the algorithm (inner double-block + column FFT), and the
+[Doppler passes](#Doppler-Passes) `plan_acquire` would use, so it reports exactly
+the layout the plan will run.
 
 ```@example guide
 using Acquisition, GNSSSignals
@@ -727,7 +744,9 @@ By default candidates are ranked by estimated FFT cost; pass
 budget (default `7`). Both apply to the column FFT only —
 the inner FFT is zero-padded to a fast size regardless, so a rate like
 16.368 MHz (non-smooth `samples_per_code`, but smooth `num_doppler_bins`) is now
-recommended rather than rejected.
+recommended rather than rejected. Likewise a sparse-divisor rate such as
+1.542 MHz is recommended with its Doppler-pass layout; pass
+`max_doppler_passes = 1` to restrict the search to single-grid rates.
 
 #### Filtering against an SDR's hardware constraints
 

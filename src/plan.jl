@@ -5,7 +5,7 @@
 # Internal — not part of the public API.
 #
 # The FM-DBZP pipeline is tiled: the coherent correlation surface is produced one
-# `(num_doppler_bins, block_size)` column-block tile at a time
+# `(pass_doppler_bins, block_size)` column-block tile at a time (per Doppler pass)
 # (`_build_coherent_tile!`) and reduced immediately. The full
 # `(num_doppler_bins, samples_per_code_eff)` power surface is materialised only
 # where it is genuinely needed: one `noncoherent_accumulator` per scratch slot
@@ -25,12 +25,12 @@ struct AcquisitionScratch{P2,P3,P4}
     double_block_buf::Vector{ComplexF32}            # length fft_size (padded 2*block_size)
     corr_buf::Vector{ComplexF32}                    # length fft_size (padded 2*block_size)
     # One FM-DBZP column-block tile of the coherent-integration surface:
-    # (num_doppler_bins, block_size). Every consumer after the build stage is
-    # column-oriented, so the full (num_doppler_bins, samples_per_code) matrix
+    # (pass_doppler_bins, block_size). Every consumer after the build stage is
+    # column-oriented, so the full (pass_doppler_bins, samples_per_code) matrix
     # never needs to exist — build tile → reduce tile → next tile.
     coherent_tile::Matrix{ComplexF32}
     # The same memory as `coherent_tile`, reshaped to the transposed
-    # (block_size, num_doppler_bins) layout used by the simple (pilot / sub-bit)
+    # (block_size, pass_doppler_bins) layout used by the simple (pilot / sub-bit)
     # path — see `_build_doppler_tile_t!`. Only one of the two layouts is live
     # at a time (simple path vs sign-search path), so sharing costs nothing.
     coherent_tile_t::Matrix{ComplexF32}
@@ -38,9 +38,9 @@ struct AcquisitionScratch{P2,P3,P4}
     # transposed tile, for the streamed peak search. length block_size.
     col_max_buf::Vector{Float32}
     col_max_row_buf::Vector{Int}
-    col_buf::Vector{ComplexF32}                     # length num_doppler_bins
+    col_buf::Vector{ComplexF32}                     # length pass_doppler_bins
     # Per-column staging for the sign-search kernels:
-    # (num_doppler_bins, num_secondary_rotations). Holds ONE code-phase column's
+    # (pass_doppler_bins, num_secondary_rotations), in one pass's sorted order. Holds ONE code-phase column's
     # power per rotation hypothesis, max-reduced across bit-edge alignments and
     # data-bit polarities, before it is consumed (streamed at N_nc == 1,
     # scattered into the accumulator at N_nc > 1). Replaces the full-surface
@@ -48,7 +48,7 @@ struct AcquisitionScratch{P2,P3,P4}
     # 0×0 when the simple/pilot path is taken.
     stage_buf::Matrix{Float32}
     # Multistep (N_nc > 1) power accumulator: (num_doppler_bins,
-    # samples_per_code_eff). The multistep PRN loop is PRN-outer — one claimed
+    # samples_per_code_eff) over the whole stitched Doppler grid. The multistep PRN loop is PRN-outer — one claimed
     # scratch slot carries one PRN through ALL accumulation steps and extracts
     # its result before moving on — so `min(nthreads, num_cores, num_prns)`
     # accumulators replace the former one-per-PRN matrices (a 32-PRN search on
@@ -60,12 +60,13 @@ struct AcquisitionScratch{P2,P3,P4}
     # estimate. length num_doppler_bins; 0 on the multistep path, which reduces
     # from the materialised per-PRN accumulator instead.
     row_sums_buf::Vector{Float32}
-    # Single-column power scratch (length num_doppler_bins) for the on-demand
-    # column recompute used by subsample interpolation on the streamed path.
+    # Single-column power scratch (length pass_doppler_bins, one pass's sorted
+    # rows) for the on-demand column recompute used by subsample interpolation
+    # on the streamed path.
     col_power_buf::Vector{Float32}
-    sub_block_ffts::Matrix{ComplexF32}              # (num_doppler_bins, num_sub_blocks) — 0x0 when simple path is taken (see plan_acquire). Scratch for the sign-search kernels.
+    sub_block_ffts::Matrix{ComplexF32}              # (pass_doppler_bins, num_sub_blocks) — 0x0 when simple path is taken (see plan_acquire). Scratch for the sign-search kernels.
     # Real/imag-split accumulator for the rotation-kernel's complex-MAC combine loop.
-    # Each is length num_doppler_bins, sized 0 when the rotation kernel is not active.
+    # Each is length pass_doppler_bins, sized 0 when the rotation kernel is not active.
     # Split storage drives Float32 SIMD on the tiled phasor inner loop —
     # ComplexF32 storage is ~3× slower because the compiler can't pack the MAC.
     combine_buf_re::Vector{Float32}
@@ -75,10 +76,10 @@ struct AcquisitionScratch{P2,P3,P4}
     # on the streamed path. length 0 at N_nc == 1 with the (default) OppositeRow
     # estimator, where the streaming reduction needs no column sums at all.
     col_sums_buf::Vector{Float32}
-    # Row-wise code-drift shifts pre-filled per accumulation step on the
-    # multistep path (drift is folded into the per-column destination scatter).
-    # length num_doppler_bins when N_nc > 1; 0 on the sequential path (step 0
-    # never drifts).
+    # Row-wise code-drift shifts pre-filled per accumulation step and Doppler
+    # pass on the multistep path (drift is folded into the per-column
+    # destination scatter), one per bin the pass keeps (`doppler_bins_per_pass`).
+    # 0 on the sequential path (step 0 never drifts).
     code_drift_shifts::Vector{Int}
 end
 
@@ -112,13 +113,31 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     prn_conj_ffts::Dict{Int,Matrix{ComplexF32}}
     # In-place forward FFT, size fft_size (padded 2*block_size). Only used to fill
     # `signal_block_ffts` before the per-PRN loop, on the calling task. The
-    # backward and Doppler-axis plans the per-PRN kernels apply live in each
-    # scratch slot instead (types P2–P4, see `AcquisitionScratch`).
+    # backward and Doppler-axis plans (the latter of size `pass_doppler_bins`)
+    # the per-PRN kernels apply live in each scratch slot instead (types P2–P4,
+    # see `AcquisitionScratch`).
     double_block_fft_plan::P1
-    # doppler_freqs: StepRangeLen of num_doppler_bins Hz values, sorted from -doppler_coverage_hz/2 to doppler_coverage_hz/2-doppler_bin_spacing_hz
+    # The searched Doppler grid: `num_doppler_passes * doppler_bins_per_pass`
+    # Hz values at multiples of the bin spacing, from `-(n÷2)·spacing` (the
+    # fftshifted FFT-bin order). Every result row indexes into this grid.
     doppler_freqs::DS
-    # Signal-block FFT cache: (fft_size, num_coh*num_blocks*N_nc).
-    # Holds FFT(signal double-block k) for EVERY accumulation segment,
+    # Doppler passes (issue #101, see src/doppler_passes.jl). The range is
+    # searched by `num_doppler_passes` FM-DBZP passes of `pass_doppler_bins`
+    # (= num_coh * num_blocks) bins each. Pass `k` runs on the signal
+    # downconverted by an extra `doppler_pass_offsets_hz[k]` and contributes its
+    # `doppler_bins_per_pass` central bins — sorted rows
+    # `pass_row_offset+1 : pass_row_offset+doppler_bins_per_pass` of its own
+    # grid — to rows `(k-1)*doppler_bins_per_pass+1 : k*doppler_bins_per_pass`
+    # of `doppler_freqs`. One pass with `doppler_bins_per_pass ==
+    # pass_doppler_bins` is the classic single-grid search.
+    num_doppler_passes::Int
+    doppler_bins_per_pass::Int
+    pass_doppler_bins::Int
+    pass_row_offset::Int
+    doppler_pass_offsets_hz::Vector{Float64}
+    # Signal-block FFT cache: (fft_size, num_coh*num_blocks*N_nc*num_doppler_passes).
+    # Holds FFT(signal double-block k) for EVERY accumulation segment and pass
+    # (pass-major: see `_signal_block_ffts_for_step`),
     # precomputed serially once per acquire! call (the same total FFT work the
     # per-segment cache used to do) and then read-only shared across the PRN
     # loop. Caching all segments — 16 bytes per signal sample, i.e. 2× the
@@ -131,7 +150,7 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     # suffices — keeping it out of the per-thread scratch pool saves
     # (nthreads-1) × segment_length × 8 bytes.
     sig_buf::Vector{ComplexF32}
-    fftshift_perm::Vector{Int}               # length num_doppler_bins — pre-computed fftshift row permutation
+    fftshift_perm::Vector{Int}               # length pass_doppler_bins — pre-computed fftshift row permutation
     # Per PRN: holds a copy of power_bins when the caller of `acquire!` passes
     # store_power_bins=true. Initialised to `nothing` and allocated on the first
     # opt-in call per PRN; subsequent calls reuse the same matrix in-place.
@@ -199,7 +218,7 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     # tiled form makes the inner ω loop contiguous; the real/imag split lets
     # the compiler pack the complex MAC into Float32 SIMD lanes (~3× faster
     # than the ComplexF32 form, even with the same per-iteration FLOP count).
-    # Both arrays have shape `(num_doppler_bins, num_coh_periods, num_patterns)`,
+    # Both arrays have shape `(pass_doppler_bins, num_coh_periods, num_patterns)`,
     # indexed `[ω, p, q]`. Empty when the rotation kernel is not active. See
     # [`combined_phase_patterns`](@ref) and [`tile_phase_patterns`](@ref).
     tiled_phase_patterns_re_by_prn::Dict{Int,Array{Float32,3}}
@@ -429,6 +448,16 @@ multi-threaded acquisition. Scratch buffers are tile-sized (nothing scales with
   [Detecting Satellites](@ref) section of the guide for the rationale.
 - `fft_flag`: FFT planning flag, accepted for compatibility and ignored — FFTL
   plans do not measure (default: `FFTL.MEASURE`).
+- `max_doppler_passes`: largest number of narrow Doppler passes the search may
+  be split into (default: `16`). When `samples_per_code` has sparse divisors,
+  the smallest `num_blocks` that reaches `min_doppler_coverage` in one FM-DBZP
+  grid can be far too large (1.542 MHz needs 257 for ±7 kHz). `plan_acquire`
+  then covers the range in several passes with a small `num_blocks` instead,
+  each downconverted to its own centre frequency, and stitches them into one
+  uniform Doppler grid. It picks this only when a cost model expects it to be
+  clearly cheaper, and keeps every searched Doppler within the edge loss a
+  single grid has on an ideal rate — see
+  [Doppler Passes](@ref) in the guide. `1` always uses a single grid.
 - `max_blocking_time`: upper bound on how long the per-PRN work may hold a
   thread without giving the Julia scheduler a chance to run something else
   (default: `nothing`, i.e. unbounded — today's behaviour). Pass a time
@@ -480,6 +509,7 @@ function plan_acquire(
     max_secondary_code_rotations::Int = 32,
     fft_flag = FFTL.MEASURE,
     max_blocking_time = nothing,
+    max_doppler_passes::Int = 16,
 )
     num_noncoherent_accumulations >= 1 || throw(ArgumentError("num_noncoherent_accumulations must be >= 1, got $num_noncoherent_accumulations"))
     num_coherently_integrated_code_periods >= 1 || throw(ArgumentError("num_coherently_integrated_code_periods must be >= 1"))
@@ -555,40 +585,40 @@ function plan_acquire(
         num_coherently_integrated_code_periods  # no constraint for pilot channels
     end
 
-    # Blocks per code period: smallest divisor of samples_per_code such that the
-    # final Doppler grid `range(-cov/2, step=spacing, length=num_doppler_bins)`
-    # covers `[-min_doppler_coverage, +min_doppler_coverage]` at *both* ends.
+    # Blocks per code period and Doppler passes (src/doppler_passes.jl).
     #
-    # Geometry:
+    # Single grid: the smallest divisor of samples_per_code such that the grid
+    # `range(-(n÷2)·spacing, step=spacing, length=n)` covers
+    # `[-min_doppler_coverage, +min_doppler_coverage]` at *both* ends:
+    #
     #   coverage = num_blocks * bin_width                         (bin_width = fs / samples_per_code)
     #   num_doppler_bins = num_coherently_integrated_code_periods * num_blocks
     #   spacing = coverage / num_doppler_bins = bin_width / num_coherently_integrated_code_periods
-    #   highest searched value = +coverage/2 - spacing            (last bin of the half-open range)
+    #   highest searched value >= +coverage/2 - spacing
     #
     # Requiring `+coverage/2 - spacing >= min_doppler_coverage` gives
     #   num_blocks >= 2*(min_doppler_coverage + spacing) / bin_width
     #            >= (2*min_doppler_coverage / bin_width) + 2/num_coherently_integrated_code_periods
     # so we add `2/N_coh` (rounded up) to the naive bin count to guarantee the upper edge.
+    #
+    # When samples_per_code's divisors are sparse, that divisor can be far
+    # larger than the coverage needs; a smaller one covering the range in several
+    # narrow passes is then cheaper (`_doppler_search_layout`).
     sampling_freq_hz = ustrip(Hz, sampling_freq)
     bin_width = sampling_freq_hz / samples_per_code
     min_doppler_coverage_hz = ustrip(Hz, min_doppler_coverage)
-    min_num_blocks = ceil(Int, 2 * min_doppler_coverage_hz / bin_width
-                              + 2 / num_coherently_integrated_code_periods)
-    num_blocks = let found = nothing
-        for candidate in min_num_blocks:samples_per_code
-            if samples_per_code % candidate == 0
-                found = candidate
-                break
-            end
-        end
-        found
-    end
-    if isnothing(num_blocks)
+    max_doppler_passes >= 1 || throw(ArgumentError("max_doppler_passes must be >= 1, got $max_doppler_passes"))
+    layout = _doppler_search_layout(samples_per_code, bin_width, min_doppler_coverage_hz,
+        num_coherently_integrated_code_periods, max_doppler_passes)
+    if isnothing(layout)
         throw(ArgumentError(
             "No valid num_blocks found: samples_per_code=$samples_per_code has no divisor " *
-            ">= min_num_blocks=$min_num_blocks. " *
+            ">= min_num_blocks=$(_min_num_blocks(min_doppler_coverage_hz, bin_width, num_coherently_integrated_code_periods)). " *
             "This should not happen for standard GNSS sampling frequencies — please file a bug."))
     end
+    num_blocks = layout.num_blocks
+    num_doppler_passes = layout.num_passes
+    doppler_bins_per_pass = layout.bins_per_pass
 
     # Validate data-channel coherent integration length.
     # Sub-bit integration (num_coherently_integrated_code_periods < bit_period_codes) is always valid — a bit
@@ -616,14 +646,17 @@ function plan_acquire(
     # 1 for pilot channels and sub-bit integration (< one bit period); bit combination search
     # is only needed when num_data_bits > 1 (multiple bits → unknown polarity transitions).
     num_data_bits = (has_data && num_coherently_integrated_code_periods >= bit_period_codes) ? num_coherently_integrated_code_periods ÷ bit_period_codes : 1
-    num_doppler_bins = num_coherently_integrated_code_periods * num_blocks  # paper C_fd
+    # One pass's FM-DBZP Doppler FFT length (paper C_fd), and the stitched grid.
+    pass_doppler_bins = num_coherently_integrated_code_periods * num_blocks
+    num_doppler_bins = num_doppler_passes * doppler_bins_per_pass
+    pass_row_offset = pass_doppler_bins ÷ 2 - doppler_bins_per_pass ÷ 2
 
-    # FFT plans (in-place, size fft_size and num_doppler_bins)
+    # FFT plans (in-place, size fft_size and pass_doppler_bins)
     double_block_proto = zeros(ComplexF32, fft_size)
     # `threads = 1`: the transforms are small and `acquire!` already runs one
     # PRN per task — FFTL would otherwise default to `Threads.nthreads()`.
     double_block_fft_plan = plan_fft!(double_block_proto; flags = fft_flag, threads = 1)
-    col_proto = zeros(ComplexF32, num_doppler_bins)
+    col_proto = zeros(ComplexF32, pass_doppler_bins)
 
     # Precompute conjugated PRN FFTs
     prn_conj_ffts = Dict{Int,Matrix{ComplexF32}}()
@@ -632,18 +665,21 @@ function plan_acquire(
             samples_per_code, num_blocks, block_size, fft_size, double_block_fft_plan)
     end
 
-    # Doppler grid (fftshift order: sorted from -doppler_coverage_hz/2)
-    doppler_coverage_hz = num_blocks * sampling_freq_hz / samples_per_code
-    doppler_bin_spacing_hz = doppler_coverage_hz / num_doppler_bins
-    doppler_freqs = range(-doppler_coverage_hz / 2, step = doppler_bin_spacing_hz, length = num_doppler_bins) .* Hz
+    # Doppler grid (fftshift order: bin multiples of the spacing, from
+    # -(n÷2)·spacing) and the centre frequency each pass is downconverted by.
+    doppler_freqs = _doppler_grid_hz(layout, bin_width, num_coherently_integrated_code_periods) .* Hz
+    doppler_pass_offsets_hz = _doppler_pass_offsets_hz(layout, bin_width,
+        num_coherently_integrated_code_periods)
 
     segment_length = num_coherently_integrated_code_periods * samples_per_code
     # Pre-allocated signal-block FFT cache: holds FFT(signal double-block k) for
-    # every accumulation segment (16 bytes per signal sample). Filled once per
-    # acquire! call before the PRN loop and read-only shared across all PRNs —
-    # see the field docstring for why all N_nc segments are cached.
+    # every accumulation segment and Doppler pass (16 bytes per signal sample
+    # per pass). Filled once per acquire! call before the PRN loop and read-only
+    # shared across all PRNs — see the field docstring for why all N_nc
+    # segments are cached.
     signal_block_ffts = zeros(ComplexF32, fft_size,
-        num_coherently_integrated_code_periods * num_blocks * num_noncoherent_accumulations)
+        num_coherently_integrated_code_periods * num_blocks * num_noncoherent_accumulations *
+        num_doppler_passes)
     # At N_nc == 1 each cell of the power surface is produced exactly once, so
     # the result statistics (peak, noise row/column sums) are reduced on the fly
     # per tile and NO noncoherent power matrix exists at all — see
@@ -668,7 +704,7 @@ function plan_acquire(
         samples_per_code * num_secondary_rotations : samples_per_code
 
     sequential_prn_mode = num_noncoherent_accumulations == 1
-    fftshift_perm = [mod(r - 1 + num_doppler_bins ÷ 2, num_doppler_bins) + 1 for r in 1:num_doppler_bins]
+    fftshift_perm = [mod(r - 1 + pass_doppler_bins ÷ 2, pass_doppler_bins) + 1 for r in 1:pass_doppler_bins]
     result_buffers = Union{Nothing,Matrix{Float32}}[nothing for _ in prns]
 
     # The sign-search path runs when num_data_bits > 1, bit_edge_search_steps > 1,
@@ -680,12 +716,12 @@ function plan_acquire(
     # rotation hypothesis. Bit-edge alignments and data-bit polarities are
     # max-reduced into it column-locally, so neither search needs a buffer
     # proportional to `samples_per_code` anymore.
-    stage_rows = sign_search_path_active ? num_doppler_bins        : 0
+    stage_rows = sign_search_path_active ? pass_doppler_bins       : 0
     stage_cols = sign_search_path_active ? num_secondary_rotations : 0
     # The data-bit kernel needs one sub-block FFT column per data bit; the
     # rotation kernel needs one per coherent period. Size to the max so the same
     # scratch matrix serves both code paths.
-    sub_block_rows = sign_search_path_active ? num_doppler_bins : 0
+    sub_block_rows = sign_search_path_active ? pass_doppler_bins : 0
     sub_block_cols = if sign_search_path_active
         rotation_search_active ? max(num_data_bits, num_coherently_integrated_code_periods) :
                                  num_data_bits
@@ -712,7 +748,7 @@ function plan_acquire(
     # The multistep path folds code-drift correction into the per-column
     # destination scatter; shifts are pre-filled once per accumulation step.
     # The sequential path never drifts (step 0 has zero drift by definition).
-    code_drift_shifts_len = sequential_prn_mode ? 0 : num_doppler_bins
+    code_drift_shifts_len = sequential_prn_mode ? 0 : doppler_bins_per_pass
 
     # Per-thread scratch pool. Sized to the most chunks the PRN loop ever runs at
     # once — `min(nthreads, num_cores, num_prns)` (the loop never spawns more
@@ -730,8 +766,8 @@ function plan_acquire(
     # steady-state footprint — no first-`acquire!` spike.
     nthreads = min(Threads.nthreads(), max(1, Int(num_cores())), max(1, length(prns)))
     thread_scratch = map(1:nthreads) do _
-        tile = zeros(ComplexF32, num_doppler_bins, block_size)
-        tile_t = reshape(tile, block_size, num_doppler_bins)   # shares `tile`'s memory
+        tile = zeros(ComplexF32, pass_doppler_bins, block_size)
+        tile_t = reshape(tile, block_size, pass_doppler_bins)   # shares `tile`'s memory
         AcquisitionScratch(
             plan_bfft!(double_block_proto; flags = fft_flag, threads = 1),
             plan_fft!(col_proto; flags = fft_flag, threads = 1),
@@ -746,14 +782,14 @@ function plan_acquire(
             tile_t,
             zeros(Float32, block_size),
             zeros(Int, block_size),
-            zeros(ComplexF32, num_doppler_bins),
+            zeros(ComplexF32, pass_doppler_bins),
             zeros(Float32, stage_rows, stage_cols),
             zeros(Float32, accumulator_rows, accumulator_cols),
             zeros(Float32, row_sums_len),
-            zeros(Float32, sequential_prn_mode ? num_doppler_bins : 0),
+            zeros(Float32, sequential_prn_mode ? pass_doppler_bins : 0),
             zeros(ComplexF32, sub_block_rows, sub_block_cols),
-            zeros(Float32, rotation_search_active ? num_doppler_bins : 0),
-            zeros(Float32, rotation_search_active ? num_doppler_bins : 0),
+            zeros(Float32, rotation_search_active ? pass_doppler_bins : 0),
+            zeros(Float32, rotation_search_active ? pass_doppler_bins : 0),
             zeros(Float32, col_sums_len),
             zeros(Int, code_drift_shifts_len),
         )
@@ -791,7 +827,7 @@ function plan_acquire(
     function _build_tiled(p)
         rotation_search_active || return (empty_tile, empty_tile)
         compact = combined_phase_patterns(p, num_coherently_integrated_code_periods)
-        tiled = tile_phase_patterns(compact, num_doppler_bins)
+        tiled = tile_phase_patterns(compact, pass_doppler_bins)
         # Split into Float32 real/imag arrays so the kernel inner loop runs as
         # Float32 SIMD (≈3× faster than ComplexF32 storage with the same MACs).
         Float32.(real.(tiled)), Float32.(imag.(tiled))
@@ -831,6 +867,11 @@ function plan_acquire(
         prn_conj_ffts,
         double_block_fft_plan,
         doppler_freqs,
+        num_doppler_passes,
+        doppler_bins_per_pass,
+        pass_doppler_bins,
+        pass_row_offset,
+        doppler_pass_offsets_hz,
         signal_block_ffts,
         sig_buf,
         fftshift_perm,
@@ -937,14 +978,18 @@ function _calibrate_preempt_stride!(plan::AcquisitionPlan, max_blocking_time)
     budget_ns > 0 || throw(ArgumentError(
         "max_blocking_time must be positive, got $max_blocking_time"))
 
-    block_ns = _time_prn_pass_ns(plan) / plan.num_blocks
+    # The streamed pass runs every Doppler pass; the multistep timing runs one
+    # step of one pass (see `_time_prn_pass_ns`).
+    blocks_timed = plan.num_noncoherent_accumulations == 1 ?
+        plan.num_blocks * plan.num_doppler_passes : plan.num_blocks
+    block_ns = _time_prn_pass_ns(plan) / blocks_timed
     # Clamp before narrowing to Int so neither a sub-nanosecond block time nor an
     # absurdly large budget can overflow the conversion. The bounds are the ones
     # the kernels actually offer: one block is the finest granularity, so a
     # budget below that simply gets the tightest bound available; and a budget of
     # a whole PRN pass or more needs no in-PRN yield at all, because the
     # between-PRN yield already covers that boundary.
-    stride = clamp(budget_ns / block_ns, 1.0, Float64(plan.num_blocks))
+    stride = clamp(budget_ns / block_ns, 1.0, Float64(plan.num_blocks * plan.num_doppler_passes))
     plan.preempt_block_stride[] = floor(Int, stride)
     return plan
 end
@@ -962,7 +1007,7 @@ function _time_prn_pass_ns(plan::AcquisitionPlan)
             accumulator = scratch.noncoherent_accumulator
             fill!(accumulator, 0f0)
             _accumulate_prn_step_tiled!(accumulator,
-                _signal_block_ffts_for_step(plan, 1), plan, scratch, prn, 0)
+                _signal_block_ffts_for_step(plan, 1, 1), plan, scratch, prn, 0, 1)
         end
     run_one()   # warm up — the first pass pays cold caches and branch predictors
     best = typemax(UInt64)

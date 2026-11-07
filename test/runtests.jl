@@ -20,6 +20,7 @@ include("secondary_code_search.jl")
     include("coherent_integration.jl")
     include("noncoherent_integration.jl")
     include("acquire.jl")
+    include("doppler_passes.jl")
     include("plot.jl")
 end
 

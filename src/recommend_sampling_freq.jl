@@ -10,22 +10,28 @@ A single sampling-frequency candidate from [`recommend_sampling_freqs`](@ref).
 
   - `sampling_freq::typeof(1.0Hz)`: Sampling frequency
   - `samples_per_code::Int`: Samples per PRN code period at this `sampling_freq`
-  - `num_blocks::Int`: Smallest valid `num_blocks` that meets `min_doppler_coverage`
-    (= the value `plan_acquire` would pick)
+  - `num_blocks::Int`: FM-DBZP blocks per code period — the value
+    [`plan_acquire`](@ref) would pick for this rate (see `num_doppler_passes`)
   - `block_size::Int`: `samples_per_code ÷ num_blocks`
   - `inner_fft_size::Int`: Inner double-block FFT length actually run — `2 ×
     block_size` zero-padded by [`plan_acquire`](@ref) to the next `2^a` times at
     most two factors from `{3, 5, 7}`, so always FFT-fast
-  - `num_doppler_bins::Int`: Column-FFT length
+  - `num_doppler_bins::Int`: Column (Doppler) FFT length of one pass
     (`num_coherently_integrated_code_periods × num_blocks`)
-  - `doppler_coverage::typeof(1.0Hz)`: Total Doppler coverage at this configuration
+  - `num_doppler_passes::Int`: Number of narrow Doppler passes the search is
+    split into (`1` = one FM-DBZP grid covers the whole range). See
+    [Sampling Frequency and FFT Performance](@ref).
+  - `doppler_bins_per_pass::Int`: Doppler bins each pass contributes; the
+    searched grid has `num_doppler_passes × doppler_bins_per_pass` bins
+  - `doppler_coverage::typeof(1.0Hz)`: Total Doppler coverage at this
+    configuration (grid bins × bin spacing)
   - `inner_max_prime::Int`: Largest prime factor of `inner_fft_size` — `≤ 7` by
     construction (the inner FFT is padded); reported for reference only
   - `num_doppler_bins_max_prime::Int`: Largest prime factor of `num_doppler_bins`
     — the value that gates the recommendation, since the column FFT is a DFT that
     cannot be zero-padded to a smooth size
-  - `cost::Float64`: Estimated combined FFT cost
-    (`inner_fft_cost + column_fft_cost`, see [`recommend_sampling_freqs`](@ref))
+  - `cost::Float64`: Estimated per-PRN search cost, all passes included (see
+    [`recommend_sampling_freqs`](@ref))
 """
 struct SamplingFreqRecommendation
     sampling_freq::typeof(1.0Hz)
@@ -34,6 +40,8 @@ struct SamplingFreqRecommendation
     block_size::Int
     inner_fft_size::Int
     num_doppler_bins::Int
+    num_doppler_passes::Int
+    doppler_bins_per_pass::Int
     doppler_coverage::typeof(1.0Hz)
     inner_max_prime::Int
     num_doppler_bins_max_prime::Int
@@ -92,36 +100,18 @@ function _largest_prime_factor(n::Integer)
     n > 1 ? Int(n) : largest
 end
 
-# Smallest divisor of `samples_per_code` that is >= `min_num_blocks`.
-# Returns `nothing` if no such divisor exists.
-function _smallest_valid_num_blocks(samples_per_code::Integer, min_num_blocks::Integer)
-    for d in min_num_blocks:samples_per_code
-        samples_per_code % d == 0 && return Int(d)
-    end
-    nothing
-end
-
 # Pretty-print the Doppler grid as "-fmin Hz : step Hz : +fmax Hz".
-# Mirrors the grid `plan_acquire` builds: range(-cov/2, step=spacing, length=N),
-# so the last bin is +cov/2 - spacing (asymmetric, one fewer positive bin).
+# Mirrors the grid `plan_acquire` builds: range(-(N÷2)·spacing, step=spacing,
+# length=N), so with an even N the last bin is +cov/2 - spacing (one fewer
+# positive bin).
 function _doppler_grid_string(coverage_hz::Real, num_doppler_bins::Integer)
     spacing = coverage_hz / num_doppler_bins
-    fmin = -coverage_hz / 2
+    fmin = -(num_doppler_bins ÷ 2) * spacing
     fmax = fmin + (num_doppler_bins - 1) * spacing
     fmt(x) = let r = round(x, digits = 1)
         isinteger(r) ? string(Int(r)) : string(r)
     end
     string(fmt(fmin), " : ", fmt(spacing), " : ", fmt(fmax), " Hz")
-end
-
-# Cost model matching the docstring of `recommend_sampling_freqs`.
-function _fft_cost(samples_per_code, num_blocks, num_doppler_bins, inner_fft_size)
-    # 2 (forward + inverse) × num_blocks FFTs of size inner_fft_size (the padded,
-    # fast length that actually runs), each ~ N log N
-    inner = 2.0 * num_blocks * inner_fft_size * log2(inner_fft_size)
-    # samples_per_code column FFTs of size num_doppler_bins, each ~ N log N
-    column = float(samples_per_code) * num_doppler_bins * log2(num_doppler_bins)
-    inner + column
 end
 
 """
@@ -135,14 +125,16 @@ end
         sort_by = :cost,
         fs_step = 1000Hz,
         sdr_clock_plan = nothing,
+        max_doppler_passes = 16,
     ) -> Vector{SamplingFreqRecommendation}
 
-Search the range `[fs_min, fs_max]` for sampling frequencies with smooth-prime
-factorizations and return the `num_alternatives` best candidates.
+Search the range `[fs_min, fs_max]` for fast sampling frequencies and return the
+`num_alternatives` best candidates.
 
-The smallest valid `num_blocks` (the one [`plan_acquire`](@ref) would pick) is
-computed for every candidate, and candidates are ranked by either FFT cost or
-factorization smoothness. Candidates with the same `samples_per_code` are
+For every candidate the Doppler search layout [`plan_acquire`](@ref) would pick
+— `num_blocks` and, where `samples_per_code` has sparse divisors, a split into
+several narrow Doppler passes — is computed, and candidates are ranked by
+either estimated cost or factorization smoothness. Candidates with the same `samples_per_code` are
 deduplicated — the first matching `sampling_freq` is reported.
 
 # Arguments
@@ -174,20 +166,23 @@ deduplicated — the first matching `sampling_freq` is reported.
     intersected with [`sample_rate_range`](@ref)`(plan)` and every
     candidate must satisfy [`is_valid_sample_rate`](@ref)`(plan, fs)`.
     Default `nothing` — no hardware filtering.
+  - `max_doppler_passes`: As in [`plan_acquire`](@ref) (default `16`); `1`
+    restricts every candidate to a single Doppler grid.
 
 # Cost Model
 
-Both FFT stages of FM-DBZP are accounted for:
+Both FFT stages of FM-DBZP are accounted for, per Doppler pass:
 
 ```
-inner_fft_cost  = 2 × num_blocks × inner_fft_size × log₂(inner_fft_size)
-column_fft_cost = samples_per_code × num_doppler_bins × log₂(num_doppler_bins)
-cost            = inner_fft_cost + column_fft_cost
+inner_cost   = N_coh × num_blocks² × (561 + inner_fft_size × log₂(inner_fft_size))
+doppler_cost = samples_per_code × num_doppler_bins × log₂(num_doppler_bins) × w
+cost         = num_doppler_passes × (inner_cost + doppler_cost)
 ```
 
-This mirrors the per-PRN per coherent-step work, ignoring constant factors.
-`inner_fft_size` is the padded (fast) length that actually runs, not the raw
-`2 × block_size`.
+with `w = 0.75` for a 7-smooth `num_doppler_bins` and `1.18` otherwise. The
+constant per inner FFT is its fixed call overhead, which dominates when blocks
+are short. The weights are fitted to measured `acquire!` timings; `plan_acquire`
+uses the same model to choose between a single grid and Doppler passes.
 
 # See also
 
@@ -205,11 +200,13 @@ function recommend_sampling_freqs(
     sort_by::Symbol = :cost,
     fs_step = 1000Hz,
     sdr_clock_plan::Union{AbstractSDRClockPlan,Nothing} = nothing,
+    max_doppler_passes::Int = 16,
 )
     sort_by in (:cost, :smoothness) || throw(ArgumentError(
         "sort_by must be :cost or :smoothness, got :$sort_by"))
     num_alternatives >= 1 || throw(ArgumentError("num_alternatives must be >= 1"))
     max_prime >= 2 || throw(ArgumentError("max_prime must be >= 2"))
+    max_doppler_passes >= 1 || throw(ArgumentError("max_doppler_passes must be >= 1"))
     num_coherently_integrated_code_periods >= 1 || throw(ArgumentError(
         "num_coherently_integrated_code_periods must be >= 1"))
 
@@ -242,13 +239,11 @@ function recommend_sampling_freqs(
         if !(samples_per_code in seen_spc)
             push!(seen_spc, samples_per_code)
             bin_width = fs_hz / samples_per_code
-            # Mirror plan_acquire's geometry: the highest searched bin must reach
-            # +min_doppler_coverage. See `plan_acquire` for the derivation.
-            min_num_blocks = ceil(Int,
-                2 * min_doppler_coverage_hz / bin_width
-                + 2 / num_coherently_integrated_code_periods)
-            num_blocks = _smallest_valid_num_blocks(samples_per_code, min_num_blocks)
-            if num_blocks !== nothing
+            layout = _doppler_search_layout(samples_per_code, bin_width,
+                min_doppler_coverage_hz, num_coherently_integrated_code_periods,
+                max_doppler_passes)
+            if layout !== nothing
+                num_blocks = layout.num_blocks
                 block_size = samples_per_code ÷ num_blocks
                 # The inner double-block FFT is zero-padded to a fast length by
                 # plan_acquire (`_inner_fft_size`), so report that padded size and
@@ -262,6 +257,8 @@ function recommend_sampling_freqs(
                 inner_max_prime = _largest_prime_factor(inner_fft_size)
                 ndb_max_prime = _largest_prime_factor(num_doppler_bins)
                 if ndb_max_prime <= max_prime
+                    grid_bins = layout.num_passes * layout.bins_per_pass
+                    spacing = bin_width / num_coherently_integrated_code_periods
                     push!(candidates, SamplingFreqRecommendation(
                         fs_hz * Hz,
                         samples_per_code,
@@ -269,10 +266,13 @@ function recommend_sampling_freqs(
                         block_size,
                         inner_fft_size,
                         num_doppler_bins,
-                        (num_blocks * bin_width) * Hz,
+                        layout.num_passes,
+                        layout.bins_per_pass,
+                        (grid_bins * spacing) * Hz,
                         inner_max_prime,
                         ndb_max_prime,
-                        _fft_cost(samples_per_code, num_blocks, num_doppler_bins, inner_fft_size),
+                        _search_cost(samples_per_code, num_blocks,
+                            num_coherently_integrated_code_periods, layout.num_passes),
                     ))
                 end
             end
@@ -314,7 +314,9 @@ function Base.show(io::IO, ::MIME"text/plain", r::SamplingFreqRecommendation)
         ", block_size=", r.block_size,
         ", inner_fft=", r.inner_fft_size, " (", _factor_string(r.inner_fft_size), ")",
         ", num_doppler_bins=", r.num_doppler_bins, " (", _factor_string(r.num_doppler_bins), ")",
-        ", doppler_grid=", _doppler_grid_string(ustrip(Hz, r.doppler_coverage), r.num_doppler_bins),
+        ", num_doppler_passes=", r.num_doppler_passes,
+        ", doppler_grid=", _doppler_grid_string(ustrip(Hz, r.doppler_coverage),
+            r.num_doppler_passes * r.doppler_bins_per_pass),
         ", cost≈", round(r.cost, sigdigits = 4),
         ")")
 end
@@ -332,6 +334,7 @@ function Base.show(
         "Block size",
         "Inner FFT size (factors)",
         "Num Doppler bins (factors)",
+        "Doppler passes",
         "Doppler grid",
         "Estimated cost",
     ]
@@ -345,7 +348,10 @@ function Base.show(
                 r.block_size,
                 string(r.inner_fft_size, " (", _factor_string(r.inner_fft_size), ")"),
                 string(r.num_doppler_bins, " (", _factor_string(r.num_doppler_bins), ")"),
-                _doppler_grid_string(ustrip(Hz, r.doppler_coverage), r.num_doppler_bins),
+                r.num_doppler_passes == 1 ? "1" :
+                    string(r.num_doppler_passes, " × ", r.doppler_bins_per_pass, " bins"),
+                _doppler_grid_string(ustrip(Hz, r.doppler_coverage),
+                    r.num_doppler_passes * r.doppler_bins_per_pass),
                 round(r.cost, sigdigits = 4),
             ]),
             rs,

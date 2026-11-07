@@ -192,6 +192,7 @@ end
 include("est_signal_noise_power.jl")
 include("cfar.jl")
 include("plan.jl")
+include("doppler_passes.jl")
 include("coherent_integration.jl")
 include("sign_patterns.jl")
 include("noncoherent_integration.jl")

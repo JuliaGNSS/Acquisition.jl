@@ -1,4 +1,8 @@
 # test/noncoherent_integration.jl
+#
+# Kernel-level tests: they materialise one FM-DBZP grid and read it against
+# `plan.doppler_freqs`, so every plan here is pinned to a single Doppler grid
+# (`max_doppler_passes = 1`). Doppler passes are covered in test/acquire.jl.
 # Tests for noncoherent integration: column FFT accumulation, data bit search, code drift correction
 
 @testset "Fused FFT+|x|²+code-drift+fftshift kernel matches unfused pipeline" begin
@@ -163,7 +167,7 @@ end
 
     # (a) all-zero drift on the simple/batched path
     plan_a = plan_acquire(GPSL1CA(), 5.0e6Hz, [1];
-        min_doppler_coverage = 2000Hz, num_noncoherent_accumulations = 8)
+        max_doppler_passes = 1, min_doppler_coverage = 2000Hz, num_noncoherent_accumulations = 8)
     n_dop_a = length(plan_a.doppler_freqs)
     shifts_a = zeros(Int, n_dop_a)
 
@@ -194,7 +198,7 @@ end
 
     # (b) non-zero drift on the per-column path
     plan_b = plan_acquire(GPSL1CA(), 2.048e6Hz, [1];
-        min_doppler_coverage = 12_000Hz,
+        max_doppler_passes = 1, min_doppler_coverage = 12_000Hz,
         num_coherently_integrated_code_periods = 20,
         num_noncoherent_accumulations = 8)
     n_dop_b = length(plan_b.doppler_freqs)
@@ -262,7 +266,7 @@ end
 
     # num_coherently_integrated_code_periods=20 = one GPS data bit period (num_data_bits=1, pilot path)
     plan = plan_acquire(system, sampling_freq, [prn];
-        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 20)
+        max_doppler_passes = 1, min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 20)
     scratch = Acquisition._default_scratch(plan)
     # Full CIM materialised locally via the reference wrapper (production is tiled).
     cim = zeros(ComplexF32, plan.num_coherently_integrated_code_periods * plan.num_blocks, plan.samples_per_code)
@@ -324,7 +328,7 @@ end
 
     # num_coherently_integrated_code_periods=40 → num_data_bits=2 (two GPS data bit periods)
     plan = plan_acquire(system, sampling_freq, [prn];
-        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
+        max_doppler_passes = 1, min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
     scratch = Acquisition._default_scratch(plan)
     # Full CIM materialised locally via the reference wrapper (production is tiled).
     cim = zeros(ComplexF32, plan.num_coherently_integrated_code_periods * plan.num_blocks, plan.samples_per_code)
@@ -381,7 +385,7 @@ end
     true_doppler = 1050Hz  # 1050 mod 1000 = 50 Hz: non-degenerate
 
     plan = plan_acquire(system, sampling_freq, [prn];
-        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
+        max_doppler_passes = 1, min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
     scratch = Acquisition._default_scratch(plan)
     # Full CIM materialised locally via the reference wrapper (production is tiled).
     cim = zeros(ComplexF32, plan.num_coherently_integrated_code_periods * plan.num_blocks, plan.samples_per_code)
@@ -439,9 +443,9 @@ end
     true_doppler = 3050Hz
 
     plan_no_search = plan_acquire(system, sampling_freq, [prn];
-        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
+        max_doppler_passes = 1, min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
     plan_with_search = plan_acquire(system, sampling_freq, [prn];
-        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4, num_noncoherent_accumulations = 1)
+        max_doppler_passes = 1, min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4, num_noncoherent_accumulations = 1)
 
     (; signal) = generate_test_signal(system, prn;
         num_samples = 40 * 2048,
@@ -470,7 +474,7 @@ end
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     plan = plan_acquire(system, sampling_freq, [1];
-        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 200)
+        max_doppler_passes = 1, min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 200)
     num_doppler_bins = plan.num_coherently_integrated_code_periods * plan.num_blocks  # 640
 
     # `_apply_code_drift!` now operates on a buffer in **sorted-Doppler** row order
@@ -524,11 +528,11 @@ end
     samples_per_code = 2048
 
     plan_ni1 = plan_acquire(system, sampling_freq, [prn];
-        min_doppler_coverage = 10_000Hz,
+        max_doppler_passes = 1, min_doppler_coverage = 10_000Hz,
         num_coherently_integrated_code_periods = num_coherent_periods,
         num_noncoherent_accumulations = 1)
     plan_ni8 = plan_acquire(system, sampling_freq, [prn];
-        min_doppler_coverage = 10_000Hz,
+        max_doppler_passes = 1, min_doppler_coverage = 10_000Hz,
         num_coherently_integrated_code_periods = num_coherent_periods,
         num_noncoherent_accumulations = 8)
 
@@ -588,7 +592,7 @@ end
     signal_with_transition[20*2048+1:end] .*= -1
 
     plan = plan_acquire(system, sampling_freq, [prn];
-        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
+        max_doppler_passes = 1, min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
     scratch = Acquisition._default_scratch(plan)
     # Full CIM materialised locally via the reference wrapper (production is tiled).
     cim = zeros(ComplexF32, plan.num_coherently_integrated_code_periods * plan.num_blocks, plan.samples_per_code)
@@ -639,7 +643,7 @@ end
     signal_with_transition[20*2048+1:40*2048] .*= -1
 
     plan = plan_acquire(system, sampling_freq, [prn];
-        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 60, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
+        max_doppler_passes = 1, min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 60, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
     scratch = Acquisition._default_scratch(plan)
     # Full CIM materialised locally via the reference wrapper (production is tiled).
     cim = zeros(ComplexF32, plan.num_coherently_integrated_code_periods * plan.num_blocks, plan.samples_per_code)
@@ -690,16 +694,16 @@ end
         # Simple path with non-zero drift (plan_b geometry from the
         # _fill_code_drift_shifts! testset: drift rounds non-zero at step 7).
         ("pilot+drift", plan_acquire(GPSL1CA(), 2.048e6Hz, [prn];
-            min_doppler_coverage = 12_000Hz,
+            max_doppler_passes = 1, min_doppler_coverage = 12_000Hz,
             num_coherently_integrated_code_periods = 20,
             num_noncoherent_accumulations = 8, fft_flag = FFTL.ESTIMATE), 7),
         # Secondary-code rotation search with drift (L5I NH10).
         ("rotation+drift", plan_acquire(GPSL5I(), 10.24e6Hz, [prn];
-            num_coherently_integrated_code_periods = 10,
+            max_doppler_passes = 1, num_coherently_integrated_code_periods = 10,
             num_noncoherent_accumulations = 4, fft_flag = FFTL.ESTIMATE), 3),
         # Data-bit + bit-edge search (max across alignments), no drift at step 0.
         ("bitedge", plan_acquire(GPSL1CA(), 2.048e6Hz, [prn];
-            min_doppler_coverage = 10_000Hz,
+            max_doppler_passes = 1, min_doppler_coverage = 10_000Hz,
             num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4,
             num_noncoherent_accumulations = 2, fft_flag = FFTL.ESTIMATE), 0),
     ]

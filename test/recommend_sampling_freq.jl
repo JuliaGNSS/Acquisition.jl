@@ -80,12 +80,29 @@ end
     end
 
     # 1.542 MHz: samples_per_code = 1542 = 2·3·257, whose only divisor
-    # >= min_num_blocks (at 7000 Hz) is 257 → radix-257 column FFT that padding
-    # cannot fix. It must be rejected.
+    # >= min_num_blocks (at 7000 Hz) is 257 → a 257-bin single grid. Split into
+    # Doppler passes (issue #101) it is 3 passes of 6 blocks — recommended, and
+    # with exactly the layout plan_acquire picks.
     rs2 = recommend_sampling_freqs(GPSL1CA();
         fs_min = 1.540e6Hz, fs_max = 1.545e6Hz,
         min_doppler_coverage = 7000Hz, num_alternatives = 20)
-    @test all(r -> round(Int, ustrip(Hz, r.sampling_freq)) != 1_542_000, rs2)
+    r1542 = only(filter(r -> round(Int, ustrip(Hz, r.sampling_freq)) == 1_542_000, rs2))
+    @test r1542.num_blocks == 6
+    @test r1542.num_doppler_passes == 3
+    @test r1542.doppler_bins_per_pass == 5
+    @test r1542.num_doppler_bins == 6
+    @test ustrip(Hz, r1542.doppler_coverage) == 15_000
+    plan1542 = plan_acquire(GPSL1CA(), 1.542e6Hz, [1])
+    @test (plan1542.num_blocks, plan1542.num_doppler_passes, plan1542.doppler_bins_per_pass) ==
+          (r1542.num_blocks, r1542.num_doppler_passes, r1542.doppler_bins_per_pass)
+
+    # With passes disallowed it is rejected as before: the 257-bin column FFT
+    # cannot be padded.
+    rs3 = recommend_sampling_freqs(GPSL1CA();
+        fs_min = 1.540e6Hz, fs_max = 1.545e6Hz,
+        min_doppler_coverage = 7000Hz, num_alternatives = 20, max_doppler_passes = 1)
+    @test all(r -> round(Int, ustrip(Hz, r.sampling_freq)) != 1_542_000, rs3)
+    @test all(r -> r.num_doppler_passes == 1, rs3)
 end
 
 @testset "recommend_sampling_freqs — system convenience method" begin
@@ -129,6 +146,8 @@ end
         1023, 1.023e6Hz; fs_min = 5e6Hz, fs_max = 1e6Hz)
     @test_throws ArgumentError recommend_sampling_freqs(
         1023, 1.023e6Hz; fs_step = 0Hz)
+    @test_throws ArgumentError recommend_sampling_freqs(
+        1023, 1.023e6Hz; max_doppler_passes = 0)
 end
 
 @testset "AD9361ClockPlan — basic validation" begin
@@ -221,6 +240,7 @@ end
     @test occursin("Sampling freq (MHz)", out)
     @test occursin("Inner FFT size", out)
     @test occursin("Num Doppler bins", out)
+    @test occursin("Doppler passes", out)
     @test occursin("Estimated cost", out)
     # No columns/rows may be cropped away, even in a narrow display.
     @test !occursin("omitted", out)
