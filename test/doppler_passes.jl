@@ -180,3 +180,20 @@ end
     summary(r) = (r.prn, r.carrier_doppler, r.code_phase, r.peak_to_noise_ratio)
     @test summary.(acquire!(yielding, signal, 1:4)) == summary.(acquire!(plan, signal, 1:4))
 end
+
+@testset "downconversion keeps its phase accurate deep into a long signal" begin
+    # Each Doppler pass downconverts the signal again, so `_downconvert!` uses a
+    # phasor recurrence re-anchored with an exact sincos. It must match the exact
+    # carrier far into the signal and at a large IF, where a Float32 phase
+    # `index × step` (the former implementation) was off by up to 2e-2.
+    fs = 2.048e6
+    n = 40_960
+    signal = ComplexF32.(cis.(range(0, 3, length = 50n)))
+    buf = Vector{ComplexF32}(undef, n)
+    for f in (1234.0, -6000.0, 250_000.0), seg_start in (1, 40n + 1)
+        Acquisition._downconvert!(buf, signal, seg_start, n, f, fs)
+        exact = [ComplexF64(signal[seg_start + i - 1]) *
+                 cispi(-2 * mod(f / fs * (seg_start + i - 2), 1.0)) for i in 1:n]
+        @test maximum(abs.(buf .- exact)) < 1e-6
+    end
+end

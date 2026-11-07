@@ -609,7 +609,7 @@ function plan_acquire(
     min_doppler_coverage_hz = ustrip(Hz, min_doppler_coverage)
     max_doppler_passes >= 1 || throw(ArgumentError("max_doppler_passes must be >= 1, got $max_doppler_passes"))
     layout = _doppler_search_layout(samples_per_code, bin_width, min_doppler_coverage_hz,
-        num_coherently_integrated_code_periods, max_doppler_passes)
+        num_coherently_integrated_code_periods, max_doppler_passes, length(prns))
     if isnothing(layout)
         throw(ArgumentError(
             "No valid num_blocks found: samples_per_code=$samples_per_code has no divisor " *

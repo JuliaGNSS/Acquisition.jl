@@ -384,19 +384,33 @@ function _stop_acquire_stream!(plan::AcquisitionPlan, channel::Channel, search::
 end
 
 # Fill `sig_buf` with one downconverted code segment starting at `seg_start`.
+#
+# The carrier phasor is advanced by a Float64 recurrence and re-anchored with an
+# exact `sincos` every `_DOWNCONVERT_ANCHOR` samples. That is ~2× cheaper than a
+# `sincos` per sample — which matters because the signal is downconverted once
+# per Doppler pass — and more accurate: a Float32 phase `index × step` loses
+# precision as the index grows (0.02 error at a 250 kHz IF over 20k samples),
+# whereas the recurrence stays within ~1e-7 of the exact phasor.
 function _downconvert!(sig_buf, signal, seg_start, segment_length, interm_freq_hz, sampling_freq_hz)
     if iszero(interm_freq_hz)
         sig_buf .= ComplexF32.(view(signal, seg_start:seg_start + segment_length - 1))
     else
-        phase_step = Float32(-2π * interm_freq_hz / sampling_freq_hz)
-        phase_offset = Float32((seg_start - 1) * phase_step)
-        @inbounds for sample_idx in 1:segment_length
-            phase = phase_offset + (sample_idx - 1) * phase_step
-            s, c = sincos(phase)
-            sig_buf[sample_idx] = ComplexF32(signal[seg_start + sample_idx - 1]) * Complex(c, s)
+        phase_step = -2π * interm_freq_hz / sampling_freq_hz
+        s1, c1 = sincos(phase_step)
+        rotation = ComplexF64(c1, s1)
+        @inbounds for chunk_start in 0:_DOWNCONVERT_ANCHOR:segment_length-1
+            s0, c0 = sincos(phase_step * (seg_start - 1 + chunk_start))
+            phasor = ComplexF64(c0, s0)
+            for sample_idx in chunk_start+1:min(chunk_start + _DOWNCONVERT_ANCHOR, segment_length)
+                sig_buf[sample_idx] =
+                    ComplexF32(ComplexF64(signal[seg_start + sample_idx - 1]) * phasor)
+                phasor *= rotation
+            end
         end
     end
 end
+
+const _DOWNCONVERT_ANCHOR = 256
 
 # Cooperative preemption (Issue #89). Julia's scheduler will not take a thread
 # away from a running task, so without these yields the per-PRN work is one

@@ -126,6 +126,7 @@ end
         fs_step = 1000Hz,
         sdr_clock_plan = nothing,
         max_doppler_passes = 16,
+        num_prns = 32,
     ) -> Vector{SamplingFreqRecommendation}
 
 Search the range `[fs_min, fs_max]` for fast sampling frequencies and return the
@@ -168,6 +169,10 @@ deduplicated — the first matching `sampling_freq` is reported.
     Default `nothing` — no hardware filtering.
   - `max_doppler_passes`: As in [`plan_acquire`](@ref) (default `16`); `1`
     restricts every candidate to a single Doppler grid.
+  - `num_prns`: Number of PRNs searched per `acquire!` call (default `32`). The
+    per-pass signal preparation is shared by all PRNs, so it weighs more in the
+    cost — and so in the layout — when fewer PRNs are searched. `plan_acquire`
+    uses the length of its `prns` argument.
 
 # Cost Model
 
@@ -176,12 +181,15 @@ Both FFT stages of FM-DBZP are accounted for, per Doppler pass:
 ```
 inner_cost   = N_coh × num_blocks² × (561 + inner_fft_size × log₂(inner_fft_size))
 doppler_cost = samples_per_code × num_doppler_bins × log₂(num_doppler_bins) × w
-cost         = num_doppler_passes × (inner_cost + doppler_cost)
+prep_cost    = N_coh × num_blocks × (561 + inner_fft_size × log₂(inner_fft_size))
+               + 23 × N_coh × samples_per_code
+cost         = num_doppler_passes × (inner_cost + doppler_cost + prep_cost / num_prns)
 ```
 
 with `w = 0.75` for a 7-smooth `num_doppler_bins` and `1.18` otherwise. The
 constant per inner FFT is its fixed call overhead, which dominates when blocks
-are short. The weights are fitted to measured `acquire!` timings; `plan_acquire`
+are short. `prep_cost` is the per-pass signal preparation (downconversion and
+the signal's double-block FFTs), shared by all PRNs. The weights are fitted to measured `acquire!` timings; `plan_acquire`
 uses the same model to choose between a single grid and Doppler passes.
 
 # See also
@@ -201,12 +209,14 @@ function recommend_sampling_freqs(
     fs_step = 1000Hz,
     sdr_clock_plan::Union{AbstractSDRClockPlan,Nothing} = nothing,
     max_doppler_passes::Int = 16,
+    num_prns::Int = 32,
 )
     sort_by in (:cost, :smoothness) || throw(ArgumentError(
         "sort_by must be :cost or :smoothness, got :$sort_by"))
     num_alternatives >= 1 || throw(ArgumentError("num_alternatives must be >= 1"))
     max_prime >= 2 || throw(ArgumentError("max_prime must be >= 2"))
     max_doppler_passes >= 1 || throw(ArgumentError("max_doppler_passes must be >= 1"))
+    num_prns >= 1 || throw(ArgumentError("num_prns must be >= 1"))
     num_coherently_integrated_code_periods >= 1 || throw(ArgumentError(
         "num_coherently_integrated_code_periods must be >= 1"))
 
@@ -241,7 +251,7 @@ function recommend_sampling_freqs(
             bin_width = fs_hz / samples_per_code
             layout = _doppler_search_layout(samples_per_code, bin_width,
                 min_doppler_coverage_hz, num_coherently_integrated_code_periods,
-                max_doppler_passes)
+                max_doppler_passes, num_prns)
             if layout !== nothing
                 num_blocks = layout.num_blocks
                 block_size = samples_per_code ÷ num_blocks
@@ -272,7 +282,8 @@ function recommend_sampling_freqs(
                         inner_max_prime,
                         ndb_max_prime,
                         _search_cost(samples_per_code, num_blocks,
-                            num_coherently_integrated_code_periods, layout.num_passes),
+                            num_coherently_integrated_code_periods, layout.num_passes,
+                            num_prns),
                     ))
                 end
             end
