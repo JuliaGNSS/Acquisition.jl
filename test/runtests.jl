@@ -1,4 +1,4 @@
-using Test, FFTW, Acquisition, GNSSSignals, Random, Aqua, Unitful, RecipesBase
+using Test, FFTL, Acquisition, GNSSSignals, Random, Aqua, Unitful, RecipesBase
 import Unitful: Hz
 
 @testset "Aqua" begin

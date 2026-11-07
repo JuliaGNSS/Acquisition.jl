@@ -5,7 +5,7 @@
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
-    plan = plan_acquire(system, sampling_freq, [prn]; fft_flag = FFTW.ESTIMATE)
+    plan = plan_acquire(system, sampling_freq, [prn]; fft_flag = FFTL.ESTIMATE)
     (; signal) = generate_test_signal(system, prn;
         num_samples = plan.samples_per_code, sampling_freq = sampling_freq,
         interm_freq = 0.0Hz, CN0 = 45)

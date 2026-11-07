@@ -14,20 +14,14 @@
     sampling_freq_hz_test = 5.0e6
     carrier_freq_hz_test = 1.57542e9  # GPS L1
     for (num_doppler_bins, samples_per_code, accumulation_step) in [
-        (64, 256, 5),       # batched-path size, non-zero step
-        (321, 128, 3),      # per-column-path size (one above the threshold)
+        (64, 256, 5),       # non-zero step
+        (321, 128, 3),      # large num_doppler_bins
         (8, 5000, 7),       # L1CA 5MHz / N_coh=1 / N_nc=8 (the canonical issue-62 case)
         (32, 2048, 0),      # step 0: drift must be a no-op
     ]
         cim_template = randn(ComplexF32, num_doppler_bins, samples_per_code)
         col_proto = zeros(ComplexF32, num_doppler_bins)
         col_fft_plan = plan_fft!(col_proto)
-        col_batch_fft_plan = if num_doppler_bins <= Acquisition.BATCH_FFT_THRESHOLD
-            batch_proto = zeros(ComplexF32, num_doppler_bins, samples_per_code)
-            plan_fft!(batch_proto, 1)
-        else
-            nothing
-        end
         fftshift_perm = [mod(r - 1 + num_doppler_bins ÷ 2, num_doppler_bins) + 1
                          for r in 1:num_doppler_bins]
 
@@ -74,14 +68,13 @@
             samples_per_code, num_doppler_bins, fftshift_perm, norm_shifts)
         @test fused_acc ≈ ref_acc
 
-        # Fused: batched path (only valid below the threshold)
-        if col_batch_fft_plan !== nothing
-            fused_acc_batched = zeros(Float32, num_doppler_bins, samples_per_code)
-            Acquisition._accumulate_fftshifted_power_drift_pilot_batched!(fused_acc_batched,
-                copy(cim_template), col_batch_fft_plan, samples_per_code, num_doppler_bins,
-                fftshift_perm, norm_shifts)
-            @test fused_acc_batched ≈ ref_acc
-        end
+        # Fused: transposed-tile path (production simple path). The kernel
+        # consumes an already Doppler-transformed (code phase, Doppler) tile.
+        tile_t = permutedims(fft(cim_template, 1))
+        fused_acc_t = zeros(Float32, num_doppler_bins, samples_per_code)
+        Acquisition._accumulate_power_tile_t!(fused_acc_t, tile_t, samples_per_code,
+            num_doppler_bins, norm_shifts, accumulation_step != 0, 0)
+        @test fused_acc_t ≈ ref_acc
     end
 end
 
@@ -101,17 +94,12 @@ end
     sampling_freq_hz_test = 5.0e6
     carrier_freq_hz_test = 1.57542e9  # GPS L1
     for (num_doppler_bins, samples_per_code, accumulation_step) in [
-        (64, 5000, 60),     # batched path, T_coh≈1ms, large-N_nc → row-dependent drift
-        (322, 5000, 120),   # per-column path (above the batch threshold)
+        (64, 5000, 60),     # T_coh≈1ms, large-N_nc → row-dependent drift
+        (322, 5000, 120),   # large num_doppler_bins
         (8, 5000, 60),      # L1CA 5 MHz / N_coh=1 / large-N_nc weak-signal dwell
     ]
         cim_template = randn(ComplexF32, num_doppler_bins, samples_per_code)
         col_fft_plan = plan_fft!(zeros(ComplexF32, num_doppler_bins))
-        col_batch_fft_plan = if num_doppler_bins <= Acquisition.BATCH_FFT_THRESHOLD
-            plan_fft!(zeros(ComplexF32, num_doppler_bins, samples_per_code), 1)
-        else
-            nothing
-        end
         fftshift_perm = [mod(r - 1 + num_doppler_bins ÷ 2, num_doppler_bins) + 1
                          for r in 1:num_doppler_bins]
 
@@ -153,13 +141,11 @@ end
             samples_per_code, num_doppler_bins, fftshift_perm, norm_shifts)
         @test fused_acc ≈ ref_acc
 
-        if col_batch_fft_plan !== nothing
-            fused_acc_batched = zeros(Float32, num_doppler_bins, samples_per_code)
-            Acquisition._accumulate_fftshifted_power_drift_pilot_batched!(fused_acc_batched,
-                copy(cim_template), col_batch_fft_plan, samples_per_code, num_doppler_bins,
-                fftshift_perm, norm_shifts)
-            @test fused_acc_batched ≈ ref_acc
-        end
+        tile_t = permutedims(fft(cim_template, 1))
+        fused_acc_t = zeros(Float32, num_doppler_bins, samples_per_code)
+        Acquisition._accumulate_power_tile_t!(fused_acc_t, tile_t, samples_per_code,
+            num_doppler_bins, norm_shifts, true, 0)
+        @test fused_acc_t ≈ ref_acc
     end
 end
 
@@ -225,29 +211,20 @@ end
 end
 
 @testset "Fused FFT+|x|²+fftshift kernel matches unfused pipeline" begin
-    # The slice-5 fused kernel must produce bit-identical output to the
-    # unfused `column FFT -> |x|² -> _scatter_fftshift_accumulate!` chain it
-    # replaces. Run both on the same synthetic CIM and assert equality. The
-    # `_accumulate_fftshifted_power_pilot!` (per-column) path is otherwise
-    # unreachable from the test suite because it only fires at
-    # num_doppler_bins > BATCH_FFT_THRESHOLD with simple-path + N_nc=1,
-    # which no acquire! test currently spans.
+    # The fused kernels must match the unfused
+    # `column FFT -> |x|² -> _scatter_fftshift_accumulate!` chain they replace.
+    # Run them on the same synthetic CIM and compare. The per-column
+    # `_accumulate_fftshifted_power_pilot!` kernel only backs the full-matrix
+    # reference dispatcher, so it is exercised here directly.
     Random.seed!(20260526)
     for (num_doppler_bins, samples_per_code) in [
-        (64, 256),      # batched-path size
-        (321, 128),     # per-column-path size (one above the threshold)
+        (64, 256),
+        (321, 128),     # large num_doppler_bins
         (55, 64),       # odd num_doppler_bins (16.368 MHz / N_coh=5 maps here)
     ]
         cim_template = randn(ComplexF32, num_doppler_bins, samples_per_code)
-        # Pre-build an FFTW plan matching how plan_acquire would
         col_proto = zeros(ComplexF32, num_doppler_bins)
         col_fft_plan = plan_fft!(col_proto)
-        col_batch_fft_plan = if num_doppler_bins <= Acquisition.BATCH_FFT_THRESHOLD
-            batch_proto = zeros(ComplexF32, num_doppler_bins, samples_per_code)
-            plan_fft!(batch_proto, 1)
-        else
-            nothing
-        end
         fftshift_perm = [mod(r - 1 + num_doppler_bins ÷ 2, num_doppler_bins) + 1
                          for r in 1:num_doppler_bins]
 
@@ -266,13 +243,12 @@ end
             samples_per_code, num_doppler_bins)
         @test fused_acc ≈ ref_acc
 
-        # Fused: batched path (only valid below the threshold).
-        if col_batch_fft_plan !== nothing
-            fused_acc_batched = zeros(Float32, num_doppler_bins, samples_per_code)
-            Acquisition._accumulate_fftshifted_power_pilot_batched!(fused_acc_batched,
-                copy(cim_template), col_batch_fft_plan, samples_per_code, num_doppler_bins)
-            @test fused_acc_batched ≈ ref_acc
-        end
+        # Fused: transposed-tile path (production simple path), no drift.
+        tile_t = permutedims(fft(cim_template, 1))
+        fused_acc_t = zeros(Float32, num_doppler_bins, samples_per_code)
+        Acquisition._accumulate_power_tile_t!(fused_acc_t, tile_t, samples_per_code,
+            num_doppler_bins, zeros(Int, num_doppler_bins), false, 0)
+        @test fused_acc_t ≈ ref_acc
     end
 end
 
@@ -716,16 +692,16 @@ end
         ("pilot+drift", plan_acquire(GPSL1CA(), 2.048e6Hz, [prn];
             min_doppler_coverage = 12_000Hz,
             num_coherently_integrated_code_periods = 20,
-            num_noncoherent_accumulations = 8, fft_flag = FFTW.ESTIMATE), 7),
+            num_noncoherent_accumulations = 8, fft_flag = FFTL.ESTIMATE), 7),
         # Secondary-code rotation search with drift (L5I NH10).
         ("rotation+drift", plan_acquire(GPSL5I(), 10.24e6Hz, [prn];
             num_coherently_integrated_code_periods = 10,
-            num_noncoherent_accumulations = 4, fft_flag = FFTW.ESTIMATE), 3),
+            num_noncoherent_accumulations = 4, fft_flag = FFTL.ESTIMATE), 3),
         # Data-bit + bit-edge search (max across alignments), no drift at step 0.
         ("bitedge", plan_acquire(GPSL1CA(), 2.048e6Hz, [prn];
             min_doppler_coverage = 10_000Hz,
             num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4,
-            num_noncoherent_accumulations = 2, fft_flag = FFTW.ESTIMATE), 0),
+            num_noncoherent_accumulations = 2, fft_flag = FFTL.ESTIMATE), 0),
     ]
     for (label, plan, step_idx) in cases
         @testset "$label" begin

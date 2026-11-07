@@ -1,11 +1,5 @@
 # src/plan.jl
 
-# Crossover above which individual column FFTs beat a batched 2-D FFT along dim 1.
-# Batched wins for small num_doppler_bins (amortises FFTW dispatch across columns);
-# per-column wins for large num_doppler_bins (better cache behaviour).
-# Reproduce/re-tune via `SUITE["BatchFFTCrossover"]` in benchmark/benchmarks.jl.
-const BATCH_FFT_THRESHOLD = 320
-
 # Per-thread mutable scratch buffers used during acquisition.
 # Allocated once per pool slot in `plan_acquire` to enable multi-threaded PRN processing.
 # Internal — not part of the public API.
@@ -19,7 +13,16 @@ const BATCH_FFT_THRESHOLD = 320
 # requires the surface; the PRN-outer loop bounds the count by the concurrency,
 # not the PRN count) and the per-PRN `result_buffers` when the caller opts in
 # via `store_power_bins = true`.
-struct AcquisitionScratch
+struct AcquisitionScratch{P2,P3,P4}
+    # This slot's own FFT plans. FFTL plans own their work buffers, so a plan must
+    # not be applied by two tasks at once — every kernel in the per-PRN parallel
+    # loop therefore takes its plans from the scratch slot it claimed, never from
+    # the shared `AcquisitionPlan`. Same sizes as the plan-level plans of the same
+    # name (FFTL shares twiddles/kernels between plans of one size, so the extra
+    # plans cost a few small work buffers).
+    double_block_bfft_plan::P2
+    col_fft_plan::P3                                # per-column Doppler FFT (sign-search kernels)
+    doppler_fft_plan::P4                            # Doppler FFT along dim 2 of `coherent_tile_t`
     double_block_buf::Vector{ComplexF32}            # length fft_size (padded 2*block_size)
     corr_buf::Vector{ComplexF32}                    # length fft_size (padded 2*block_size)
     # One FM-DBZP column-block tile of the coherent-integration surface:
@@ -27,6 +30,15 @@ struct AcquisitionScratch
     # column-oriented, so the full (num_doppler_bins, samples_per_code) matrix
     # never needs to exist — build tile → reduce tile → next tile.
     coherent_tile::Matrix{ComplexF32}
+    # The same memory as `coherent_tile`, reshaped to the transposed
+    # (block_size, num_doppler_bins) layout used by the simple (pilot / sub-bit)
+    # path — see `_build_doppler_tile_t!`. Only one of the two layouts is live
+    # at a time (simple path vs sign-search path), so sharing costs nothing.
+    coherent_tile_t::Matrix{ComplexF32}
+    # Per-code-phase running max / argmax (sorted Doppler row) over one
+    # transposed tile, for the streamed peak search. length block_size.
+    col_max_buf::Vector{Float32}
+    col_max_row_buf::Vector{Int}
     col_buf::Vector{ComplexF32}                     # length num_doppler_bins
     # Per-column staging for the sign-search kernels:
     # (num_doppler_bins, num_secondary_rotations). Holds ONE code-phase column's
@@ -102,7 +114,6 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     double_block_fft_plan::P1   # in-place forward FFT, size fft_size (padded 2*block_size)
     double_block_bfft_plan::P2  # in-place backward FFT (unnormalised), size fft_size
     col_fft_plan::P3            # in-place forward FFT, size num_doppler_bins = num_coherently_integrated_code_periods*num_blocks
-    col_batch_fft_plan::P4      # in-place forward FFT along dim 1 of a (num_doppler_bins, block_size) tile; `nothing` when num_doppler_bins > BATCH_FFT_THRESHOLD
     # doppler_freqs: StepRangeLen of num_doppler_bins Hz values, sorted from -doppler_coverage_hz/2 to doppler_coverage_hz/2-doppler_bin_spacing_hz
     doppler_freqs::DS
     # Signal-block FFT cache: (fft_size, num_coh*num_blocks*N_nc).
@@ -141,7 +152,7 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     # than the coherent matrix it replaced — so the per-thread footprint no
     # longer scales with `samples_per_code`. Slot 1 doubles as the ambient
     # single-threaded scratch — see `_default_scratch`.
-    thread_scratch::Vector{AcquisitionScratch}
+    thread_scratch::Vector{AcquisitionScratch{P2,P3,P4}}
     scratch_free::Vector{Int}        # indices of currently-free slots in `thread_scratch`
     scratch_lock::Threads.SpinLock   # guards `scratch_free`
     # One search per plan at a time — the contract `_claim_scratch!` describes,
@@ -238,6 +249,43 @@ end
 
 _release_plan!(plan::AcquisitionPlan) = (plan.in_use[] = false; nothing)
 
+# Number of odd prime factors (with multiplicity) of `n` when `n` is of the form
+# 2^a·3^b·5^c·7^d, else `typemax(Int)`.
+function _num_odd_small_factors(n::Int)
+    k = 0
+    for p in (3, 5, 7)
+        while n % p == 0
+            n ÷= p
+            k += 1
+        end
+    end
+    n == 1 << trailing_zeros(n) || return typemax(Int)
+    return k
+end
+
+"""
+    _inner_fft_size(double_block_size) -> Int
+
+Length the inner double-block correlation FFT is zero-padded to: the smallest
+`n >= double_block_size` of the form `2^a` times at most two factors from
+`{3, 5, 7}` (e.g. 250 → 256, 1250 → 1280, 2046 → 2048, 6250 → 6272).
+
+`samples_per_code` — hence `block_size` — is fixed by the sampling frequency and
+can carry large or awkward prime factors (16.368 MHz → 2046 = 2·3·11·31; 5 MHz →
+1250 = 2·5⁴). FFTL is fastest on power-of-two-heavy lengths: over 2·block_size
+in 128–13000, this rule is within ~0.5% (geometric mean, worst 1.18×) of the
+fastest length found by exhaustively timing every 7-smooth candidate up to
++35%, whereas padding to the next 7-smooth size is 24% slower on average and up
+to 2.1× slower (radix-5 chains such as 1250 = 2·5⁴ and 6250 = 2·5⁵).
+"""
+function _inner_fft_size(double_block_size::Int)
+    n = double_block_size
+    while _num_odd_small_factors(n) > 2
+        n += 1
+    end
+    return n
+end
+
 # Slot 1 of the pool is the ambient single-threaded scratch reused by `acquire!`
 # (downconversion + signal-block FFT precompute happen before the per-PRN parallel
 # loop) and by test/REPL call sites that drive the kernels directly. Naming this
@@ -283,7 +331,7 @@ end
 
 Populate `prn_ffts[prn]` with a `(fft_size, num_blocks)` matrix.
 Column `k+1` (1-indexed) holds `FFT([code[k*block_size+1:(k+1)*block_size] ; zeros(fft_size-block_size)])`,
-i.e. the FFT of PRN sub-block `k` zero-padded to `fft_size` (the FFTW-fast inner
+i.e. the FFT of PRN sub-block `k` zero-padded to `fft_size` (the fast inner
 FFT length chosen in `plan_acquire`, `>= 2*block_size`).
 
 ## Algorithm
@@ -371,7 +419,8 @@ multi-threaded acquisition. Scratch buffers are tile-sized (nothing scales with
   the noise floor is independent and identically distributed across the
   grid and the lower variance of the global mean is preferred. See the
   [Detecting Satellites](@ref) section of the guide for the rationale.
-- `fft_flag`: FFTW planning flag (default: `FFTW.MEASURE`).
+- `fft_flag`: FFT planning flag, accepted for compatibility and ignored — FFTL
+  plans do not measure (default: `FFTL.MEASURE`).
 - `max_blocking_time`: upper bound on how long the per-PRN work may hold a
   thread without giving the Julia scheduler a chance to run something else
   (default: `nothing`, i.e. unbounded — today's behaviour). Pass a time
@@ -421,7 +470,7 @@ function plan_acquire(
     noise_estimator::AbstractNoiseEstimator = OppositeRowNoiseEstimator(),
     use_secondary_code::Bool = true,
     max_secondary_code_rotations::Int = 32,
-    fft_flag = FFTW.MEASURE,
+    fft_flag = FFTL.MEASURE,
     max_blocking_time = nothing,
 )
     num_noncoherent_accumulations >= 1 || throw(ArgumentError("num_noncoherent_accumulations must be >= 1, got $num_noncoherent_accumulations"))
@@ -549,17 +598,12 @@ function plan_acquire(
 
     block_size = samples_per_code ÷ num_blocks
     double_block_size = 2 * block_size
-    # Inner correlation FFT length. `samples_per_code` (hence block_size) is fixed
-    # by the sampling frequency and can carry a large prime factor — e.g. at
-    # 16.368 MHz, block_size = 1023 → double_block_size = 2046 = 2·3·11·31, whose
-    # radix-31 FFT is ~11× slower than a nearby smooth size. Zero-padding the inner
-    # FFT up to the next 2·3·5·7-smooth length (FFTW's fast regime; the same
-    # `max_prime = 7` bound `recommend_sampling_freqs` uses) restores that speed
-    # WITHOUT changing num_blocks, the Doppler grid, or the result: any length
-    # >= 2·block_size preserves the first `block_size` linear-correlation lags, and
-    # the IFFT is normalised by the actual length (see `_build_coherent_tile!`).
-    # No-op when double_block_size is already 7-smooth.
-    fft_size = nextprod((2, 3, 5, 7), double_block_size)
+    # Inner correlation FFT length: `double_block_size` zero-padded to a size FFTL
+    # transforms fast (see `_inner_fft_size`). Any length >= 2·block_size
+    # preserves the first `block_size` linear-correlation lags, and the IFFT is
+    # normalised by the actual length (see `_build_coherent_tile!`), so the
+    # padding changes neither num_blocks, the Doppler grid, nor the result.
+    fft_size = _inner_fft_size(double_block_size)
     # num_data_bits (paper: N_db): number of full data bit periods within the coherent window.
     # 1 for pilot channels and sub-bit integration (< one bit period); bit combination search
     # is only needed when num_data_bits > 1 (multiple bits → unknown polarity transitions).
@@ -568,21 +612,12 @@ function plan_acquire(
 
     # FFT plans (in-place, size fft_size and num_doppler_bins)
     double_block_proto = zeros(ComplexF32, fft_size)
-    double_block_fft_plan = plan_fft!(double_block_proto; flags = fft_flag)
-    double_block_bfft_plan = plan_bfft!(double_block_proto; flags = fft_flag)
+    # `threads = 1`: the transforms are small and `acquire!` already runs one
+    # PRN per task — FFTL would otherwise default to `Threads.nthreads()`.
+    double_block_fft_plan = plan_fft!(double_block_proto; flags = fft_flag, threads = 1)
+    double_block_bfft_plan = plan_bfft!(double_block_proto; flags = fft_flag, threads = 1)
     col_proto = zeros(ComplexF32, num_doppler_bins)
-    col_fft_plan = plan_fft!(col_proto; flags = fft_flag)
-    # Batched column FFT plan: only allocate when num_doppler_bins is small enough
-    # that the batched approach outperforms individual column FFTs (see BATCH_FFT_THRESHOLD).
-    # Above the threshold, store `nothing` — the non-batched path is used instead.
-    # Sized to one (num_doppler_bins, block_size) tile — the unit the pipeline
-    # processes — not the full samples_per_code width.
-    col_batch_fft_plan = if num_doppler_bins <= BATCH_FFT_THRESHOLD
-        col_batch_proto = zeros(ComplexF32, num_doppler_bins, block_size)
-        plan_fft!(col_batch_proto, 1; flags = fft_flag)
-    else
-        nothing
-    end
+    col_fft_plan = plan_fft!(col_proto; flags = fft_flag, threads = 1)
 
     # Precompute conjugated PRN FFTs
     prn_conj_ffts = Dict{Int,Matrix{ComplexF32}}()
@@ -688,11 +723,23 @@ function plan_acquire(
     # size is known here), so the plan's construction footprint is its
     # steady-state footprint — no first-`acquire!` spike.
     nthreads = min(Threads.nthreads(), max(1, Int(num_cores())), max(1, length(prns)))
-    thread_scratch = [
+    thread_scratch = map(1:nthreads) do _
+        tile = zeros(ComplexF32, num_doppler_bins, block_size)
+        tile_t = reshape(tile, block_size, num_doppler_bins)   # shares `tile`'s memory
         AcquisitionScratch(
+            plan_bfft!(double_block_proto; flags = fft_flag, threads = 1),
+            plan_fft!(col_proto; flags = fft_flag, threads = 1),
+            # The full plan keeps two tile-sized work arrays per slot (~2.5× the
+            # tile). `FFTL.plan_pass` needs ~0.5× the tile but measured ~4%
+            # slower end-to-end (up to ~19% on long coherent integrations), so
+            # speed wins here.
+            plan_fft!(tile_t, 2; flags = fft_flag, threads = 1),
             zeros(ComplexF32, fft_size),
             zeros(ComplexF32, fft_size),
-            zeros(ComplexF32, num_doppler_bins, block_size),
+            tile,
+            tile_t,
+            zeros(Float32, block_size),
+            zeros(Int, block_size),
             zeros(ComplexF32, num_doppler_bins),
             zeros(Float32, stage_rows, stage_cols),
             zeros(Float32, accumulator_rows, accumulator_cols),
@@ -704,8 +751,7 @@ function plan_acquire(
             zeros(Float32, col_sums_len),
             zeros(Int, code_drift_shifts_len),
         )
-        for _ in 1:nthreads
-    ]
+    end
     scratch_free = collect(1:nthreads)
     scratch_lock = Threads.SpinLock()
 
@@ -777,7 +823,7 @@ function plan_acquire(
         system, convert(typeof(1.0Hz), sampling_freq),
         samples_per_code, samples_per_code_eff, num_blocks, block_size, num_coherently_integrated_code_periods, num_data_bits, bit_edge_search_steps, num_noncoherent_accumulations,
         prn_conj_ffts,
-        double_block_fft_plan, double_block_bfft_plan, col_fft_plan, col_batch_fft_plan,
+        double_block_fft_plan, double_block_bfft_plan, col_fft_plan,
         doppler_freqs,
         signal_block_ffts,
         sig_buf,
@@ -814,7 +860,7 @@ end
 # path AND the machine. So time a real PRN pass here — the same kernel
 # `acquire!` will run, on the plan's own (still zeroed) buffers — and divide by
 # `num_blocks`. `min` over a few passes; a pass costs one PRN's work, which is
-# nothing next to the FFTW planning this function has already done.
+# nothing next to the FFT planning this function has already done.
 #
 # What is being estimated is the CPU work between two yields, so `min` over
 # several passes is the right statistic: it is the least perturbed by whatever

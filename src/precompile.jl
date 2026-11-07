@@ -8,9 +8,11 @@
 # and `ComplexF32`), plus a multi-period coherent plan and the `acquire!`
 # entry point a receiver drives its own plan through, moves the cost into
 # `Pkg.precompile`. The search is specialised on the signal type, so a signal
-# left out here would pay its own first call live. `FFTW.ESTIMATE` keeps the
-# plans cheap to build — FFTW wisdom does not survive precompilation, only the
-# compiled Julia code does. Every signal costs ~3 s of compilation here.
+# left out here would pay its own first call live. FFTL compiles a kernel per
+# transform shape on first use, so running the transforms here also moves that
+# compilation into the package image — for these shapes only; a plan at another
+# sampling frequency compiles its own FFT kernels on its first `acquire!`
+# (~0.1–0.4 s per shape). Every signal costs ~3 s of compilation here.
 using PrecompileTools: @setup_workload, @compile_workload
 
 # Galileo E5b, E6 and the E5a pilot's QP component only exist from GNSSSignals 4
@@ -86,8 +88,8 @@ end
     @compile_workload begin
         for (system, (signal_f32, signal_i16, sampling_freq)) in
             zip(_PRECOMPILE_SIGNALS, signals)
-            acquire(system, signal_i16, sampling_freq, [1, 2]; fft_flag = FFTW.ESTIMATE)
-            acquire(system, signal_f32, sampling_freq, 1; fft_flag = FFTW.ESTIMATE)
+            acquire(system, signal_i16, sampling_freq, [1, 2]; fft_flag = FFTL.ESTIMATE)
+            acquire(system, signal_f32, sampling_freq, 1; fft_flag = FFTL.ESTIMATE)
         end
         # A receiver builds its plan once and drives `acquire!` with it; a
         # multi-period coherent plan is the common shape for that.
@@ -98,7 +100,7 @@ end
             sampling_freq,
             [1, 2];
             num_coherently_integrated_code_periods = 2,
-            fft_flag = FFTW.ESTIMATE,
+            fft_flag = FFTL.ESTIMATE,
         )
         results = acquire!(plan, vcat(signal_i16, signal_i16), [1, 2])
         acquire!(plan, vcat(signal_f32, signal_f32), [1])

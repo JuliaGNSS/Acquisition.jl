@@ -21,7 +21,7 @@ function _precompute_signal_block_ffts!(
 )
     double_block_size = 2 * block_size
     # The inner FFT is run at `fft_size` (>= double_block_size) — the padded,
-    # FFTW-fast length chosen in `plan_acquire`. The output cache defines it; the
+    # fast length chosen in `plan_acquire` (`_inner_fft_size`). The output cache defines it; the
     # buffer and FFT plan match it. The pad tail [double_block_size+1 : fft_size]
     # carries only zeros, so the first `block_size` correlation lags recovered in
     # `_build_coherent_tile!` are unchanged (linear-corr length 2·bs-1 <= fft_size).
@@ -145,7 +145,7 @@ function _build_coherent_tile!(
     bfft_plan,
 )
     # Normalise by the ACTUAL inverse-FFT length. corr_buf may be zero-padded to
-    # the FFTW-fast `fft_size` >= 2*block_size chosen in `plan_acquire`; dividing
+    # the fast `fft_size` >= 2*block_size chosen in `plan_acquire`; dividing
     # by that length recovers correlation values identical to the unpadded case
     # (the standard IFFT 1/N and the N summed terms cancel to the true lag).
     inv_fft_size = 1f0 / length(corr_buf)
@@ -169,3 +169,53 @@ function _build_coherent_tile!(
     end
     return tile
 end
+
+"""
+    _build_doppler_tile_t!(tile_t, signal_block_ffts, prn_conj_fft_matrix, col_block_idx, num_blocks, block_size, num_coherently_integrated_code_periods, corr_buf, bfft_plan, doppler_fft_plan)
+
+Simple-path (pilot / sub-bit) counterpart of [`_build_coherent_tile!`](@ref) that
+also runs the Doppler FFT, in the TRANSPOSED layout: `tile_t` is
+`(block_size, num_doppler_bins)`, column `r` holding raw (un-fftshifted)
+Doppler bin `r` for the tile's `block_size` code phases.
+
+Each double-block IFFT result is written as a contiguous column instead of a
+strided row, and the Doppler FFT runs along dim 2 — one FFT per code phase,
+batched over contiguous `block_size`-long vectors, which vectorises across the
+code-phase axis. With FFTL this is faster than both the batched dim-1 FFT and
+the per-column FFTs of the `(num_doppler_bins, block_size)` layout at every
+tile shape, so no batched/per-column crossover is needed.
+"""
+function _build_doppler_tile_t!(
+    tile_t::AbstractMatrix{ComplexF32},       # (block_size, num_coh*num_blocks)
+    signal_block_ffts::AbstractMatrix{ComplexF32},
+    prn_conj_fft_matrix::Matrix{ComplexF32},
+    col_block_idx::Int,
+    num_blocks::Int,
+    block_size::Int,
+    num_coherently_integrated_code_periods::Int,
+    corr_buf::Vector{ComplexF32},
+    bfft_plan,
+    doppler_fft_plan,
+)
+    inv_fft_size = 1f0 / length(corr_buf)
+    for code_period_idx in 0:num_coherently_integrated_code_periods-1
+        for block_idx in 0:num_blocks-1
+            global_block_idx = code_period_idx * num_blocks + block_idx   # 0-based
+            prn_block = mod(block_idx + col_block_idx, num_blocks)
+            corr_buf .= view(signal_block_ffts, :, global_block_idx + 1) .*
+                        view(prn_conj_fft_matrix, :, prn_block + 1)
+            mul!(corr_buf, bfft_plan, corr_buf)
+            col = global_block_idx + 1
+            @inbounds @simd for i in 1:block_size
+                tile_t[i, col] = corr_buf[i] * inv_fft_size
+            end
+        end
+    end
+    mul!(tile_t, doppler_fft_plan, tile_t)
+    return tile_t
+end
+
+# Raw (FFT-order) Doppler bin feeding sorted (fftshifted) row `dst`:
+# sorted rows 1..shift come from raw bins front+1..N, rows shift+1..N from 1..front.
+@inline _raw_doppler_bin(dst::Int, shift::Int, front::Int) =
+    dst <= shift ? dst + front : dst - shift

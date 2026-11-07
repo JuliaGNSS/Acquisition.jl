@@ -503,32 +503,6 @@ function _accumulate_fftshifted_power_pilot!(
     end
 end
 
-# Batched-FFT counterpart: FFT all of `cim`'s columns at once in-place, then
-# accumulate `|x|²` into `accumulator` with the fftshift row permutation.
-# In production `cim` is the (num_doppler_bins, block_size) tile and the plan
-# is tile-shaped.
-function _accumulate_fftshifted_power_pilot_batched!(
-    accumulator::Matrix{Float32},
-    cim::Matrix{ComplexF32},
-    col_batch_fft_plan,
-    samples_per_code::Int,
-    num_doppler_bins::Int,
-    dest_col_offset::Int = 0,
-)
-    mul!(cim, col_batch_fft_plan, cim)
-    shift = num_doppler_bins ÷ 2
-    front = num_doppler_bins - shift
-    @inbounds for src_col in 1:size(cim, 2)
-        dst_col = dest_col_offset + src_col
-        @simd for doppler_bin in 1:front
-            accumulator[doppler_bin + shift, dst_col] += abs2(cim[doppler_bin, src_col])
-        end
-        @simd for doppler_bin in 1:shift
-            accumulator[doppler_bin, dst_col] += abs2(cim[doppler_bin + front, src_col])
-        end
-    end
-end
-
 # Per-column FFT followed by `|x|²` accumulation with per-row code-drift column
 # shift AND fftshift row permutation, folded into one pass (Issue #62).
 #
@@ -564,29 +538,6 @@ function _accumulate_fftshifted_power_drift_pilot!(
             sum = c_minus_1 + code_drift_shifts[dst_row]
             dst_col = (sum >= samples_per_code ? sum - samples_per_code : sum) + 1
             accumulator[dst_row, dst_col] += abs2(col_buf[r])
-        end
-    end
-end
-
-# Batched-FFT counterpart of `_accumulate_fftshifted_power_drift_pilot!`.
-function _accumulate_fftshifted_power_drift_pilot_batched!(
-    accumulator::Matrix{Float32},
-    cim::Matrix{ComplexF32},
-    col_batch_fft_plan,
-    samples_per_code::Int,
-    num_doppler_bins::Int,
-    fftshift_perm::Vector{Int},
-    code_drift_shifts::Vector{Int},
-    dest_col_offset::Int = 0,
-)
-    mul!(cim, col_batch_fft_plan, cim)
-    @inbounds for src_col in 1:size(cim, 2)
-        c_minus_1 = dest_col_offset + src_col - 1
-        for r in 1:num_doppler_bins
-            dst_row = fftshift_perm[r]
-            sum = c_minus_1 + code_drift_shifts[dst_row]
-            dst_col = (sum >= samples_per_code ? sum - samples_per_code : sum) + 1
-            accumulator[dst_row, dst_col] += abs2(cim[r, src_col])
         end
     end
 end
@@ -672,13 +623,13 @@ end
         if rotation_active
             _rotation_column!(stage, cim, src_col, cp_col,
                 scratch.col_buf, scratch.combine_buf_re, scratch.combine_buf_im,
-                plan.col_fft_plan, num_doppler_bins,
+                scratch.col_fft_plan, num_doppler_bins,
                 plan.num_coherently_integrated_code_periods, num_data_combos,
                 plan.num_blocks, plan.block_size, row_offset,
                 scratch.sub_block_ffts, tiled_re, tiled_im, use_max)
         else
             _sign_search_column!(view(stage, :, 1), cim, src_col,
-                scratch.col_buf, plan.col_fft_plan, num_doppler_bins,
+                scratch.col_buf, scratch.col_fft_plan, num_doppler_bins,
                 plan.num_data_bits, row_offset, scratch.sub_block_ffts, patterns)
         end
     end
@@ -775,36 +726,21 @@ function _accumulate_prn_step_tiled!(
     tile = scratch.coherent_tile
 
     for col_block_idx in 0:plan.num_blocks-1
-        _build_coherent_tile!(tile, signal_block_ffts, prn_conj_fft,
-            col_block_idx, plan.num_blocks, plan.block_size,
-            plan.num_coherently_integrated_code_periods,
-            scratch.corr_buf, plan.double_block_bfft_plan)
-        dest_col_offset = col_block_idx * plan.block_size
         if simple_path
-            if !has_drift
-                if num_doppler_bins <= BATCH_FFT_THRESHOLD
-                    _accumulate_fftshifted_power_pilot_batched!(
-                        nim, tile, plan.col_batch_fft_plan,
-                        plan.samples_per_code, num_doppler_bins, dest_col_offset)
-                else
-                    _accumulate_fftshifted_power_pilot!(
-                        nim, tile, scratch.col_buf, plan.col_fft_plan,
-                        plan.samples_per_code, num_doppler_bins, dest_col_offset)
-                end
-            else
-                if num_doppler_bins <= BATCH_FFT_THRESHOLD
-                    _accumulate_fftshifted_power_drift_pilot_batched!(
-                        nim, tile, plan.col_batch_fft_plan,
-                        plan.samples_per_code, num_doppler_bins,
-                        plan.fftshift_perm, scratch.code_drift_shifts, dest_col_offset)
-                else
-                    _accumulate_fftshifted_power_drift_pilot!(
-                        nim, tile, scratch.col_buf, plan.col_fft_plan,
-                        plan.samples_per_code, num_doppler_bins,
-                        plan.fftshift_perm, scratch.code_drift_shifts, dest_col_offset)
-                end
-            end
+            tile_t = scratch.coherent_tile_t
+            _build_doppler_tile_t!(tile_t, signal_block_ffts, prn_conj_fft,
+                col_block_idx, plan.num_blocks, plan.block_size,
+                plan.num_coherently_integrated_code_periods,
+                scratch.corr_buf, scratch.double_block_bfft_plan,
+                scratch.doppler_fft_plan)
+            _accumulate_power_tile_t!(nim, tile_t, plan.samples_per_code,
+                num_doppler_bins, scratch.code_drift_shifts, has_drift,
+                col_block_idx * plan.block_size)
         else
+            _build_coherent_tile!(tile, signal_block_ffts, prn_conj_fft,
+                col_block_idx, plan.num_blocks, plan.block_size,
+                plan.num_coherently_integrated_code_periods,
+                scratch.corr_buf, scratch.double_block_bfft_plan)
             _accumulate_sign_tile!(nim, tile, col_block_idx, plan, scratch, prn, has_drift)
         end
         _maybe_yield_block(plan, col_block_idx)
@@ -847,12 +783,12 @@ function _accumulate_noncoherent_integration_step!(
         if !has_drift
             _accumulate_fftshifted_power_pilot!(
                 noncoherent_integration_matrix, coherent_integration_matrix,
-                scratch.col_buf, plan.col_fft_plan,
+                scratch.col_buf, scratch.col_fft_plan,
                 plan.samples_per_code, num_doppler_bins)
         else
             _accumulate_fftshifted_power_drift_pilot!(
                 noncoherent_integration_matrix, coherent_integration_matrix,
-                scratch.col_buf, plan.col_fft_plan,
+                scratch.col_buf, scratch.col_fft_plan,
                 plan.samples_per_code, num_doppler_bins,
                 plan.fftshift_perm, drift_shifts)
         end
@@ -869,7 +805,7 @@ function _accumulate_noncoherent_integration_step!(
             if rotation_search_active
                 _sign_search_step_with_rotations!(noncoherent_integration_buf, coherent_integration_matrix,
                     scratch.col_buf, scratch.combine_buf_re, scratch.combine_buf_im,
-                    plan.col_fft_plan,
+                    scratch.col_fft_plan,
                     plan.samples_per_code, num_doppler_bins,
                     plan.num_coherently_integrated_code_periods, num_data_combos, plan.num_blocks,
                     plan.block_size,
@@ -878,7 +814,7 @@ function _accumulate_noncoherent_integration_step!(
                     plan.tiled_phase_patterns_im_by_prn[prn])
             else
                 _sign_search_step!(noncoherent_integration_buf, coherent_integration_matrix, scratch.col_buf,
-                    plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
+                    scratch.col_fft_plan, plan.samples_per_code, num_doppler_bins,
                     plan.num_data_bits, 0, scratch.sub_block_ffts,
                     plan.sign_patterns_by_prn[prn])
             end
@@ -893,7 +829,7 @@ function _accumulate_noncoherent_integration_step!(
                 if rotation_search_active
                     _sign_search_step_with_rotations!(noncoherent_integration_buf, coherent_integration_matrix,
                         scratch.col_buf, scratch.combine_buf_re, scratch.combine_buf_im,
-                        plan.col_fft_plan,
+                        scratch.col_fft_plan,
                         plan.samples_per_code, num_doppler_bins,
                         plan.num_coherently_integrated_code_periods, num_data_combos, plan.num_blocks,
                         plan.block_size,
@@ -902,7 +838,7 @@ function _accumulate_noncoherent_integration_step!(
                         plan.tiled_phase_patterns_im_by_prn[prn])
                 else
                     _sign_search_step!(noncoherent_integration_buf, coherent_integration_matrix, scratch.col_buf,
-                        plan.col_fft_plan, plan.samples_per_code, num_doppler_bins,
+                        scratch.col_fft_plan, plan.samples_per_code, num_doppler_bins,
                         plan.num_data_bits, row_offset, scratch.sub_block_ffts,
                         plan.sign_patterns_by_prn[prn])
                 end
@@ -918,3 +854,40 @@ end
 _accumulate_noncoherent_integration_step!(nim, cim, plan::AcquisitionPlan, accumulation_step_index::Int) =
     _accumulate_noncoherent_integration_step!(nim, cim, plan, _default_scratch(plan),
         first(plan.avail_prns), accumulation_step_index)
+
+# Transposed-tile counterpart of `_accumulate_fftshifted_power_pilot*!` and
+# `_accumulate_fftshifted_power_drift_pilot*!`: accumulate `|x|²` of a
+# Doppler-transformed `(block_size, num_doppler_bins)` tile (see
+# `_build_doppler_tile_t!`) into the `(num_doppler_bins, samples_per_code)`
+# accumulator, folding the fftshift row permutation and — when `has_drift` —
+# the per-row code-drift column shift. Iterates sorted rows so each row's drift
+# is a single offset over its contiguous code-phase run.
+function _accumulate_power_tile_t!(
+    accumulator::Matrix{Float32},
+    tile_t::AbstractMatrix{ComplexF32},
+    samples_per_code::Int,
+    num_doppler_bins::Int,
+    code_drift_shifts::Vector{Int},
+    has_drift::Bool,
+    dest_col_offset::Int,
+)
+    block_size = size(tile_t, 1)
+    shift = num_doppler_bins ÷ 2
+    front = num_doppler_bins - shift
+    @inbounds for dst in 1:num_doppler_bins
+        r = _raw_doppler_bin(dst, shift, front)
+        if has_drift
+            base = dest_col_offset + code_drift_shifts[dst]
+            for c in 1:block_size
+                s = base + c - 1
+                dst_col = (s >= samples_per_code ? s - samples_per_code : s) + 1
+                accumulator[dst, dst_col] += abs2(tile_t[c, r])
+            end
+        else
+            @simd for c in 1:block_size
+                accumulator[dst, dest_col_offset + c] += abs2(tile_t[c, r])
+            end
+        end
+    end
+    return accumulator
+end

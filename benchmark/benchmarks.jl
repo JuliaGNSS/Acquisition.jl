@@ -37,16 +37,6 @@ system = isdefined(GNSSSignals, :GPSL1CA) ? GNSSSignals.GPSL1CA() : GNSSSignals.
 const _is_fmdbzp = isdefined(Acquisition, :plan_acquire)
 
 # ============================================================================
-# Feature flags — opt-in groups that are noisy/large to run by default.
-# ============================================================================
-
-# `BatchFFTCrossover` exists to justify the `BATCH_FFT_THRESHOLD = 320` constant
-# in src/plan.jl; it's a one-off comparison sweep, not something that needs to
-# run on every commit. Off by default — set ACQUISITION_BENCH_CROSSOVER=1 to
-# re-run the sweep when re-tuning the threshold.
-const INCLUDE_BATCH_FFT_CROSSOVER = get(ENV, "ACQUISITION_BENCH_CROSSOVER", "0") == "1"
-
-# ============================================================================
 # Helpers — unified interface over both APIs
 # ============================================================================
 
@@ -156,52 +146,6 @@ for N_ms in [1, 5, 10, 20, 40]
 
     SUITE["LongCoherent"]["$(N_ms)ms"] =
         @benchmarkable _acquire!($plan, $signal, $([1]))
-end
-
-# ============================================================================
-# BatchFFTCrossover — batched 2-D FFT along dim 1 vs per-column FFTs.
-#
-# Justifies the `BATCH_FFT_THRESHOLD = 320` constant in src/plan.jl: batched wins
-# for small num_doppler_bins (amortises FFTW dispatch across columns); individual
-# column FFTs win for large num_doppler_bins (better cache behaviour).
-#
-# Sweep covers both sides of the crossover (ndop from ~8 up to several thousand)
-# at three realistic sampling rates. Only meaningful on the FM-DBZP branch,
-# which exposes `col_batch_fft_plan`.
-# ============================================================================
-
-if _is_fmdbzp && INCLUDE_BATCH_FFT_CROSSOVER
-    SUITE["BatchFFTCrossover"] = BenchmarkGroup()
-
-    for (fs, fs_label) in [(2.048e6Hz, "2.048MHz"), (5.0e6Hz, "5MHz"), (10.0e6Hz, "10MHz")]
-        for N_ms in [1, 5, 10, 20]
-            plan = _make_plan(fs, N_ms; prns = [1], num_noncoherent_accumulations = 1)
-            ndop = plan.num_coherently_integrated_code_periods * plan.num_blocks
-            # The pipeline consumes one (ndop × block_size) tile at a time, so
-            # the crossover question is now batched-tile vs per-column FFTs
-            # over a tile, repeated num_blocks times per PRN.
-            tile    = Acquisition._default_scratch(plan).coherent_tile
-            col_buf = Acquisition._default_scratch(plan).col_buf
-            bsize   = plan.block_size
-            group_key = "ndop=$(ndop)_fs=$(fs_label)_N=$(N_ms)ms"
-            SUITE["BatchFFTCrossover"][group_key] = BenchmarkGroup()
-
-            # Batched path only meaningful below the threshold (plan stores `nothing` above it).
-            if plan.col_batch_fft_plan !== nothing
-                batch_plan = plan.col_batch_fft_plan
-                SUITE["BatchFFTCrossover"][group_key]["batched"] =
-                    @benchmarkable mul!($tile, $batch_plan, $tile)
-            end
-
-            col_plan = plan.col_fft_plan
-            SUITE["BatchFFTCrossover"][group_key]["individual"] = @benchmarkable begin
-                for c in 1:$bsize
-                    copyto!($col_buf, 1, $tile, (c - 1) * $ndop + 1, $ndop)
-                    mul!($col_buf, $col_plan, $col_buf)
-                end
-            end
-        end
-    end
 end
 
 # ============================================================================

@@ -1,7 +1,7 @@
 module Acquisition
 
 using DocStringExtensions,
-    GNSSSignals, RecipesBase, FFTW, LinearAlgebra, Unitful,
+    GNSSSignals, RecipesBase, FFTL, LinearAlgebra, Unitful,
     SpecialFunctions, Random
 
 import Unitful: Hz

@@ -14,8 +14,8 @@ A single sampling-frequency candidate from [`recommend_sampling_freqs`](@ref).
     (= the value `plan_acquire` would pick)
   - `block_size::Int`: `samples_per_code ÷ num_blocks`
   - `inner_fft_size::Int`: Inner double-block FFT length actually run — `2 ×
-    block_size` zero-padded up to the next `2·3·5·7`-smooth size by
-    [`plan_acquire`](@ref), so always FFTW-fast
+    block_size` zero-padded by [`plan_acquire`](@ref) to the next `2^a` times at
+    most two factors from `{3, 5, 7}`, so always FFT-fast
   - `num_doppler_bins::Int`: Column-FFT length
     (`num_coherently_integrated_code_periods × num_blocks`)
   - `doppler_coverage::typeof(1.0Hz)`: Total Doppler coverage at this configuration
@@ -117,7 +117,7 @@ end
 # Cost model matching the docstring of `recommend_sampling_freqs`.
 function _fft_cost(samples_per_code, num_blocks, num_doppler_bins, inner_fft_size)
     # 2 (forward + inverse) × num_blocks FFTs of size inner_fft_size (the padded,
-    # FFTW-fast length that actually runs), each ~ N log N
+    # fast length that actually runs), each ~ N log N
     inner = 2.0 * num_blocks * inner_fft_size * log2(inner_fft_size)
     # samples_per_code column FFTs of size num_doppler_bins, each ~ N log N
     column = float(samples_per_code) * num_doppler_bins * log2(num_doppler_bins)
@@ -160,7 +160,7 @@ deduplicated — the first matching `sampling_freq` is reported.
     integration block. Affects `num_doppler_bins` and therefore the column-FFT cost.
   - `num_alternatives`: Maximum number of candidates to return (default `5`)
   - `max_prime`: Reject candidates whose `num_doppler_bins` contains a prime
-    factor larger than this value (default `7` — FFTW's "fast" regime).
+    factor larger than this value (default `7`).
     `num_doppler_bins` is the column FFT, the only FFT whose smoothness still
     affects speed: the inner double-block FFT is zero-padded to a fast size
     automatically, so neither its nor `samples_per_code`'s factorization gates
@@ -186,7 +186,7 @@ cost            = inner_fft_cost + column_fft_cost
 ```
 
 This mirrors the per-PRN per coherent-step work, ignoring constant factors.
-`inner_fft_size` is the padded (FFTW-fast) length that actually runs, not the raw
+`inner_fft_size` is the padded (fast) length that actually runs, not the raw
 `2 × block_size`.
 
 # See also
@@ -250,14 +250,14 @@ function recommend_sampling_freqs(
             num_blocks = _smallest_valid_num_blocks(samples_per_code, min_num_blocks)
             if num_blocks !== nothing
                 block_size = samples_per_code ÷ num_blocks
-                # The inner double-block FFT is zero-padded to the next 2·3·5·7-
-                # smooth length by plan_acquire, so report that padded size and
+                # The inner double-block FFT is zero-padded to a fast length by
+                # plan_acquire (`_inner_fft_size`), so report that padded size and
                 # let it always meet the smoothness budget. Only the column FFT
                 # (num_doppler_bins) — a DFT that cannot be padded — gates the
                 # candidate; `samples_per_code`'s own factorization is irrelevant
                 # (e.g. 16.368 MHz has a non-smooth samples_per_code but a smooth
                 # num_doppler_bins, and is fast after padding).
-                inner_fft_size = nextprod((2, 3, 5, 7), 2 * block_size)
+                inner_fft_size = _inner_fft_size(2 * block_size)
                 num_doppler_bins = num_coherently_integrated_code_periods * num_blocks
                 inner_max_prime = _largest_prime_factor(inner_fft_size)
                 ndb_max_prime = _largest_prime_factor(num_doppler_bins)
