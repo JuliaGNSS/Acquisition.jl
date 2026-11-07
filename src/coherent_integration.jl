@@ -171,21 +171,20 @@ function _build_coherent_tile!(
 end
 
 """
-    _build_doppler_tile_t!(tile_t, signal_block_ffts, prn_conj_fft_matrix, col_block_idx, num_blocks, block_size, num_coherently_integrated_code_periods, corr_buf, bfft_plan, doppler_fft_plan)
+    _build_coherent_tile_t!(tile_t, signal_block_ffts, prn_conj_fft_matrix, col_block_idx, num_blocks, block_size, num_coherently_integrated_code_periods, corr_buf, bfft_plan)
 
-Simple-path (pilot / sub-bit) counterpart of [`_build_coherent_tile!`](@ref) that
-also runs the Doppler FFT, in the TRANSPOSED layout: `tile_t` is
-`(block_size, num_doppler_bins)`, column `r` holding raw (un-fftshifted)
-Doppler bin `r` for the tile's `block_size` code phases.
+[`_build_coherent_tile!`](@ref) in the TRANSPOSED layout: `tile_t` is
+`(block_size, num_doppler_bins)`, column `m` holding coherent-integration row
+`m` (double block `m - 1`) for the tile's `block_size` code phases. Each
+double-block IFFT result is written as a contiguous column instead of a
+strided row.
 
-Each double-block IFFT result is written as a contiguous column instead of a
-strided row, and the Doppler FFT runs along dim 2 — one FFT per code phase,
-batched over contiguous `block_size`-long vectors, which vectorises across the
-code-phase axis. With FFTL this is faster than both the batched dim-1 FFT and
-the per-column FFTs of the `(num_doppler_bins, block_size)` layout at every
-tile shape, so no batched/per-column crossover is needed.
+The simple path follows this with one Doppler FFT along dim 2
+([`_build_doppler_tile_t!`](@ref)); the secondary-code rotation search first
+sign-modulates the Doppler axis once per pattern (see
+[`_rotation_tile_power!`](@ref)).
 """
-function _build_doppler_tile_t!(
+function _build_coherent_tile_t!(
     tile_t::AbstractMatrix{ComplexF32},       # (block_size, num_coh*num_blocks)
     signal_block_ffts::AbstractMatrix{ComplexF32},
     prn_conj_fft_matrix::Matrix{ComplexF32},
@@ -195,7 +194,6 @@ function _build_doppler_tile_t!(
     num_coherently_integrated_code_periods::Int,
     corr_buf::Vector{ComplexF32},
     bfft_plan,
-    doppler_fft_plan,
 )
     inv_fft_size = 1f0 / length(corr_buf)
     for code_period_idx in 0:num_coherently_integrated_code_periods-1
@@ -211,6 +209,37 @@ function _build_doppler_tile_t!(
             end
         end
     end
+    return tile_t
+end
+
+"""
+    _build_doppler_tile_t!(tile_t, signal_block_ffts, prn_conj_fft_matrix, col_block_idx, num_blocks, block_size, num_coherently_integrated_code_periods, corr_buf, bfft_plan, doppler_fft_plan)
+
+Simple-path (pilot / sub-bit) tile: [`_build_coherent_tile_t!`](@ref) followed
+by the Doppler FFT along dim 2, so column `r` of `tile_t` holds raw
+(un-fftshifted) Doppler bin `r` for the tile's `block_size` code phases.
+
+The Doppler FFT runs one FFT per code phase, batched over contiguous
+`block_size`-long vectors, which vectorises across the code-phase axis. With
+FFTL this is faster than both the batched dim-1 FFT and the per-column FFTs of
+the `(num_doppler_bins, block_size)` layout at every tile shape, so no
+batched/per-column crossover is needed.
+"""
+function _build_doppler_tile_t!(
+    tile_t::AbstractMatrix{ComplexF32},       # (block_size, num_coh*num_blocks)
+    signal_block_ffts::AbstractMatrix{ComplexF32},
+    prn_conj_fft_matrix::Matrix{ComplexF32},
+    col_block_idx::Int,
+    num_blocks::Int,
+    block_size::Int,
+    num_coherently_integrated_code_periods::Int,
+    corr_buf::Vector{ComplexF32},
+    bfft_plan,
+    doppler_fft_plan,
+)
+    _build_coherent_tile_t!(tile_t, signal_block_ffts, prn_conj_fft_matrix,
+        col_block_idx, num_blocks, block_size,
+        num_coherently_integrated_code_periods, corr_buf, bfft_plan)
     mul!(tile_t, doppler_fft_plan, tile_t)
     return tile_t
 end
@@ -219,3 +248,8 @@ end
 # sorted rows 1..shift come from raw bins front+1..N, rows shift+1..N from 1..front.
 @inline _raw_doppler_bin(dst::Int, shift::Int, front::Int) =
     dst <= shift ? dst + front : dst - shift
+
+# Power of one Doppler-domain tile cell: a complex FFT output (`abs2`) or a cell
+# that already holds power (the max-reduced rotation-search tile).
+@inline _cell_power(x::ComplexF32) = abs2(x)
+@inline _cell_power(x::Float32) = x

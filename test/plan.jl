@@ -313,9 +313,12 @@ end
             # Nothing else may exceed the tile's column count except the
             # 1-D col_sums and — at N_nc>1 only — the per-slot accumulator
             # (bounded by min(threads, cores, num_prns) slots, never per PRN).
-            @test size(scratch.stage_buf, 2) <= plan.num_secondary_rotations
-            @test size(scratch.sub_block_ffts, 2) <=
-                max(plan.num_data_bits, plan.num_coherently_integrated_code_periods)
+            @test size(scratch.stage_buf, 2) <= 1
+            @test size(scratch.sub_block_ffts, 2) <= plan.num_data_bits
+            @test size(scratch.col_max_buf) == (plan.block_size, plan.num_secondary_rotations)
+            # Rotation-search tiles are tile-sized, like the coherent tile.
+            @test size(scratch.rotation_tile) ∈ ((0, 0), (plan.block_size, ndop))
+            @test size(scratch.rotation_power) ∈ ((0, 0), (plan.block_size, ndop))
             # Row sums span the stitched grid of all Doppler passes.
             @test length(scratch.row_sums_buf) <= length(plan.doppler_freqs)
             @test length(scratch.col_power_buf) <= ndop
@@ -390,21 +393,33 @@ end
 
     # Sign-search path: bit_edge_search_steps > 1 makes the kernels actually
     # read these buffers, so they must exist — but the stage is per-COLUMN
-    # (num_doppler_bins × num_rotations), never per-surface.
+    # (num_doppler_bins × 1), never per-surface.
     search_plan = plan_acquire(system, sampling_freq, [1];
         min_doppler_coverage = 10_000Hz,
         num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4)
     search_scratch = Acquisition._default_scratch(search_plan)
-    @test size(search_scratch.stage_buf) ==
-        (search_plan.pass_fft_bins, search_plan.num_secondary_rotations)
+    @test size(search_scratch.stage_buf) == (search_plan.pass_fft_bins, 1)
+    @test size(search_scratch.rotation_tile) == (0, 0)
     @test size(search_scratch.sub_block_ffts) ==
         (search_plan.pass_fft_bins, search_plan.num_data_bits)
 
-    # Rotation search: one stage column per secondary-code rotation.
+    # Rotation search: runs per tile, so none of the per-column sign-search
+    # buffers; the max-reduced power tile only when a rotation has several
+    # patterns (here one per rotation).
     rot_plan = plan_acquire(GPSL5I(), 10.24e6Hz, [1];
         num_coherently_integrated_code_periods = 10)
-    @test size(Acquisition._default_scratch(rot_plan).stage_buf) ==
-        (length(rot_plan.doppler_freqs), 10)
+    rot_scratch = Acquisition._default_scratch(rot_plan)
+    rot_ndop = rot_plan.pass_fft_bins
+    @test size(rot_scratch.stage_buf) == (0, 0)
+    @test size(rot_scratch.sub_block_ffts) == (0, 0)
+    @test size(rot_scratch.rotation_tile) == (rot_plan.block_size, rot_ndop)
+    @test size(rot_scratch.rotation_power) == (0, 0)
+    @test size(rot_scratch.col_max_buf) == (rot_plan.block_size, 10)
+    # Data-bit polarities × rotation: several patterns per rotation.
+    rot_data_plan = plan_acquire(GPSL5I(), 10.24e6Hz, [1];
+        num_coherently_integrated_code_periods = 20)
+    @test size(Acquisition._default_scratch(rot_data_plan).rotation_power) ==
+        (rot_data_plan.block_size, rot_data_plan.pass_fft_bins)
 end
 
 @testset "N_nc=1 streams with no surface; N_nc>1 holds one surface per slot" begin

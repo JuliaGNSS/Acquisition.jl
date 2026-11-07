@@ -394,7 +394,7 @@ end
     # peak-neighbour columns on demand; the interpolated result must be
     # identical to the store_power_bins=true run (which reads the neighbours
     # back from the stored surface). Exercised on the simple path AND the
-    # secondary-code rotation path (stage-based recompute).
+    # secondary-code rotation path.
     @testset "simple path" begin
         system = GPSL1CA()
         sampling_freq = 2.048e6Hz
@@ -428,9 +428,10 @@ end
         r_store = acquire!(plan, ComplexF32.(signal), prn;
             interm_freq = 0.0Hz, subsample_interpolation = true, store_power_bins = true)
         @test is_detected(r_nostore)
-        # Same last-bit caveat as the simple path above.
-        @test r_nostore.code_phase ≈ r_store.code_phase atol = 1e-3
-        @test abs(r_nostore.carrier_doppler - r_store.carrier_doppler) < 0.01Hz
+        # The recompute runs the same tile kernel (`_rotation_tile_power!`) as
+        # the streamed pass, so the estimates are bit-identical here too.
+        @test r_nostore.code_phase == r_store.code_phase
+        @test r_nostore.carrier_doppler == r_store.carrier_doppler
         @test r_nostore.secondary_code_phase == r_store.secondary_code_phase
     end
 end
