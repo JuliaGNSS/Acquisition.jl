@@ -149,6 +149,70 @@ plan = plan_acquire(system, sampling_freq, collect(1:3))
 results = acquire!(plan, signal, 1:3; interm_freq)
 ```
 
+### Avoiding first-call latency
+
+The search is compiled for each plan *shape* — signal system, sampling frequency,
+coherent and non-coherent lengths, Doppler grid and search options — and for the
+sample type you pass. Shapes covered by Acquisition's own precompile workload are
+ready when the package loads. For any other shape, compilation happens on first use:
+
+- [`plan_acquire`](@ref) compiles everything that depends only on the plan — the FFT
+  kernels and the per-PRN search kernels. That takes one to two seconds for a new shape,
+  and nothing for a shape compiled before in the session.
+- The first [`acquire!`](@ref) then compiles what depends on your sample type and PRN
+  collection (downconversion, the PRN loop, result extraction): roughly another
+  0.4 s per sample type.
+
+A receiver usually cannot afford either once samples are flowing. Put your production
+configuration into your own package's [PrecompileTools](https://github.com/JuliaLang/PrecompileTools.jl)
+workload: then all of it is compiled when *your* package is precompiled, and the first
+plan and acquisition at run time are as fast as every later one.
+
+```julia
+module MyReceiver
+
+using Acquisition, GNSSSignals, PrecompileTools
+import Unitful: Hz
+
+make_plan() = plan_acquire(GPSL1CA(), 6.5e6Hz, collect(1:32);
+    num_coherently_integrated_code_periods = 3)
+
+@setup_workload begin
+    @compile_workload begin
+        plan = make_plan()
+        # Same element type and container as your front end delivers; the values do
+        # not matter.
+        n = plan.num_coherently_integrated_code_periods * plan.samples_per_code
+        signal = Complex{Int16}.(rand(Int16(-100):Int16(100), n), rand(Int16(-100):Int16(100), n))
+        acquire!(plan, signal, collect(1:32); interm_freq = 0.0Hz)
+    end
+end
+
+end
+```
+
+With this workload, at a sampling frequency Acquisition's own image does not cover,
+`make_plan()` took 1.3 ms and the first `acquire!` 31 ms — its steady-state time —
+instead of about 1.5 s and 0.4 s.
+
+Make the workload match production exactly, or the part that differs compiles at run
+time after all:
+
+- the same plan keywords (sampling frequency, `num_coherently_integrated_code_periods`,
+  `num_noncoherent_accumulations`, `min_doppler_coverage`, `bit_edge_search_steps`, …);
+- the same sample container: element type (`ComplexF32`, `Complex{Int16}`, …) *and*
+  container (`Vector`, or the `view` of your ring buffer you actually pass);
+- the same PRN collection type (`Vector{Int}` or `UnitRange`);
+- the entry points you use — call [`acquire_stream!`](@ref) in the workload if that is
+  what you use, and pass `store_power_bins` / `subsample_interpolation` if you set them.
+
+The unit of `interm_freq` does not matter: it is converted to `Float64` before the
+search, so `243Hz` and `0.243kHz` share one compilation.
+
+In a script or notebook, where there is no package to precompile, run one
+`acquire!` on representative data right after `plan_acquire` and before the
+time-critical part.
+
 ## Multi-threaded Acquisition
 
 When processing many PRNs, start Julia with multiple threads and the PRN loop runs in

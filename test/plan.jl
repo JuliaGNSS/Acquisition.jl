@@ -581,3 +581,20 @@ end
     plan = plan_acquire(GPSL1CA(), 5e6Hz, [1])
     @test size(plan.signal_block_ffts, 1) == Acquisition._inner_fft_size(2 * plan.block_size)
 end
+
+@testset "plan_acquire compiles the search upfront" begin
+    # runtests.jl switches the warm-up off for speed; exercise it here.
+    Acquisition._PRECOMPILE_SEARCH[] = true
+    try
+        # Every warm-up signature must still match its kernel; `precompile`
+        # returns false instead of throwing when one drifts, which would silently
+        # bring the first-call compilation back. One plan per search path.
+        for plan in (plan_acquire(GPSL1CA(), 5e6Hz, [1, 2]),
+                     plan_acquire(GPSL1CA(), 5e6Hz, [1, 2]; num_noncoherent_accumulations = 3),
+                     plan_acquire(GPSL5I(), 10.24e6Hz, [1]; num_coherently_integrated_code_periods = 10))
+            @test Acquisition._precompile_search(plan) === true
+        end
+    finally
+        Acquisition._PRECOMPILE_SEARCH[] = false
+    end
+end

@@ -371,7 +371,14 @@ end
 
 Pre-compute an acquisition plan for FM-DBZP acquisition.
 
-Allocates all buffers, computes FFT plans, and pre-computes conjugated PRN FFTs.
+Allocates all buffers, computes FFT plans, pre-computes conjugated PRN FFTs, and
+compiles the plan-dependent part of the search (the FFT kernels and the per-PRN
+kernels). Compilation is per plan *shape* — sampling frequency, coherent and
+non-coherent lengths, Doppler grid, search path — so the first plan of a shape
+the package image does not cover takes one to two seconds longer; later plans of that
+shape do not. The first [`acquire!`](@ref) then still compiles the part that
+depends on the sample type (~0.4 s); see [Avoiding first-call latency](@ref) to
+move all of it into your own package's precompilation.
 The returned plan can be passed to [`acquire!`](@ref) repeatedly without re-allocating.
 The per-thread scratch pool is sized to `min(Threads.nthreads(), num_cores)` at the
 time of the call; start Julia with `-t N` before calling `plan_acquire` to enable
@@ -846,9 +853,61 @@ function plan_acquire(
         tiled_phase_patterns_im_by_prn,
     )
 
+    _precompile_search(plan)
     _calibrate_preempt_stride!(plan, max_blocking_time)
 
     return plan
+end
+
+# Compile the plan-dependent part of the search now, so the first `acquire!` does
+# not pay it after the samples have started flowing. The search is specialised on
+# the plan's type, which carries the FFT plan types, and FFTL compiles its kernels
+# per transform shape, so a plan shape the package image does not cover would
+# otherwise compile ~1–2 s on its first scan.
+#
+# Only what is fully determined by the plan is compiled: the signal-block FFT
+# precompute (it reads the plan's own downconverted `ComplexF32` buffer), the
+# per-PRN tile kernels and the interpolation recompute. Nothing here depends on
+# the caller's sample or PRN container types, so nothing is guessed. That is
+# ~75–80% of the compile time; the rest (downconversion, the PRN loop and
+# result extraction, ~0.4 s per sample type) compiles on the first call — or in
+# the caller's own precompile workload (see the guide, "Avoiding first-call
+# latency"). `precompile` compiles without running anything; for a plan type
+# compiled before, it is a cache lookup.
+#
+# Skipped while a package image is being generated: a precompile workload runs
+# `acquire!`, which compiles all of this anyway.
+#
+# Returns whether every `precompile` call found its method (`nothing` when
+# skipped). `precompile` does not throw on a signature that no longer matches —
+# it returns `false` — so the test suite pins this to `true`.
+#
+# `_PRECOMPILE_SEARCH[]` exists for the test suite only, which builds dozens of
+# plan shapes it acquires with once or never. It is not an API.
+const _PRECOMPILE_SEARCH = Ref(true)
+
+function _precompile_search(plan::AcquisitionPlan)
+    _PRECOMPILE_SEARCH[] || return nothing
+    ccall(:jl_generating_output, Cint, ()) == 1 && return nothing
+    P = typeof(plan)
+    S = typeof(_default_scratch(plan))
+    fwd = typeof(plan.double_block_fft_plan)
+    step_ffts = typeof(_signal_block_ffts_for_step(plan, 1))
+    ok = true
+    # Both search paths, whichever this plan takes: `_acquire!` branches on
+    # `num_noncoherent_accumulations` at run time, so its first call compiles
+    # the streamed (N_nc == 1) and the multistep (N_nc > 1) kernels alike.
+    for ffts in (typeof(plan.signal_block_ffts), step_ffts)
+        ok &= precompile(_precompute_signal_block_ffts!, (ffts,
+            Vector{ComplexF32}, Int, Int, Int, Int, Vector{ComplexF32}, fwd))
+    end
+    # `nothing`: streamed statistics; a matrix: `store_power_bins = true`.
+    ok &= precompile(_acquire_prn_streamed!, (P, S, Int, Nothing))
+    ok &= precompile(_acquire_prn_streamed!, (P, S, Int, Matrix{Float32}))
+    ok &= precompile(_accumulate_prn_step_tiled!, (Matrix{Float32}, step_ffts, P, S, Int, Int))
+    # Subsample interpolation without a stored surface.
+    ok &= precompile(_recompute_column_power!, (Vector{Float32}, P, S, Int, Int))
+    return ok
 end
 
 # Turn a requested `max_blocking_time` into `plan.preempt_block_stride` — the
