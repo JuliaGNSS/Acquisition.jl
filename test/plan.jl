@@ -603,7 +603,10 @@ end
         # bring the first-call compilation back. One plan per search path.
         for plan in (plan_acquire(GPSL1CA(), 5e6Hz, [1, 2]),
                      plan_acquire(GPSL1CA(), 5e6Hz, [1, 2]; num_noncoherent_accumulations = 3),
-                     plan_acquire(GPSL5I(), 10.24e6Hz, [1]; num_coherently_integrated_code_periods = 10))
+                     plan_acquire(GPSL5I(), 10.24e6Hz, [1]; num_coherently_integrated_code_periods = 10),
+                     # Doppler passes (issue #101), streamed and multistep.
+                     plan_acquire(GPSL1CA(), 1.542e6Hz, [1, 2]),
+                     plan_acquire(GPSL1CA(), 1.542e6Hz, [1, 2]; num_noncoherent_accumulations = 3))
             @test Acquisition._precompile_search(plan) === true
         end
     finally
