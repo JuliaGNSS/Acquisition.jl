@@ -82,7 +82,7 @@ This ensures that for the true code delay `tau_samples = k_true*block_size + fin
 
 ## Delay recovery
 
-After the column-wise FFT (`_accumulate_noncoherent_integration_pilot!` or `_sign_search_step!`), the peak
+After the column-wise FFT (`_accumulate_noncoherent_integration_pilot!` or `_rotation_tile_power!`), the peak
 column index `pc` (0-indexed) satisfies:
 
     tau_samples = (num_blocks - pc ÷ block_size) mod num_blocks * block_size + pc mod block_size

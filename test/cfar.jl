@@ -158,7 +158,8 @@ end
     simple = plan_acquire(GPSL1CA(), 2.048e6Hz, [1]; num_coherently_integrated_code_periods = 20,
         fft_flag = FFTL.ESTIMATE)
     @test simple.sign_search_null === nothing
-    for (ncoh, nbe, K) in ((20, 5, 5), (40, 1, 2), (40, 4, 8))
+    # 40 ms, N_be = 4: 2 aligned polarities + 3 alignments × 4 (partial bits).
+    for (ncoh, nbe, K) in ((20, 5, 5), (40, 1, 2), (40, 4, 14), (60, 1, 4))
         plan = plan_acquire(GPSL1CA(), 2.048e6Hz, [1]; min_doppler_coverage = 5000Hz,
             num_coherently_integrated_code_periods = ncoh, bit_edge_search_steps = nbe,
             fft_flag = FFTL.ESTIMATE)

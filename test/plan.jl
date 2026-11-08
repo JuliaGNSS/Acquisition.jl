@@ -259,8 +259,7 @@ end
         :col_max_buf,
         :col_max_row_buf,
         :doppler_fft_plan,
-        :stage_buf,
-        :sub_block_ffts,
+        :segment_tiles,
         :col_buf,
         :row_sums_buf,
         :col_power_buf,
@@ -319,8 +318,9 @@ end
             # Nothing else may exceed the tile's column count except the
             # 1-D col_sums and — at N_nc>1 only — the per-slot accumulator
             # (bounded by min(threads, cores, num_prns) slots, never per PRN).
-            @test size(scratch.stage_buf, 2) <= 1
-            @test size(scratch.sub_block_ffts, 2) <= plan.num_data_bits
+            # Gray-code segment tiles: at most one per data-bit segment.
+            @test length(scratch.segment_tiles) <= plan.num_data_bits + 1
+            @test all(t -> size(t) == (plan.block_size, ndop), scratch.segment_tiles)
             @test size(scratch.col_max_buf) == (plan.block_size, plan.num_secondary_rotations)
             # Rotation-search tiles are tile-sized, like the coherent tile.
             @test size(scratch.rotation_tile) ∈ ((0, 0), (plan.block_size, ndop))
@@ -378,67 +378,53 @@ end
 
 @testset "sign-search scratch is 0x0 when the simple path is provably taken" begin
     # The routers take the simple/pilot path when num_data_bits == 1 &&
-    # bit_edge_search_steps == 1 && no rotation search. In that regime
-    # stage_buf and sub_block_ffts are never read, so the plan should
-    # allocate them as 0x0 sentinels per thread.
+    # bit_edge_search_steps == 1 && no rotation search. Every other plan runs
+    # the sign-search tile kernel, whose buffers are tile-sized.
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
 
     simple_plan = plan_acquire(system, sampling_freq, [1];
         num_coherently_integrated_code_periods = 1, bit_edge_search_steps = 1)
-    simple_scratch = Acquisition._default_scratch(simple_plan)
     @test simple_plan.num_data_bits == 1
     @test simple_plan.bit_edge_search_steps == 1
-    @test size(simple_scratch.stage_buf) == (0, 0)
-    @test size(simple_scratch.sub_block_ffts) == (0, 0)
-    # And every pool slot matches — not just slot 1.
+    # Every pool slot — not just slot 1.
     for t_scratch in simple_plan.thread_scratch
-        @test size(t_scratch.stage_buf) == (0, 0)
-        @test size(t_scratch.sub_block_ffts) == (0, 0)
+        @test size(t_scratch.rotation_tile) == (0, 0)
+        @test size(t_scratch.rotation_power) == (0, 0)
+        @test size(t_scratch.rotation_signs) == (0, 0)
+        @test isempty(t_scratch.segment_tiles)
     end
 
-    # Sign-search path: bit_edge_search_steps > 1 makes the kernels actually
-    # read these buffers, so they must exist — but the stage is per-COLUMN
-    # (num_doppler_bins × 1), never per-surface.
-    search_plan = plan_acquire(system, sampling_freq, [1];
-        min_doppler_coverage = 10_000Hz,
-        num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4)
-    search_scratch = Acquisition._default_scratch(search_plan)
-    @test size(search_scratch.stage_buf) == (search_plan.pass_fft_bins, 1)
-    @test size(search_scratch.rotation_tile) == (0, 0)
-    @test size(search_scratch.sub_block_ffts) ==
-        (search_plan.pass_fft_bins, search_plan.num_data_bits)
-
-    # Bit-transition search of a one-bit window: runs per tile like the
-    # rotation search, with one "rotation" of `bit_edge_search_steps` patterns.
-    transition_plan = plan_acquire(system, sampling_freq, [1];
-        num_coherently_integrated_code_periods = 20, bit_edge_search_steps = 5)
-    transition_scratch = Acquisition._default_scratch(transition_plan)
-    transition_ndop = length(transition_plan.doppler_freqs)
-    @test transition_plan.num_data_bits == 1
-    @test size(transition_scratch.stage_buf) == (0, 0)
-    @test size(transition_scratch.sub_block_ffts) == (0, 0)
-    @test size(transition_scratch.rotation_tile) == (transition_plan.block_size, transition_ndop)
-    @test size(transition_scratch.rotation_power) == (transition_plan.block_size, transition_ndop)
-    @test size(transition_scratch.col_max_buf) == (transition_plan.block_size, 1)
-
-    # Rotation search: runs per tile, so none of the per-column sign-search
-    # buffers; the max-reduced power tile only when a rotation has several
-    # patterns (here one per rotation).
-    rot_plan = plan_acquire(GPSL5I(), 10.24e6Hz, [1];
-        num_coherently_integrated_code_periods = 10)
-    rot_scratch = Acquisition._default_scratch(rot_plan)
-    rot_ndop = rot_plan.pass_fft_bins
-    @test size(rot_scratch.stage_buf) == (0, 0)
-    @test size(rot_scratch.sub_block_ffts) == (0, 0)
-    @test size(rot_scratch.rotation_tile) == (rot_plan.block_size, rot_ndop)
-    @test size(rot_scratch.rotation_power) == (0, 0)
-    @test size(rot_scratch.col_max_buf) == (rot_plan.block_size, 10)
-    # Data-bit polarities × rotation: several patterns per rotation.
-    rot_data_plan = plan_acquire(GPSL5I(), 10.24e6Hz, [1];
-        num_coherently_integrated_code_periods = 20)
-    @test size(Acquisition._default_scratch(rot_data_plan).rotation_power) ==
-        (rot_data_plan.block_size, rot_data_plan.pass_fft_bins)
+    # (plan, hypotheses per rotation, Gray-code segment tiles)
+    cases = [
+        # Bit-transition search of a one-bit window: 1 + 4 transitions.
+        (plan_acquire(system, sampling_freq, [1];
+            num_coherently_integrated_code_periods = 20, bit_edge_search_steps = 5), 5, 0),
+        # Two bits, aligned: 2 polarities, transformed directly.
+        (plan_acquire(system, sampling_freq, [1]; min_doppler_coverage = 10_000Hz,
+            num_coherently_integrated_code_periods = 40), 2, 0),
+        # Two bits, 4 alignments: 2 + 3 × 4 (partial bits at both ends), direct.
+        (plan_acquire(system, sampling_freq, [1]; min_doppler_coverage = 10_000Hz,
+            num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4), 14, 0),
+        # Four bits, aligned: 8 polarities over 4 segments → Gray code.
+        (plan_acquire(system, sampling_freq, [1]; min_doppler_coverage = 10_000Hz,
+            num_coherently_integrated_code_periods = 80), 8, 4),
+        # Rotation search alone: one hypothesis per rotation.
+        (plan_acquire(GPSL5I(), 10.24e6Hz, [1]; num_coherently_integrated_code_periods = 10), 1, 0),
+        # Rotation × 2 data-bit polarities.
+        (plan_acquire(GPSL5I(), 10.24e6Hz, [1]; num_coherently_integrated_code_periods = 20), 2, 0),
+    ]
+    for (plan, num_hypotheses, num_segment_tiles) in cases
+        scratch = Acquisition._default_scratch(plan)
+        ndop = plan.pass_fft_bins
+        @test Acquisition._num_sign_hypotheses(plan.num_data_bits,
+            plan.num_coherently_integrated_code_periods, plan.bit_edge_search_steps) == num_hypotheses
+        @test size(scratch.rotation_tile) == (plan.block_size, ndop)
+        @test size(scratch.rotation_power) ==
+            (num_hypotheses > 1 ? (plan.block_size, ndop) : (0, 0))
+        @test length(scratch.segment_tiles) == num_segment_tiles
+        @test size(scratch.col_max_buf) == (plan.block_size, plan.num_secondary_rotations)
+    end
 end
 
 @testset "N_nc=1 streams with no surface; N_nc>1 holds one surface per slot" begin

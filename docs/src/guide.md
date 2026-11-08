@@ -818,7 +818,11 @@ The window spans whole data bit periods. Two constraints apply:
 2. `bit_period_codes` must be divisible by `bit_edge_search_steps`
 
 The algorithm searches all `2^(num_data_bits - 1)` sign-flip combinations across
-the data bits in the window.
+the data bits in the window. With `bit_edge_search_steps > 1` the first bit edge
+is also placed at `bit_edge_search_steps` evenly spaced positions within a bit
+period; away from the window start the window then holds a partial bit at each
+end, and all `2^num_data_bits` sign combinations of the partial and whole bits
+are searched.
 
 **Pilot channels** (e.g. GPS L5-Q, Galileo E1-C): no data bit constraint; set
 `num_coherently_integrated_code_periods` freely.
