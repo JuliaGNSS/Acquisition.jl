@@ -1143,8 +1143,8 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins, signal, inter
         # samples_per_code`.) This matches `get_num_cells` of the result built below
         # — the public `is_detected` undercounted the same way until issue #70.
         num_cells = num_doppler_bins * plan.samples_per_code * plan.num_secondary_rotations
-        threshold = cfar_threshold(0.01, num_cells;
-            num_noncoherent_integrations = plan.num_noncoherent_accumulations)
+        threshold = _cfar_threshold(0.01, num_cells,
+            plan.num_noncoherent_accumulations, plan.sign_search_null)
         if peak_to_noise > threshold
             _estimate_secondary_code_phase(plan, prn, signal, interm_freq_hz,
                 sampling_freq_hz, code_phase, ustrip(Hz, doppler))
@@ -1177,6 +1177,7 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins, signal, inter
         plan.num_blocks,
         plan.block_size,
         plan.num_secondary_rotations,
+        plan.sign_search_null,
     )
 end
 
@@ -1274,8 +1275,8 @@ function _extract_result_streamed!(plan, scratch, prn,
     # Exact secondary-code phase — same gate and estimator as `_extract_result!`.
     secondary_code_phase = if plan.num_secondary_rotations > 1
         num_cells = num_doppler_bins * plan.samples_per_code * plan.num_secondary_rotations
-        threshold = cfar_threshold(0.01, num_cells;
-            num_noncoherent_integrations = plan.num_noncoherent_accumulations)
+        threshold = _cfar_threshold(0.01, num_cells,
+            plan.num_noncoherent_accumulations, plan.sign_search_null)
         if peak_to_noise > threshold
             _estimate_secondary_code_phase(plan, prn, signal, interm_freq_hz,
                 sampling_freq_hz, code_phase, ustrip(Hz, doppler))
@@ -1302,6 +1303,7 @@ function _extract_result_streamed!(plan, scratch, prn,
         plan.num_blocks,
         plan.block_size,
         plan.num_secondary_rotations,
+        plan.sign_search_null,
     )
 end
 

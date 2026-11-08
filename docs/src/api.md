@@ -26,6 +26,7 @@ PlanInUseError
 SamplingFreqRecommendation
 AbstractSDRClockPlan
 AD9361ClockPlan
+Acquisition.SignSearchNull
 ```
 
 ## Noise Estimators
