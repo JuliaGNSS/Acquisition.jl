@@ -41,20 +41,23 @@ function _threshold(null::SignSearchNull, pfa_cell::Float64)
 end
 
 # Per-row signs (`num_doppler_bins × K`) of the K sign hypotheses one cell is
-# maximised over: rotation 0's data-bit polarities × bit-edge alignments, built
-# with the kernels' own sign construction (`_fill_hypothesis_signs!`) for a
-# column aligned to row 0. Rotations are not included — each rotation has its
-# own cell (`get_num_cells`).
+# maximised over — rotation 0's data-bit polarities at every bit-edge alignment
+# — built with the kernel's own sign construction (`_fill_hypothesis_signs!`)
+# for a column aligned to row 0. Rotations are not included: each rotation has
+# its own cell (`get_num_cells`).
 function _hypothesis_signs(patterns::Matrix{Float32}, num_data_bits::Int,
         num_coh::Int, num_edges::Int, num_blocks::Int)
     num_doppler_bins = num_coh * num_blocks
-    num_data_combos = 1 << (num_data_bits - 1)
-    signs = Matrix{Float32}(undef, num_doppler_bins, num_data_combos * num_edges)
+    signs = Matrix{Float32}(undef, num_doppler_bins,
+        _num_sign_hypotheses(num_data_bits, num_coh, num_edges))
     k = 0
-    for data_combo in 0:num_data_combos-1, edge in 0:num_edges-1
-        k += 1
-        _fill_hypothesis_signs!(view(signs, :, k), patterns, data_combo + 1, edge, 0,
-            num_data_bits, num_coh, num_edges, num_blocks)
+    for edge in 0:num_edges-1
+        num_segments = _edge_segments(edge, num_data_bits, num_coh, num_edges)[3]
+        for combo in _edge_combos(num_segments, num_data_bits)
+            k += 1
+            _fill_hypothesis_signs!(view(signs, :, k), patterns, 1, edge, combo, 0,
+                num_data_bits, num_coh, num_edges, num_blocks)
+        end
     end
     return signs
 end

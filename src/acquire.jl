@@ -718,7 +718,6 @@ function _acquire_prn_streamed!(
     pass_fft_bins = plan.pass_fft_bins
     block_size = plan.block_size
     samples_per_code = plan.samples_per_code
-    tile_search = _tile_sign_search_active(plan)
     simple_path = _simple_path_active(plan)
     num_slices = _num_search_slices(plan)
     row_sums = scratch.row_sums_buf
@@ -731,7 +730,6 @@ function _acquire_prn_streamed!(
     col_max_row = scratch.col_max_row_buf
     # Sign-search inputs depend only on the PRN, not on the Doppler pass.
     patterns = simple_path ? _EMPTY_SIGN_PATTERNS : plan.sign_patterns_by_prn[prn]
-    edge_step = _bit_edge_step(plan)
 
     peak_power = -Inf32
     peak_doppler_bin = 1
@@ -743,43 +741,21 @@ function _acquire_prn_streamed!(
         signal_block_ffts = _signal_block_ffts_for_step(plan, 1, pass_idx)
         rows = _pass_rows(plan, pass_idx)
         block_idx_offset = (pass_idx - 1) * plan.num_blocks
-        if simple_path || tile_search
-            for col_block_idx in 0:plan.num_blocks-1
-                col_offset = col_block_idx * block_size
-                tile_t = _build_search_tile_t!(scratch, signal_block_ffts, prn_conj_fft,
+        for col_block_idx in 0:plan.num_blocks-1
+            col_offset = col_block_idx * block_size
+            tile_t = _build_search_tile_t!(scratch, signal_block_ffts, prn_conj_fft,
+                col_block_idx, plan, simple_path)
+            for slice_idx in 0:num_slices-1
+                power = _slice_power_tile!(scratch, tile_t, patterns, slice_idx,
                     col_block_idx, plan, simple_path)
-                for slice_idx in 0:num_slices-1
-                    power = _slice_power_tile!(scratch, tile_t, patterns, slice_idx,
-                        col_block_idx, plan, simple_path)
-                    _stream_power_tile_t!(row_sums, col_sums, collect_col_sums, store_buf,
-                        power, col_offset + slice_idx * samples_per_code, pass_fft_bins,
-                        rows, col_max, col_max_row, slice_idx + 1)
-                end
-                peak_power, peak_doppler_bin, peak_col = _fold_tile_peaks(
-                    col_max, col_max_row, col_offset, samples_per_code,
-                    peak_power, peak_doppler_bin, peak_col)
-                _maybe_yield_block(plan, block_idx_offset + col_block_idx)
+                _stream_power_tile_t!(row_sums, col_sums, collect_col_sums, store_buf,
+                    power, col_offset + slice_idx * samples_per_code, pass_fft_bins,
+                    rows, col_max, col_max_row, slice_idx + 1)
             end
-        else
-            tile = scratch.coherent_tile
-            stage_col = view(scratch.stage_buf, :, 1)
-            for col_block_idx in 0:plan.num_blocks-1
-                _build_coherent_tile!(tile, signal_block_ffts, prn_conj_fft,
-                    col_block_idx, plan.num_blocks, block_size,
-                    plan.num_coherently_integrated_code_periods,
-                    scratch.corr_buf, scratch.double_block_bfft_plan)
-                for local_col in 1:block_size
-                    cp_col = col_block_idx * block_size + local_col
-                    fill!(stage_col, 0f0)
-                    _fill_sign_stage_column!(stage_col, tile, local_col, plan, scratch,
-                        patterns, edge_step)
-                    peak_power, peak_doppler_bin, peak_col = _stream_stage_column!(
-                        row_sums, col_sums, collect_col_sums, store_buf,
-                        stage_col, cp_col, rows,
-                        peak_power, peak_doppler_bin, peak_col)
-                end
-                _maybe_yield_block(plan, block_idx_offset + col_block_idx)
-            end
+            peak_power, peak_doppler_bin, peak_col = _fold_tile_peaks(
+                col_max, col_max_row, col_offset, samples_per_code,
+                peak_power, peak_doppler_bin, peak_col)
+            _maybe_yield_block(plan, block_idx_offset + col_block_idx)
         end
     end
     return peak_power, peak_doppler_bin, peak_col
@@ -889,48 +865,6 @@ function _fold_tile_peaks(
     return best_power, best_row, col_offset + (best_s - 1) * samples_per_code + best_c
 end
 
-# Streaming consumer for one data-bit sign-search stage column (already |x|² in
-# the pass's sorted row order): same statistics update as
-# `_stream_power_tile_t!` + `_fold_tile_peaks` for a single code-phase column,
-# without the fftshift fold. Like it, it reduces the pass's kept `rows` into the
-# stitched grid, and `col_sums` accumulates across passes.
-@inline function _stream_stage_column!(
-    row_sums::Vector{Float32},
-    col_sums::Vector{Float32},
-    collect_col_sums::Bool,
-    store_buf::Union{Nothing,Matrix{Float32}},
-    stage_col::AbstractVector{Float32},
-    dest_col::Int,
-    rows::PassRows,
-    peak_power::Float32,
-    peak_doppler_bin::Int,
-    peak_col::Int,
-)
-    col_sum = 0f0
-    col_max = -Inf32
-    col_max_row = 1
-    @inbounds for i in 1:rows.num_rows
-        v = stage_col[rows.src_offset + i]
-        dst = rows.dest_offset + i
-        row_sums[dst] += v
-        col_sum += v
-        if v > col_max
-            col_max = v
-            col_max_row = dst
-        end
-    end
-    collect_col_sums && (col_sums[dest_col] += col_sum)
-    if store_buf !== nothing
-        @inbounds for i in 1:rows.num_rows
-            store_buf[rows.dest_offset + i, dest_col] = stage_col[rows.src_offset + i]
-        end
-    end
-    if col_max > peak_power
-        return col_max, col_max_row, dest_col
-    end
-    return peak_power, peak_doppler_bin, peak_col
-end
-
 # Recompute the Doppler-power column `global_col` (index into the effective cp
 # axis, i.e. including the rotation-slice offset) of Doppler pass `pass_idx`
 # into `dest`, in that pass's sorted-Doppler row order (all `pass_fft_bins`
@@ -957,25 +891,12 @@ function _recompute_column_power!(
     col_block_idx = cp_col0 ÷ block_size
     local_col = cp_col0 % block_size + 1
     simple_path = _simple_path_active(plan)
-    if simple_path || _tile_sign_search_active(plan)
-        tile_t = _build_search_tile_t!(scratch, signal_block_ffts,
-            plan.prn_conj_ffts[prn], col_block_idx, plan, simple_path)
-        patterns = simple_path ? _EMPTY_SIGN_PATTERNS : plan.sign_patterns_by_prn[prn]
-        power = _slice_power_tile!(scratch, tile_t, patterns, rotation_idx,
-            col_block_idx, plan, simple_path)
-        _gather_power_column!(dest, power, local_col)
-    else
-        tile = scratch.coherent_tile
-        _build_coherent_tile!(tile, signal_block_ffts, plan.prn_conj_ffts[prn],
-            col_block_idx, plan.num_blocks, block_size,
-            plan.num_coherently_integrated_code_periods,
-            scratch.corr_buf, scratch.double_block_bfft_plan)
-        stage_col = view(scratch.stage_buf, :, 1)
-        fill!(stage_col, 0f0)
-        _fill_sign_stage_column!(stage_col, tile, local_col, plan, scratch,
-            plan.sign_patterns_by_prn[prn], _bit_edge_step(plan))
-        dest .= stage_col
-    end
+    tile_t = _build_search_tile_t!(scratch, signal_block_ffts,
+        plan.prn_conj_ffts[prn], col_block_idx, plan, simple_path)
+    patterns = simple_path ? _EMPTY_SIGN_PATTERNS : plan.sign_patterns_by_prn[prn]
+    power = _slice_power_tile!(scratch, tile_t, patterns, rotation_idx,
+        col_block_idx, plan, simple_path)
+    _gather_power_column!(dest, power, local_col)
     return dest
 end
 

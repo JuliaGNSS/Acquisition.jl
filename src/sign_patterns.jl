@@ -8,8 +8,10 @@
     sign_patterns(secondary_code, prn, num_data_bits, num_secondary_rotations, num_coh_periods, use_secondary_code)
         -> Matrix{Float32}  # (num_coh_periods, num_patterns)
 
-Pure enumeration of ±1 sign patterns to search inside `_sign_search_step!`. Each column is
-one pattern over `num_coh_periods` coherent code periods.
+Pure enumeration of ±1 sign patterns over `num_coh_periods` coherent code periods, one per
+column. Production uses only the secondary-code axis (`num_data_bits = 1`) and adds the
+data-bit signs per bit-edge alignment itself ([`_fill_hypothesis_signs!`](@ref)); the
+data-bit axis serves the per-column reference [`_sign_search_step_with_rotations!`](@ref).
 
 Two independent search axes:
 - Data-bit polarities: `2^(num_data_bits − 1)` patterns with `d[0] = +1` fixed.
