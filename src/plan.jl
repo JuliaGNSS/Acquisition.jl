@@ -944,9 +944,11 @@ function _precompile_search(plan::AcquisitionPlan)
     # `nothing`: streamed statistics; a matrix: `store_power_bins = true`.
     ok &= precompile(_acquire_prn_streamed!, (P, S, Int, Nothing))
     ok &= precompile(_acquire_prn_streamed!, (P, S, Int, Matrix{Float32}))
-    ok &= precompile(_accumulate_prn_step_tiled!, (Matrix{Float32}, step_ffts, P, S, Int, Int))
-    # Subsample interpolation without a stored surface.
-    ok &= precompile(_recompute_column_power!, (Vector{Float32}, P, S, Int, Int))
+    # The trailing `Int` is the Doppler pass: the search always passes it, so
+    # compile that form rather than the default-argument shim.
+    ok &= precompile(_accumulate_prn_step_tiled!, (Matrix{Float32}, step_ffts, P, S, Int, Int, Int))
+    # Subsample interpolation without a stored surface (also per Doppler pass).
+    ok &= precompile(_recompute_column_power!, (Vector{Float32}, P, S, Int, Int, Int))
     return ok
 end
 
