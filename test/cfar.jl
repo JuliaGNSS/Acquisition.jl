@@ -131,3 +131,61 @@ end
     @test strong.peak_to_noise_ratio > weak.peak_to_noise_ratio
     @test strong.CN0 > weak.CN0
 end
+
+@testset "Sign-search CFAR null distribution" begin
+    # One hypothesis per cell: the null model reproduces the χ² (Gamma) threshold.
+    for M in (1, 3, 20)
+        null = Acquisition._sign_search_null(ones(Float32, 400, 1), M)
+        @test null.num_hypotheses == 1
+        for cells in (10^3, 655_360)
+            @test Acquisition._cfar_threshold(0.01, cells, M, null) ≈
+                  cfar_threshold(0.01, cells; num_noncoherent_integrations = M) rtol = 2e-3
+        end
+    end
+    # Two identical hypotheses are still one exponential.
+    dup = Acquisition._sign_search_null(ones(Float32, 400, 2), 1)
+    @test Acquisition._cfar_threshold(0.01, 1000, 1, dup) ≈ cfar_threshold(0.01, 1000) rtol = 1e-2
+    # Two orthogonal hypotheses: W = max of two iid Exp(1), E[W] = 3/2, so
+    # P(W / E[W] > t) = 1 - (1 - e^{-3t/2})².
+    orth = Acquisition._sign_search_null(Float32[ones(200); ones(200);; ones(200); -ones(200)], 1)
+    pfa_cell = -expm1(log1p(-0.01) / 1000)
+    exact = -log1p(-sqrt(1 - pfa_cell)) / 1.5
+    @test Acquisition._cfar_threshold(0.01, 1000, 1, orth) ≈ exact rtol = 1e-2
+    # More hypotheses per cell → lower threshold on the mean-normalised statistic.
+    @test Acquisition._cfar_threshold(0.01, 1000, 1, orth) < cfar_threshold(0.01, 1000)
+
+    # Plans: a sign search carries the null model, the simple path does not.
+    simple = plan_acquire(GPSL1CA(), 2.048e6Hz, [1]; num_coherently_integrated_code_periods = 20,
+        fft_flag = FFTL.ESTIMATE)
+    @test simple.sign_search_null === nothing
+    for (ncoh, nbe, K) in ((20, 5, 5), (40, 1, 2), (40, 4, 8))
+        plan = plan_acquire(GPSL1CA(), 2.048e6Hz, [1]; min_doppler_coverage = 5000Hz,
+            num_coherently_integrated_code_periods = ncoh, bit_edge_search_steps = nbe,
+            fft_flag = FFTL.ESTIMATE)
+        @test plan.sign_search_null.num_hypotheses == K
+    end
+    # L5I rotation search: one hypothesis per rotation at N_coh = 10 …
+    @test plan_acquire(GPSL5I(), 10.23e6Hz, [1]; num_coherently_integrated_code_periods = 10,
+        fft_flag = FFTL.ESTIMATE).sign_search_null === nothing
+    # … two data-bit polarities per rotation at N_coh = 20.
+    @test plan_acquire(GPSL5I(), 10.23e6Hz, [1]; num_coherently_integrated_code_periods = 20,
+        fft_flag = FFTL.ESTIMATE).sign_search_null.num_hypotheses == 2
+end
+
+@testset "Sign-search CFAR holds its false-alarm rate on noise" begin
+    # Noise only through the full pipeline: with the null model the realised
+    # false-alarm rate matches the requested one (the χ² threshold gave 0%).
+    plan = plan_acquire(GPSL1CA(), 2.048e6Hz, [1]; min_doppler_coverage = 5000Hz,
+        num_coherently_integrated_code_periods = 20, bit_edge_search_steps = 5,
+        fft_flag = FFTL.ESTIMATE)
+    rng = Xoshiro(42)
+    trials = 400
+    alarms = count(1:trials) do _
+        noise = randn(rng, ComplexF32, 20 * plan.samples_per_code)
+        is_detected(only(acquire!(plan, noise, [1]; interm_freq = 0.0Hz)); pfa = 0.1)
+    end
+    # Binomial(400, 0.1): mean 40, σ = 6.
+    @test 20 <= alarms <= 60
+    r = only(acquire!(plan, randn(rng, ComplexF32, 20 * plan.samples_per_code), [1]; interm_freq = 0.0Hz))
+    @test cfar_threshold(r; pfa = 0.01) < cfar_threshold(0.01, get_num_cells(r))
+end

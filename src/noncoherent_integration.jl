@@ -812,7 +812,6 @@ function _rotation_tile_power!(
     num_blocks = plan.num_blocks
     num_data_combos = _num_data_combos(plan.num_data_bits)
     num_edges = plan.bit_edge_search_steps
-    edge_step = _bit_edge_step(plan)
     modulated_tile = scratch.rotation_tile
     power = scratch.rotation_power
     signs = scratch.rotation_signs
@@ -820,28 +819,18 @@ function _rotation_tile_power!(
     sign_hi = view(signs, :, 2)
     off_lo, off_hi, split_col =
         _rotation_tile_offsets(col_block_idx, num_blocks, block_size)
-    transitions = plan.num_data_bits == 1
     single_pattern = num_data_combos * num_edges == 1
     first_pattern = true
     for data_combo in 0:num_data_combos-1
         # Patterns are rotation-major, data-bit-minor (see `sign_patterns`).
         pattern_idx = rotation_idx * num_data_combos + data_combo + 1
         for edge in 0:num_edges-1
-            if transitions
-                _fill_rotation_signs!(sign_lo, patterns, pattern_idx, off_lo, num_blocks)
-                _fill_rotation_signs!(sign_hi, patterns, pattern_idx, off_hi, num_blocks)
-                if edge > 0
-                    edge_row = _bit_edge_period(plan, edge) * num_blocks
-                    _negate_leading_rows!(sign_lo, off_lo + edge_row)
-                    _negate_leading_rows!(sign_hi, off_hi + edge_row)
-                end
-            else
-                row_offset = edge * edge_step
-                _fill_rotation_signs!(sign_lo, patterns, pattern_idx,
-                    (row_offset + off_lo) % num_doppler_bins, num_blocks)
-                _fill_rotation_signs!(sign_hi, patterns, pattern_idx,
-                    (row_offset + off_hi) % num_doppler_bins, num_blocks)
-            end
+            _fill_hypothesis_signs!(sign_lo, patterns, pattern_idx, edge, off_lo,
+                plan.num_data_bits, plan.num_coherently_integrated_code_periods,
+                num_edges, num_blocks)
+            _fill_hypothesis_signs!(sign_hi, patterns, pattern_idx, edge, off_hi,
+                plan.num_data_bits, plan.num_coherently_integrated_code_periods,
+                num_edges, num_blocks)
             @inbounds for m in 1:num_doppler_bins
                 s_lo = sign_lo[m]
                 s_hi = sign_hi[m]
@@ -880,6 +869,35 @@ end
     off_hi = (off_lo + 1) % num_blocks
     split = block_size - (block_size >> 1)
     return off_lo, off_hi, split
+end
+
+# Per-row signs of one sign hypothesis of the tile kernel: pattern `q` at
+# bit-edge alignment `edge` (0-based), for a column whose first code-period
+# boundary is row `off`. With several data bits per window the alignment shifts
+# the pattern cyclically by `edge` bit-edge steps; with one data bit it flips
+# the rows before code period `edge · N_coh ÷ N_be` (edge 0: no transition).
+# Shared by `_rotation_tile_power!` and the CFAR null model
+# (`_sign_search_null`), so both see the same hypotheses.
+@inline function _fill_hypothesis_signs!(
+    signs::AbstractVector{Float32},
+    patterns::Matrix{Float32},
+    q::Int,
+    edge::Int,
+    off::Int,
+    num_data_bits::Int,
+    num_coh::Int,
+    num_edges::Int,
+    num_blocks::Int,
+)
+    num_doppler_bins = length(signs)
+    if num_data_bits == 1
+        _fill_rotation_signs!(signs, patterns, q, off, num_blocks)
+        edge > 0 && _negate_leading_rows!(signs, off + (edge * num_coh ÷ num_edges) * num_blocks)
+    else
+        edge_step = (num_coh ÷ num_data_bits) * num_blocks ÷ num_edges
+        _fill_rotation_signs!(signs, patterns, q, (edge * edge_step + off) % num_doppler_bins, num_blocks)
+    end
+    return signs
 end
 
 # Flip the sign of rows `1:num_rows`: the rows before a bit transition.

@@ -223,6 +223,10 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     # secondary code) the same matrix value is stored under every PRN key — keeps
     # the lookup uniform without per-call allocation.
     sign_patterns_by_prn::Dict{Int,Matrix{Float32}}
+    # CFAR null distribution of a cell that is the max over several sign
+    # hypotheses (data-bit polarities × bit-edge alignments, per rotation);
+    # `nothing` when each cell is one hypothesis. See `SignSearchNull`.
+    sign_search_null::Union{SignSearchNull,Nothing}
 end
 
 """
@@ -830,7 +834,8 @@ function plan_acquire(
     # Pre-allocate concrete-typed results buffer to avoid boxing allocations in acquire!
     dummy_result = AcquisitionResults(
         system, 0, convert(typeof(1.0Hz), sampling_freq), 0.0Hz, 0.0, nothing, 0.0,
-        0f0, 0f0, 0, nothing, doppler_freqs, num_blocks, block_size, num_secondary_rotations)
+        0f0, 0f0, 0, nothing, doppler_freqs, num_blocks, block_size, num_secondary_rotations,
+        nothing)
     acq_results_buf = Vector{typeof(dummy_result)}(undef, length(prns))
 
     # Pre-compute the ±1 sign-pattern matrix once per PRN. Patterns that don't
@@ -857,6 +862,19 @@ function plan_acquire(
                     num_coherently_integrated_code_periods, use_secondary_code)
             end
         end
+    end
+
+    # Built from rotation 0 of the first PRN: a secondary code multiplies all
+    # hypotheses of a rotation alike, so their correlation — all the null model
+    # depends on — is the same for every rotation and PRN (up to the cyclic
+    # bit-edge shifts of multi-bit windows, a small effect).
+    sign_search_null = if patterns_per_rotation > 1 && sign_search_path_active
+        _sign_search_null(
+            _hypothesis_signs(sign_patterns_by_prn[first(prns)], num_data_bits,
+                num_coherently_integrated_code_periods, bit_edge_search_steps, num_blocks),
+            num_noncoherent_accumulations)
+    else
+        nothing
     end
 
     plan = AcquisitionPlan(
@@ -887,6 +905,7 @@ function plan_acquire(
         max_secondary_code_rotations,
         num_secondary_rotations,
         sign_patterns_by_prn,
+        sign_search_null,
     )
 
     _precompile_search(plan)

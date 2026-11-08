@@ -74,7 +74,23 @@ threshold = cfar_threshold(0.01, get_num_cells(result); num_noncoherent_integrat
 `is_detected(result; pfa)` takes care of both arguments for you — it reads
 `num_cells` and `num_noncoherent_integrations` directly from the result — so
 you only need [`cfar_threshold`](@ref) when you want to inspect the threshold
-separately (e.g. for plotting or custom logic).
+separately (e.g. for plotting or custom logic). Prefer
+`cfar_threshold(result; pfa)`, which is what `is_detected` uses:
+
+```@example guide
+threshold = cfar_threshold(result; pfa = 0.01)
+```
+
+**Sign searches.** With a data-bit polarity search (a window longer than one
+data bit) or a bit-edge search (`bit_edge_search_steps > 1`), each cell is the
+maximum over several sign hypotheses. Under noise that maximum has a higher
+mean — which the noise estimate absorbs — and a much shorter tail relative to
+it than one χ² cell, so the χ² threshold would be far too high: no false
+alarms at all, and weak signals missed. [`plan_acquire`](@ref) therefore
+computes the null distribution of the maximum from the plan's sign patterns,
+and `cfar_threshold(result; pfa)` / `is_detected` use it. The raw
+`peak_to_noise_ratio` of a sign search is consequently lower than without one,
+for the same signal; compare it to its own threshold, not across plans.
 
 Choosing `pfa`:
 

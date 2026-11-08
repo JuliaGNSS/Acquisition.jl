@@ -83,3 +83,35 @@ function cfar_threshold(pfa, num_cells; num_noncoherent_integrations = 1)
     # x is the Gamma(M, 1) quantile; divide by M to get the peak_to_noise_ratio scale
     Float64(x / a)
 end
+
+"""
+    cfar_threshold(result::AcquisitionResults; pfa = 0.01)
+
+CFAR threshold on `result.peak_to_noise_ratio` at false-alarm probability `pfa` for
+the search that produced `result`. Without a sign search this is
+`cfar_threshold(pfa, get_num_cells(result); num_noncoherent_integrations)`.
+
+After a sign search (data-bit polarities with `num_coherently_integrated_code_periods`
+longer than a data bit, or `bit_edge_search_steps > 1`), each cell is the maximum over
+several correlated hypotheses. That raises the noise floor the statistic is divided by
+and shortens its tail, so the χ² threshold above would be far too high (no false alarms
+at all, and lost sensitivity). The threshold then comes from the null distribution of
+that maximum ([`SignSearchNull`](@ref Acquisition.SignSearchNull)), computed by
+[`plan_acquire`](@ref) from the plan's sign patterns, with the same Bonferroni-like
+correction across `get_num_cells(result)` cells.
+"""
+function cfar_threshold(result::AcquisitionResults; pfa = 0.01)
+    return _cfar_threshold(pfa, get_num_cells(result),
+        result.num_noncoherent_integrations, result.sign_search_null)
+end
+
+_cfar_threshold(pfa, num_cells, num_noncoherent_integrations, ::Nothing) =
+    cfar_threshold(pfa, num_cells; num_noncoherent_integrations)
+
+function _cfar_threshold(pfa, num_cells, num_noncoherent_integrations, null::SignSearchNull)
+    0 < pfa < 1 || throw(ArgumentError("pfa must be in (0, 1), got $pfa"))
+    num_cells > 0 || throw(ArgumentError("num_cells must be positive, got $num_cells"))
+    # 1 - (1 - pfa)^(1/num_cells), accurate for tiny per-cell probabilities.
+    pfa_cell = -expm1(log1p(-pfa) / num_cells)
+    return _threshold(null, pfa_cell)
+end
