@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.9.2](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.9.1...v2.9.2) (2026-11-09)
+
+
+### Performance Improvements
+
+* compile the plan-dependent search in plan_acquire ([813013c](https://github.com/JuliaGNSS/Acquisition.jl/commit/813013c31b459465f343eb589b426e2afde94040))
+* compute FFTs with FFTL and run the Doppler FFT across a transposed tile ([253e84b](https://github.com/JuliaGNSS/Acquisition.jl/commit/253e84b42911eefe1e5b5bbe7b7bc716472e6fd6))
+
 ## [2.9.1](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.9.0...v2.9.1) (2026-09-30)
 
 No changes to the package. Replaces the accidental 3.0.0 release.
