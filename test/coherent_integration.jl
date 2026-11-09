@@ -33,7 +33,7 @@
         plan.double_block_fft_plan)
     Acquisition._build_coherent_integration_matrix!(cim, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
         plan.samples_per_code, plan.num_blocks, plan.block_size, plan.num_coherently_integrated_code_periods,
-        scratch.corr_buf, plan.double_block_bfft_plan)
+        scratch.corr_buf, scratch.double_block_bfft_plan)
 
     # In the full coherent integration matrix structure ALL rows peak at the same column:
     #   pc (0-indexed) = mod(num_blocks - tau÷block_size, num_blocks) * block_size + (tau%block_size)
@@ -63,7 +63,7 @@
         plan.double_block_fft_plan)
     Acquisition._build_coherent_integration_matrix!(cim, plan.signal_block_ffts, plan.prn_conj_ffts[prn],
         plan.samples_per_code, plan.num_blocks, plan.block_size, plan.num_coherently_integrated_code_periods,
-        scratch.corr_buf, plan.double_block_bfft_plan)
+        scratch.corr_buf, scratch.double_block_bfft_plan)
     block_row_2 = tau_samples_2 ÷ plan.block_size
     @test block_row_2 == 1  # Verify we're testing block_row > 0 (non-trivial column block)
     scrambled_block_2    = mod(plan.num_blocks - block_row_2, plan.num_blocks)  # = 15

@@ -17,10 +17,9 @@ struct AcquisitionScratch{P2,P3,P4}
     # This slot's own FFT plans. FFTL plans own their work buffers, so a plan must
     # not be applied by two tasks at once — every kernel in the per-PRN parallel
     # loop therefore takes its plans from the scratch slot it claimed, never from
-    # the shared `AcquisitionPlan`. Same sizes as the plan-level plans of the same
-    # name (FFTL shares twiddles/kernels between plans of one size, so the extra
-    # plans cost a few small work buffers).
-    double_block_bfft_plan::P2
+    # the shared `AcquisitionPlan`. (FFTL shares twiddles/kernels between plans
+    # of one size, so the per-slot copies cost a few small work buffers.)
+    double_block_bfft_plan::P2                      # in-place backward FFT (unnormalised), size fft_size
     col_fft_plan::P3                                # per-column Doppler FFT (sign-search kernels)
     doppler_fft_plan::P4                            # Doppler FFT along dim 2 of `coherent_tile_t`
     double_block_buf::Vector{ComplexF32}            # length fft_size (padded 2*block_size)
@@ -111,9 +110,11 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     # column k+1 = conj(FFT(PRN sub-block k zero-padded to fft_size)), precomputed
     # to avoid conjugation in the inner loop of _build_coherent_integration_matrix!
     prn_conj_ffts::Dict{Int,Matrix{ComplexF32}}
-    double_block_fft_plan::P1   # in-place forward FFT, size fft_size (padded 2*block_size)
-    double_block_bfft_plan::P2  # in-place backward FFT (unnormalised), size fft_size
-    col_fft_plan::P3            # in-place forward FFT, size num_doppler_bins = num_coherently_integrated_code_periods*num_blocks
+    # In-place forward FFT, size fft_size (padded 2*block_size). Only used to fill
+    # `signal_block_ffts` before the per-PRN loop, on the calling task. The
+    # backward and Doppler-axis plans the per-PRN kernels apply live in each
+    # scratch slot instead (types P2–P4, see `AcquisitionScratch`).
+    double_block_fft_plan::P1
     # doppler_freqs: StepRangeLen of num_doppler_bins Hz values, sorted from -doppler_coverage_hz/2 to doppler_coverage_hz/2-doppler_bin_spacing_hz
     doppler_freqs::DS
     # Signal-block FFT cache: (fft_size, num_coh*num_blocks*N_nc).
@@ -622,9 +623,7 @@ function plan_acquire(
     # `threads = 1`: the transforms are small and `acquire!` already runs one
     # PRN per task — FFTL would otherwise default to `Threads.nthreads()`.
     double_block_fft_plan = plan_fft!(double_block_proto; flags = fft_flag, threads = 1)
-    double_block_bfft_plan = plan_bfft!(double_block_proto; flags = fft_flag, threads = 1)
     col_proto = zeros(ComplexF32, num_doppler_bins)
-    col_fft_plan = plan_fft!(col_proto; flags = fft_flag, threads = 1)
 
     # Precompute conjugated PRN FFTs
     prn_conj_ffts = Dict{Int,Matrix{ComplexF32}}()
@@ -830,7 +829,7 @@ function plan_acquire(
         system, convert(typeof(1.0Hz), sampling_freq),
         samples_per_code, samples_per_code_eff, num_blocks, block_size, num_coherently_integrated_code_periods, num_data_bits, bit_edge_search_steps, num_noncoherent_accumulations,
         prn_conj_ffts,
-        double_block_fft_plan, double_block_bfft_plan, col_fft_plan,
+        double_block_fft_plan,
         doppler_freqs,
         signal_block_ffts,
         sig_buf,
