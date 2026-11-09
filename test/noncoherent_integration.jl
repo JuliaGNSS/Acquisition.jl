@@ -709,7 +709,8 @@ end
             num_noncoherent_accumulations = 4, fft_flag = FFTL.ESTIMATE), 3),
         # Rotation × data-bit polarities × bit-edge alignments, with drift.
         ("rotation+data+bitedge+drift", plan_acquire(GPSL5I(), 10.24e6Hz, [prn];
-            num_coherently_integrated_code_periods = 20, bit_edge_search_steps = 2,
+            max_doppler_passes = 1, num_coherently_integrated_code_periods = 20,
+            bit_edge_search_steps = 2,
             num_noncoherent_accumulations = 2, fft_flag = FFTL.ESTIMATE), 1),
         # Data-bit + bit-edge search (max across alignments), no drift at step 0.
         ("bitedge", plan_acquire(GPSL1CA(), 2.048e6Hz, [prn];
@@ -804,9 +805,21 @@ end
             @test maximum(abs.(stored .- ref)) <= 1e-5 * maximum(ref)
             # Not `argmax(stored) == argmax(ref)`: with bit-edge alignments, rotation
             # r + 5 at the other alignment of `rotation+data+bitedge` is the same
-            # cyclic sign sequence, so two cells tie exactly and rounding decides.
+            # cyclic sign sequence. The tile kernel computes both from the same
+            # signs, so they tie exactly; the reference kernel's rounding can
+            # break the tie the other way.
             @test ref[argmax(stored)] >= (1 - 1e-5) * maximum(ref)
             @test (peak_row, peak_col) == Tuple(argmax(stored))
+            if edges > 1
+                # Pin the end-to-end tie-break on a real tie: the streamed peak is
+                # the lowest rotation of the tied cells (`argmax` is column-major,
+                # and the tied cells share their row and code phase).
+                spc = plan.samples_per_code
+                tied_col = peak_col + 5 * spc
+                tied_col > plan.samples_per_code_eff && (tied_col = peak_col - 5 * spc)
+                @test stored[peak_row, tied_col] == peak_power
+                @test peak_col < tied_col
+            end
             @test peak_power == maximum(stored)
             # Streamed row sums are the stored surface's.
             @test scratch.row_sums_buf ≈ vec(sum(stored; dims = 2))

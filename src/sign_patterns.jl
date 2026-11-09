@@ -1,5 +1,9 @@
 # src/sign_patterns.jl
 
+# Number of data-bit polarity hypotheses: the first bit's sign is fixed, the
+# other `num_data_bits - 1` bits each take ±1.
+@inline _num_data_combos(num_data_bits::Int) = 1 << (num_data_bits - 1)
+
 """
     sign_patterns(secondary_code, prn, num_data_bits, num_secondary_rotations, num_coh_periods, use_secondary_code)
         -> Matrix{Float32}  # (num_coh_periods, num_patterns)
@@ -23,7 +27,7 @@ sign for that row's coherent period.
 function sign_patterns(secondary_code, prn::Int, num_data_bits::Int,
                        num_secondary_rotations::Int, num_coh_periods::Int,
                        use_secondary_code::Bool)
-    num_data_combos = 1 << (num_data_bits - 1)
+    num_data_combos = _num_data_combos(num_data_bits)
     sec_active = use_secondary_code && num_secondary_rotations > 1
     num_sec = sec_active ? num_secondary_rotations : 1
     coh_per_bit = num_coh_periods ÷ num_data_bits

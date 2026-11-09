@@ -133,6 +133,12 @@ end
         interm_freq = 0.0Hz, seed = 6)
     @testset "rotation search" check_stitching(GPSL5I(), fs5, 1, ComplexF32.(signal);
         num_coherently_integrated_code_periods = 10)
+    (; signal) = generate_test_signal(GPSL5I(), 1; sampling_freq = fs5,
+        num_samples = 21 * 10238, doppler = -1700Hz, code_phase = 5115.3, CN0 = 50,
+        interm_freq = 0.0Hz, seed = 6)
+    @testset "rotation × data bits × bit edges" check_stitching(GPSL5I(), fs5, 1,
+        ComplexF32.(signal); num_coherently_integrated_code_periods = 20,
+        bit_edge_search_steps = 2)
 end
 
 @testset "Doppler passes — multistep code drift follows each bin's true Doppler" begin

@@ -13,12 +13,12 @@
 #     the data-bit sign search) — the production hot path;
 #   - full-matrix wrappers (`_sign_search_step!`,
 #     `_sign_search_step_with_rotations!`, `_accumulate_noncoherent_integration_step!`)
-#     that delegate to per-column primitives. They preserve the historical
-#     single-call semantics for the test suite's kernel-parity checks and are
-#     NOT called from the production pipeline. `_rotation_column!` (behind
-#     `_sign_search_step_with_rotations!`) is the original per-column rotation
-#     kernel, kept as the independent reference `_rotation_tile_power!` is
-#     checked against.
+#     that delegate to per-column primitives. They exist for the test suite's
+#     kernel-parity checks, allocate their buffers per call, and are NOT called
+#     from the production pipeline. `_rotation_column!` (behind
+#     `_sign_search_step_with_rotations!`, fed by `combined_phase_patterns` /
+#     `tile_phase_patterns`) is the original per-column rotation kernel, kept
+#     as the independent reference `_rotation_tile_power!` is checked against.
 
 """
     _accumulate_noncoherent_integration_pilot!(noncoherent_integration_matrix, coherent_integration_matrix, col_buf, col_fft_plan, samples_per_code)
@@ -685,34 +685,53 @@ const _EMPTY_SIGN_PATTERNS = Matrix{Float32}(undef, 0, 0)
 @inline _rotation_search_active(plan::AcquisitionPlan) =
     plan.num_secondary_rotations > 1 && plan.num_coherently_integrated_code_periods > 1
 
-# Rotation-search consumer for one tile on the multistep (N_nc > 1) path:
-# `tile_t` is the transposed coherent tile BEFORE the Doppler FFT
-# (`_build_coherent_tile_t!`). Each rotation's power tile is accumulated into
-# its own `samples_per_code`-wide slice of `nim`, with the code-drift shift
-# wrapping inside that slice. Only the Doppler pass's kept `rows` are
-# accumulated (see `PassRows`).
-function _accumulate_rotation_tile!(
-    nim::Matrix{Float32},
-    tile_t::Matrix{ComplexF32},
+# Pilot path: no sign search at all, one Doppler FFT per tile. Otherwise the
+# search runs either the rotation tile kernel (`_rotation_search_active`) or the
+# per-column data-bit sign search.
+@inline _simple_path_active(plan::AcquisitionPlan) =
+    plan.num_data_bits == 1 && plan.bit_edge_search_steps == 1 &&
+    !_rotation_search_active(plan)
+
+# The pilot and rotation paths share the transposed tile `scratch.coherent_tile_t`.
+# Build tile `col_block_idx` into it: Doppler-transformed on the pilot path; left
+# before the Doppler FFT on the rotation path, where each pattern runs its own
+# FFT over a sign-modulated copy (`_rotation_tile_power!`).
+function _build_search_tile_t!(
+    scratch,
+    signal_block_ffts::AbstractMatrix{ComplexF32},
+    prn_conj_fft,
     col_block_idx::Int,
     plan::AcquisitionPlan,
-    scratch,
-    prn::Int,
-    has_drift::Bool,
-    rows::PassRows,
+    simple_path::Bool,
 )
-    samples_per_code = plan.samples_per_code
-    num_doppler_bins = plan.pass_fft_bins
-    patterns = plan.sign_patterns_by_prn[prn]
-    for rotation_idx in 0:plan.num_secondary_rotations-1
-        power = _rotation_tile_power!(scratch, tile_t, patterns, rotation_idx,
-            col_block_idx, plan)
-        _accumulate_power_tile_t!(nim, power, samples_per_code, num_doppler_bins,
-            scratch.code_drift_shifts, has_drift, col_block_idx * plan.block_size,
-            rows, rotation_idx * samples_per_code)
+    tile_t = scratch.coherent_tile_t
+    if simple_path
+        _build_doppler_tile_t!(tile_t, signal_block_ffts, prn_conj_fft,
+            col_block_idx, plan.num_blocks, plan.block_size,
+            plan.num_coherently_integrated_code_periods,
+            scratch.corr_buf, scratch.double_block_bfft_plan,
+            scratch.doppler_fft_plan)
+    else
+        _build_coherent_tile_t!(tile_t, signal_block_ffts, prn_conj_fft,
+            col_block_idx, plan.num_blocks, plan.block_size,
+            plan.num_coherently_integrated_code_periods,
+            scratch.corr_buf, scratch.double_block_bfft_plan)
     end
-    return nim
+    return tile_t
 end
+
+# Number of `samples_per_code`-wide slices of the effective code-phase axis: one
+# per secondary-code rotation on the rotation path, one on the pilot path.
+@inline _num_search_slices(plan::AcquisitionPlan) =
+    _rotation_search_active(plan) ? plan.num_secondary_rotations : 1
+
+# Doppler-domain tile, in raw bin order, of slice `slice_idx` (0-based) of the
+# tile built by `_build_search_tile_t!`: the tile itself on the pilot path,
+# rotation `slice_idx`'s power on the rotation path.
+@inline _slice_power_tile!(scratch, tile_t::Matrix{ComplexF32}, patterns::Matrix{Float32},
+    slice_idx::Int, col_block_idx::Int, plan::AcquisitionPlan, simple_path::Bool) =
+    simple_path ? tile_t :
+    _rotation_tile_power!(scratch, tile_t, patterns, slice_idx, col_block_idx, plan)
 
 """
     _rotation_tile_power!(scratch, tile_t, patterns, rotation_idx, col_block_idx, plan)
@@ -762,44 +781,47 @@ function _rotation_tile_power!(
 )
     block_size, num_doppler_bins = size(tile_t)
     num_blocks = plan.num_blocks
-    num_data_combos = 1 << (plan.num_data_bits - 1)
+    num_data_combos = _num_data_combos(plan.num_data_bits)
     num_edges = plan.bit_edge_search_steps
     edge_step = _bit_edge_step(plan)
-    z = scratch.rotation_tile
+    modulated_tile = scratch.rotation_tile
     power = scratch.rotation_power
     signs = scratch.rotation_signs
     sign_lo = view(signs, :, 1)
     sign_hi = view(signs, :, 2)
-    off_lo, off_hi, split = _rotation_tile_offsets(col_block_idx, num_blocks, block_size)
-    single = num_data_combos * num_edges == 1
-    first = true
+    off_lo, off_hi, split_col =
+        _rotation_tile_offsets(col_block_idx, num_blocks, block_size)
+    single_pattern = num_data_combos * num_edges == 1
+    first_pattern = true
     for data_combo in 0:num_data_combos-1
         # Patterns are rotation-major, data-bit-minor (see `sign_patterns`).
-        q = rotation_idx * num_data_combos + data_combo + 1
+        pattern_idx = rotation_idx * num_data_combos + data_combo + 1
         for edge in 0:num_edges-1
             row_offset = edge * edge_step
-            _fill_rotation_signs!(sign_lo, patterns, q, (row_offset + off_lo) % num_doppler_bins, num_blocks)
-            _fill_rotation_signs!(sign_hi, patterns, q, (row_offset + off_hi) % num_doppler_bins, num_blocks)
+            _fill_rotation_signs!(sign_lo, patterns, pattern_idx,
+                (row_offset + off_lo) % num_doppler_bins, num_blocks)
+            _fill_rotation_signs!(sign_hi, patterns, pattern_idx,
+                (row_offset + off_hi) % num_doppler_bins, num_blocks)
             @inbounds for m in 1:num_doppler_bins
                 s_lo = sign_lo[m]
                 s_hi = sign_hi[m]
-                @simd for c in 1:split
-                    z[c, m] = tile_t[c, m] * s_lo
+                @simd for c in 1:split_col
+                    modulated_tile[c, m] = tile_t[c, m] * s_lo
                 end
-                @simd for c in split+1:block_size
-                    z[c, m] = tile_t[c, m] * s_hi
+                @simd for c in split_col+1:block_size
+                    modulated_tile[c, m] = tile_t[c, m] * s_hi
                 end
             end
-            mul!(z, scratch.doppler_fft_plan, z)
-            single && return z
-            if first
-                @inbounds @simd for i in eachindex(power, z)
-                    power[i] = abs2(z[i])
+            mul!(modulated_tile, scratch.doppler_fft_plan, modulated_tile)
+            single_pattern && return modulated_tile
+            if first_pattern
+                @inbounds @simd for i in eachindex(power, modulated_tile)
+                    power[i] = abs2(modulated_tile[i])
                 end
-                first = false
+                first_pattern = false
             else
-                @inbounds @simd for i in eachindex(power, z)
-                    power[i] = max(power[i], abs2(z[i]))
+                @inbounds @simd for i in eachindex(power, modulated_tile)
+                    power[i] = max(power[i], abs2(modulated_tile[i]))
                 end
             end
         end
@@ -862,34 +884,30 @@ function _accumulate_prn_step_tiled!(
 )
     num_doppler_bins = plan.pass_fft_bins
     rotation_active = _rotation_search_active(plan)
-    simple_path = plan.num_data_bits == 1 && plan.bit_edge_search_steps == 1 &&
-                  !rotation_active
+    simple_path = _simple_path_active(plan)
     rows = _pass_rows(plan, pass_idx)
     has_drift = _fill_code_drift_shifts!(scratch.code_drift_shifts, plan,
         accumulation_step_index, rows)
     block_idx_offset = (pass_idx - 1) * plan.num_blocks
     prn_conj_fft = plan.prn_conj_ffts[prn]
+    patterns = simple_path ? _EMPTY_SIGN_PATTERNS : plan.sign_patterns_by_prn[prn]
     tile = scratch.coherent_tile
 
     for col_block_idx in 0:plan.num_blocks-1
-        if rotation_active
-            tile_t = scratch.coherent_tile_t
-            _build_coherent_tile_t!(tile_t, signal_block_ffts, prn_conj_fft,
-                col_block_idx, plan.num_blocks, plan.block_size,
-                plan.num_coherently_integrated_code_periods,
-                scratch.corr_buf, scratch.double_block_bfft_plan)
-            _accumulate_rotation_tile!(nim, tile_t, col_block_idx, plan, scratch, prn, has_drift,
-                rows)
-        elseif simple_path
-            tile_t = scratch.coherent_tile_t
-            _build_doppler_tile_t!(tile_t, signal_block_ffts, prn_conj_fft,
-                col_block_idx, plan.num_blocks, plan.block_size,
-                plan.num_coherently_integrated_code_periods,
-                scratch.corr_buf, scratch.double_block_bfft_plan,
-                scratch.doppler_fft_plan)
-            _accumulate_power_tile_t!(nim, tile_t, plan.samples_per_code,
-                num_doppler_bins, scratch.code_drift_shifts, has_drift,
-                col_block_idx * plan.block_size, rows)
+        if simple_path || rotation_active
+            # Each slice's power tile is accumulated into its own
+            # `samples_per_code`-wide slice of `nim`, with the code-drift shift
+            # wrapping inside that slice.
+            tile_t = _build_search_tile_t!(scratch, signal_block_ffts, prn_conj_fft,
+                col_block_idx, plan, simple_path)
+            for slice_idx in 0:_num_search_slices(plan)-1
+                power = _slice_power_tile!(scratch, tile_t, patterns, slice_idx,
+                    col_block_idx, plan, simple_path)
+                _accumulate_power_tile_t!(nim, power, plan.samples_per_code,
+                    num_doppler_bins, scratch.code_drift_shifts, has_drift,
+                    col_block_idx * plan.block_size, rows,
+                    slice_idx * plan.samples_per_code)
+            end
         else
             _build_coherent_tile!(tile, signal_block_ffts, prn_conj_fft,
                 col_block_idx, plan.num_blocks, plan.block_size,
@@ -930,10 +948,9 @@ function _accumulate_noncoherent_integration_step!(
     length(plan.doppler_freqs) == num_doppler_bins || throw(ArgumentError(
         "_accumulate_noncoherent_integration_step! needs a single-grid plan " *
         "(max_doppler_passes = 1), got $(plan.num_doppler_passes) Doppler passes"))
-    rotation_search_active = plan.num_secondary_rotations > 1 &&
-                             plan.num_coherently_integrated_code_periods > 1
+    rotation_search_active = _rotation_search_active(plan)
 
-    if plan.num_data_bits == 1 && plan.bit_edge_search_steps == 1 && !rotation_search_active
+    if _simple_path_active(plan)
         # Simple/pilot path: fused FFT+|x|²+(code-drift)+fftshift kernel writes
         # straight into `noncoherent_integration_matrix`.
         drift_shifts = length(scratch.code_drift_shifts) == num_doppler_bins ?
@@ -958,9 +975,8 @@ function _accumulate_noncoherent_integration_step!(
         # locally — production streams this per column instead.
         noncoherent_integration_buf =
             zeros(Float32, num_doppler_bins, size(noncoherent_integration_matrix, 2))
-        bit_period_codes = plan.num_coherently_integrated_code_periods ÷ plan.num_data_bits
-        edge_step = bit_period_codes * plan.num_blocks ÷ plan.bit_edge_search_steps
-        num_data_combos = 1 << (plan.num_data_bits - 1)
+        edge_step = _bit_edge_step(plan)
+        num_data_combos = _num_data_combos(plan.num_data_bits)
         # The reference rotation kernel's phasors and split accumulators —
         # production no longer uses them, so they are built here.
         if rotation_search_active

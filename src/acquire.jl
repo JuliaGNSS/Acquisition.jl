@@ -719,8 +719,8 @@ function _acquire_prn_streamed!(
     block_size = plan.block_size
     samples_per_code = plan.samples_per_code
     rotation_active = _rotation_search_active(plan)
-    simple_path = plan.num_data_bits == 1 && plan.bit_edge_search_steps == 1 &&
-                  !rotation_active
+    simple_path = _simple_path_active(plan)
+    num_slices = _num_search_slices(plan)
     row_sums = scratch.row_sums_buf
     fill!(row_sums, 0f0)
     col_sums = scratch.col_sums_buf
@@ -743,36 +743,17 @@ function _acquire_prn_streamed!(
         signal_block_ffts = _signal_block_ffts_for_step(plan, 1, pass_idx)
         rows = _pass_rows(plan, pass_idx)
         block_idx_offset = (pass_idx - 1) * plan.num_blocks
-        if simple_path
-            tile_t = scratch.coherent_tile_t
+        if simple_path || rotation_active
             for col_block_idx in 0:plan.num_blocks-1
                 col_offset = col_block_idx * block_size
-                _build_doppler_tile_t!(tile_t, signal_block_ffts, prn_conj_fft,
-                    col_block_idx, plan.num_blocks, block_size,
-                    plan.num_coherently_integrated_code_periods,
-                    scratch.corr_buf, scratch.double_block_bfft_plan,
-                    scratch.doppler_fft_plan)
-                _stream_power_tile_t!(row_sums, col_sums, collect_col_sums, store_buf,
-                    tile_t, col_offset, pass_fft_bins, rows, col_max, col_max_row, 1)
-                peak_power, peak_doppler_bin, peak_col = _fold_tile_peaks(
-                    col_max, col_max_row, col_offset, samples_per_code,
-                    peak_power, peak_doppler_bin, peak_col)
-                _maybe_yield_block(plan, block_idx_offset + col_block_idx)
-            end
-        elseif rotation_active
-            tile_t = scratch.coherent_tile_t
-            for col_block_idx in 0:plan.num_blocks-1
-                col_offset = col_block_idx * block_size
-                _build_coherent_tile_t!(tile_t, signal_block_ffts, prn_conj_fft,
-                    col_block_idx, plan.num_blocks, block_size,
-                    plan.num_coherently_integrated_code_periods,
-                    scratch.corr_buf, scratch.double_block_bfft_plan)
-                for rotation_idx in 0:plan.num_secondary_rotations-1
-                    power = _rotation_tile_power!(scratch, tile_t, patterns,
-                        rotation_idx, col_block_idx, plan)
+                tile_t = _build_search_tile_t!(scratch, signal_block_ffts, prn_conj_fft,
+                    col_block_idx, plan, simple_path)
+                for slice_idx in 0:num_slices-1
+                    power = _slice_power_tile!(scratch, tile_t, patterns, slice_idx,
+                        col_block_idx, plan, simple_path)
                     _stream_power_tile_t!(row_sums, col_sums, collect_col_sums, store_buf,
-                        power, col_offset + rotation_idx * samples_per_code, pass_fft_bins,
-                        rows, col_max, col_max_row, rotation_idx + 1)
+                        power, col_offset + slice_idx * samples_per_code, pass_fft_bins,
+                        rows, col_max, col_max_row, slice_idx + 1)
                 end
                 peak_power, peak_doppler_bin, peak_col = _fold_tile_peaks(
                     col_max, col_max_row, col_offset, samples_per_code,
@@ -975,25 +956,13 @@ function _recompute_column_power!(
     rotation_idx = (global_col - 1) ÷ samples_per_code
     col_block_idx = cp_col0 ÷ block_size
     local_col = cp_col0 % block_size + 1
-    rotation_active = _rotation_search_active(plan)
-    simple_path = plan.num_data_bits == 1 && plan.bit_edge_search_steps == 1 &&
-                  !rotation_active
-    if simple_path || rotation_active
-        tile_t = scratch.coherent_tile_t
-        power = if simple_path
-            _build_doppler_tile_t!(tile_t, signal_block_ffts, plan.prn_conj_ffts[prn],
-                col_block_idx, plan.num_blocks, block_size,
-                plan.num_coherently_integrated_code_periods,
-                scratch.corr_buf, scratch.double_block_bfft_plan,
-                scratch.doppler_fft_plan)
-        else
-            _build_coherent_tile_t!(tile_t, signal_block_ffts, plan.prn_conj_ffts[prn],
-                col_block_idx, plan.num_blocks, block_size,
-                plan.num_coherently_integrated_code_periods,
-                scratch.corr_buf, scratch.double_block_bfft_plan)
-            _rotation_tile_power!(scratch, tile_t, plan.sign_patterns_by_prn[prn],
-                rotation_idx, col_block_idx, plan)
-        end
+    simple_path = _simple_path_active(plan)
+    if simple_path || _rotation_search_active(plan)
+        tile_t = _build_search_tile_t!(scratch, signal_block_ffts,
+            plan.prn_conj_ffts[prn], col_block_idx, plan, simple_path)
+        patterns = simple_path ? _EMPTY_SIGN_PATTERNS : plan.sign_patterns_by_prn[prn]
+        power = _slice_power_tile!(scratch, tile_t, patterns, rotation_idx,
+            col_block_idx, plan, simple_path)
         _gather_power_column!(dest, power, local_col)
     else
         tile = scratch.coherent_tile
