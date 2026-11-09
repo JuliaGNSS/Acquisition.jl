@@ -4,11 +4,8 @@
 @testset "plan_acquire parameters — GPS L1 at 2.048 MHz" begin
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
-    # Single-grid geometry (with passes allowed, 2048's power-of-two divisors
-    # make a multi-pass layout cheaper at ±10 kHz — see the Doppler-pass tests).
     plan = plan_acquire(system, sampling_freq, [1];
-        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 1, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1,
-        max_doppler_passes = 1)
+        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 1, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
 
     @test plan.samples_per_code == 2048      # ceil(1023/1.023e6 * 2.048e6)
     @test plan.num_blocks == 32              # smallest divisor of 2048 >= ceil(20000/1000 + 2/1)=22 → 32
@@ -30,8 +27,7 @@ end
     sampling_freq = 2.048e6Hz
     # num_coherently_integrated_code_periods=40 → num_data_bits = 40÷20 = 2 data bits
     plan = plan_acquire(system, sampling_freq, [1];
-        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4, num_noncoherent_accumulations = 5,
-        max_doppler_passes = 1)
+        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4, num_noncoherent_accumulations = 5)
 
     @test plan.samples_per_code == 2048
     @test plan.num_blocks == 32              # smallest divisor of 2048 >= ceil(20000/1000 + 2/40)=21 → 32
@@ -308,7 +304,7 @@ end
     ]
     for plan in cases
         # The tile holds one Doppler pass's grid.
-        ndop = plan.pass_doppler_bins
+        ndop = plan.pass_fft_bins
         for scratch in plan.thread_scratch
             @test size(scratch.coherent_tile) == (ndop, plan.block_size)
             # The transposed simple-path tile aliases the same memory.
@@ -400,9 +396,9 @@ end
         num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4)
     search_scratch = Acquisition._default_scratch(search_plan)
     @test size(search_scratch.stage_buf) ==
-        (search_plan.pass_doppler_bins, search_plan.num_secondary_rotations)
+        (search_plan.pass_fft_bins, search_plan.num_secondary_rotations)
     @test size(search_scratch.sub_block_ffts) ==
-        (search_plan.pass_doppler_bins, search_plan.num_data_bits)
+        (search_plan.pass_fft_bins, search_plan.num_data_bits)
 
     # Rotation search: one stage column per secondary-code rotation.
     rot_plan = plan_acquire(GPSL5I(), 10.24e6Hz, [1];

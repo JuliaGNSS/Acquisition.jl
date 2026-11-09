@@ -618,9 +618,10 @@ divisor — the smallest valid divisor is unconditionally the right default. The
 only prime-factorization concern left is the column FFT length `num_doppler_bins`,
 which the [`recommend_sampling_freqs`](@ref) helper accounts for.
 
-This is the rule for a *single* Doppler grid. `plan_acquire` also weighs every
-smaller divisor split into narrow passes, and picks that instead when it is
-clearly cheaper (see [Doppler Passes](#Doppler-Passes)).
+This is the rule for a *single* Doppler grid. When that divisor is far above
+the need (sparse divisors), `plan_acquire` also weighs every smaller divisor
+split into narrow passes, and picks that instead when it is clearly cheaper (see
+[Doppler Passes](#Doppler-Passes)).
 
 ### Sampling Frequency and FFT Performance
 
@@ -674,29 +675,32 @@ whose loss stays within what a single grid loses at its coverage edge on an
 *ideal* rate — one where the smallest divisor reaching the coverage is exactly
 the minimum needed (−2.9 dB for ±7 kHz at 1 ms, e.g. 16 blocks at 2.048 MHz). No
 Doppler in the searched range is worse off than on a well-chosen rate. Near
-0 Hz, though, a rate whose single grid has far more blocks than it needs used to
-be nearly loss-free, and passes give up some of that: at 4 MHz with ±25 kHz,
-1234 Hz loses about 1 dB.
+0 Hz, though, a grid with more blocks than it needs is nearly loss-free, and
+passes give up some of that.
 
-`plan_acquire` chooses between the single grid and every pass layout with a cost
-model fitted to measured `acquire!` timings (see [`recommend_sampling_freqs`](@ref)),
-and only leaves the single grid when passes are expected to be at least 10%
-cheaper. Pass `max_doppler_passes = 1` to always use one grid.
+Passes are therefore only considered on sparse-divisor rates, where the single
+grid needs at least 1.9× the blocks the coverage asks for (1.542 MHz: 257 for
+16; 1.023 and 3.069 MHz: 31 for 16). Rates whose next divisor is closer — 1.5 MHz
+(20 for 16), 2.048 MHz at ±10 kHz (32 for 22), 4 MHz at ±25 kHz (80 for 52) —
+keep their single grid. On a sparse-divisor rate `plan_acquire` chooses between
+the single grid and every pass layout with a cost model fitted to measured
+`acquire!` timings (see [`recommend_sampling_freqs`](@ref)), and only leaves the
+single grid when passes are expected to be at least 10% cheaper. Pass
+`max_doppler_passes = 1` to always use one grid.
 
 Measured on GPS L1 C/A, 32 PRNs, `min_doppler_coverage = 7000Hz`, one thread
 (illustrative — absolute times are machine-dependent):
 
 | Sampling freq | single grid | `acquire!(1:32)` | with Doppler passes | `acquire!(1:32)` |
 |:--------------|:-----------:|:----------------:|:-------------------:|:----------------:|
-| 1.500 MHz | 20 blocks | 2.10 ms | 3 × 6 blocks | 1.46 ms |
+| 1.500 MHz | 20 blocks | 2.10 ms | (not sparse: single grid) | 2.10 ms |
 | **1.542 MHz** | **257 blocks** | **111.4 ms** | **3 × 6 blocks** | **1.83 ms** |
 | **3.069 MHz** | **31 blocks** | **12.6 ms** | **2 × 11 blocks** | **4.53 ms** |
 
 So a 0.1 % change in `fs` (1.500 → 1.542 MHz) no longer costs ~50×. The same
 applies at longer coherent integration: 1.542 MHz with
 `num_coherently_integrated_code_periods = 10` goes from 1.29 s to 18 ms.
-Well-behaved rates are unaffected — 2.048, 5 and 16.368 MHz at ±7 kHz keep their
-single grid.
+Well-behaved rates are unaffected — they keep their single grid.
 
 Doppler passes change only the carrier. The code Doppler inside a coherent
 window is uncompensated exactly as with a single grid, and the code-drift

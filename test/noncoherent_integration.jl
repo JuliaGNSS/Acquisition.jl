@@ -2,7 +2,7 @@
 #
 # Kernel-level tests: they materialise one FM-DBZP grid and read it against
 # `plan.doppler_freqs`, so every plan here is pinned to a single Doppler grid
-# (`max_doppler_passes = 1`). Doppler passes are covered in test/acquire.jl.
+# (`max_doppler_passes = 1`). Doppler passes are covered in test/doppler_passes.jl.
 # Tests for noncoherent integration: column FFT accumulation, data bit search, code drift correction
 
 @testset "Fused FFT+|x|²+code-drift+fftshift kernel matches unfused pipeline" begin
@@ -77,7 +77,8 @@
         tile_t = permutedims(fft(cim_template, 1))
         fused_acc_t = zeros(Float32, num_doppler_bins, samples_per_code)
         Acquisition._accumulate_power_tile_t!(fused_acc_t, tile_t, samples_per_code,
-            num_doppler_bins, norm_shifts, accumulation_step != 0, 0)
+            num_doppler_bins, norm_shifts, accumulation_step != 0, 0,
+            Acquisition.PassRows(num_doppler_bins))
         @test fused_acc_t ≈ ref_acc
     end
 end
@@ -148,7 +149,7 @@ end
         tile_t = permutedims(fft(cim_template, 1))
         fused_acc_t = zeros(Float32, num_doppler_bins, samples_per_code)
         Acquisition._accumulate_power_tile_t!(fused_acc_t, tile_t, samples_per_code,
-            num_doppler_bins, norm_shifts, true, 0)
+            num_doppler_bins, norm_shifts, true, 0, Acquisition.PassRows(num_doppler_bins))
         @test fused_acc_t ≈ ref_acc
     end
 end
@@ -172,12 +173,14 @@ end
     shifts_a = zeros(Int, n_dop_a)
 
     # step 0: definitionally has_drift=false, shifts all 0
-    @test Acquisition._fill_code_drift_shifts!(shifts_a, plan_a, 0) == false
+    @test Acquisition._fill_code_drift_shifts!(shifts_a, plan_a, 0,
+        Acquisition.PassRows(length(shifts_a))) == false
     @test all(iszero, shifts_a)
 
     # step 7: doppler×step×T_coh×fs/fc < 0.5 for every row at this grid →
     # rounds to 0. has_drift must STILL be false.
-    @test Acquisition._fill_code_drift_shifts!(shifts_a, plan_a, 7) == false
+    @test Acquisition._fill_code_drift_shifts!(shifts_a, plan_a, 7,
+        Acquisition.PassRows(length(shifts_a))) == false
     @test all(iszero, shifts_a)
 
     # End-to-end: dispatcher at step 7 must produce the same nim as a direct
@@ -205,11 +208,13 @@ end
     shifts_b = zeros(Int, n_dop_b)
 
     # step 0 is still has_drift=false even on the larger grid.
-    @test Acquisition._fill_code_drift_shifts!(shifts_b, plan_b, 0) == false
+    @test Acquisition._fill_code_drift_shifts!(shifts_b, plan_b, 0,
+        Acquisition.PassRows(length(shifts_b))) == false
     @test all(iszero, shifts_b)
 
     # step 7 must flip has_drift to true and normalise shifts to [0, spc).
-    @test Acquisition._fill_code_drift_shifts!(shifts_b, plan_b, 7) == true
+    @test Acquisition._fill_code_drift_shifts!(shifts_b, plan_b, 7,
+        Acquisition.PassRows(length(shifts_b))) == true
     @test any(!iszero, shifts_b)
     @test all(s -> 0 <= s < plan_b.samples_per_code, shifts_b)
 end
@@ -251,7 +256,8 @@ end
         tile_t = permutedims(fft(cim_template, 1))
         fused_acc_t = zeros(Float32, num_doppler_bins, samples_per_code)
         Acquisition._accumulate_power_tile_t!(fused_acc_t, tile_t, samples_per_code,
-            num_doppler_bins, zeros(Int, num_doppler_bins), false, 0)
+            num_doppler_bins, zeros(Int, num_doppler_bins), false, 0,
+            Acquisition.PassRows(num_doppler_bins))
         @test fused_acc_t ≈ ref_acc
     end
 end
@@ -717,7 +723,7 @@ end
                 sampling_freq = plan.sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 11)
             plan.sig_buf .= ComplexF32.(signal)
             # One segment's slice of the plan's all-segment signal-FFT cache.
-            seg_ffts = Acquisition._signal_block_ffts_for_step(plan, 1)
+            seg_ffts = Acquisition._signal_block_ffts_for_step(plan, 1, 1)
             Acquisition._precompute_signal_block_ffts!(seg_ffts, plan.sig_buf,
                 plan.samples_per_code, plan.num_blocks, plan.block_size,
                 plan.num_coherently_integrated_code_periods, scratch.double_block_buf,
@@ -725,7 +731,7 @@ end
 
             # Production: tiled driver.
             nim_tiled = zeros(Float32, ndop, plan.samples_per_code_eff)
-            Acquisition._accumulate_prn_step_tiled!(nim_tiled, seg_ffts, plan, scratch, prn, step_idx)
+            Acquisition._accumulate_prn_step_tiled!(nim_tiled, seg_ffts, plan, scratch, prn, step_idx, 1)
 
             # Reference: full CIM + materialised dispatcher.
             cim = zeros(ComplexF32, ndop, plan.samples_per_code)
@@ -741,7 +747,8 @@ end
             # Sanity: drift really fires where intended so the fold is exercised.
             if step_idx > 0
                 shifts = zeros(Int, ndop)
-                @test Acquisition._fill_code_drift_shifts!(shifts, plan, step_idx) ==
+                @test Acquisition._fill_code_drift_shifts!(shifts, plan, step_idx,
+                    Acquisition.PassRows(length(shifts))) ==
                     (label != "bitedge")
             end
         end

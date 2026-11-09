@@ -48,6 +48,9 @@ struct SamplingFreqRecommendation
     cost::Float64
 end
 
+# Bins of the searched (stitched) Doppler grid.
+_grid_bins(r::SamplingFreqRecommendation) = r.num_doppler_passes * r.doppler_bins_per_pass
+
 function _prime_factors(n::Integer)
     n <= 1 && return Int[]
     facs = Int[]
@@ -189,8 +192,9 @@ cost         = num_doppler_passes × (inner_cost + doppler_cost + prep_cost / nu
 with `w = 0.75` for a 7-smooth `num_doppler_bins` and `1.18` otherwise. The
 constant per inner FFT is its fixed call overhead, which dominates when blocks
 are short. `prep_cost` is the per-pass signal preparation (downconversion and
-the signal's double-block FFTs), shared by all PRNs. The weights are fitted to measured `acquire!` timings; `plan_acquire`
-uses the same model to choose between a single grid and Doppler passes.
+the signal's double-block FFTs), shared by all PRNs. The weights are fitted to
+measured `acquire!` timings; on sparse-divisor rates `plan_acquire` uses the same
+model to choose between a single grid and Doppler passes.
 
 # See also
 
@@ -267,7 +271,7 @@ function recommend_sampling_freqs(
                 inner_max_prime = _largest_prime_factor(inner_fft_size)
                 ndb_max_prime = _largest_prime_factor(num_doppler_bins)
                 if ndb_max_prime <= max_prime
-                    grid_bins = layout.num_passes * layout.bins_per_pass
+                    grid_bins = _grid_bins(layout)
                     spacing = bin_width / num_coherently_integrated_code_periods
                     push!(candidates, SamplingFreqRecommendation(
                         fs_hz * Hz,
@@ -326,8 +330,7 @@ function Base.show(io::IO, ::MIME"text/plain", r::SamplingFreqRecommendation)
         ", inner_fft=", r.inner_fft_size, " (", _factor_string(r.inner_fft_size), ")",
         ", num_doppler_bins=", r.num_doppler_bins, " (", _factor_string(r.num_doppler_bins), ")",
         ", num_doppler_passes=", r.num_doppler_passes,
-        ", doppler_grid=", _doppler_grid_string(ustrip(Hz, r.doppler_coverage),
-            r.num_doppler_passes * r.doppler_bins_per_pass),
+        ", doppler_grid=", _doppler_grid_string(ustrip(Hz, r.doppler_coverage), _grid_bins(r)),
         ", cost≈", round(r.cost, sigdigits = 4),
         ")")
 end
@@ -361,8 +364,7 @@ function Base.show(
                 string(r.num_doppler_bins, " (", _factor_string(r.num_doppler_bins), ")"),
                 r.num_doppler_passes == 1 ? "1" :
                     string(r.num_doppler_passes, " × ", r.doppler_bins_per_pass, " bins"),
-                _doppler_grid_string(ustrip(Hz, r.doppler_coverage),
-                    r.num_doppler_passes * r.doppler_bins_per_pass),
+                _doppler_grid_string(ustrip(Hz, r.doppler_coverage), _grid_bins(r)),
                 round(r.cost, sigdigits = 4),
             ]),
             rs,

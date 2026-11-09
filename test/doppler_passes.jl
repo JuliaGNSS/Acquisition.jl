@@ -21,7 +21,7 @@ end
     @test plan.num_blocks == 6
     @test plan.num_doppler_passes == 3
     @test plan.doppler_bins_per_pass == 5
-    @test plan.pass_doppler_bins == 6
+    @test plan.pass_fft_bins == 6
     # One uniform grid, symmetric about 0, reaching ±7 kHz.
     @test plan.doppler_freqs == (-7000.0:1000.0:7000.0) .* Hz
     # Pass k is centred on its middle bin and keeps its 5 central bins.
@@ -41,6 +41,42 @@ end
     end
 
     @test_throws ArgumentError plan_acquire(GPSL1CA(), 1.542e6Hz, [1]; max_doppler_passes = 0)
+end
+
+@testset "Doppler passes — only on sparse-divisor rates" begin
+    # Passes only replace a single grid that needs far more blocks than the
+    # coverage asks for. A grid with a few spare blocks is kept even where
+    # passes would be faster: its spare blocks make Dopplers near 0 Hz
+    # nearly loss-free.
+    for (fs, coverage) in ((1.5e6Hz, 7000Hz),      # 20 blocks for 16
+                           (2.048e6Hz, 10_000Hz),  # 32 for 22
+                           (4e6Hz, 25_000Hz),      # 80 for 52
+                           (8.184e6Hz, 7000Hz)),   # 22 for 16
+        N_coh in (1, 10)
+        plan = plan_acquire(GPSL1CA(), fs, [1]; min_doppler_coverage = coverage,
+            num_coherently_integrated_code_periods = N_coh)
+        @test plan.num_doppler_passes == 1
+        @test length(plan.doppler_freqs) == plan.pass_fft_bins
+    end
+    # Sparse divisors: 1023 = 3·11·31 and 3069 = 3²·11·31 need 31 blocks for 16.
+    for fs in (1.023e6Hz, 3.069e6Hz)
+        @test plan_acquire(GPSL1CA(), fs, [1]).num_doppler_passes > 1
+    end
+end
+
+@testset "Doppler passes — the stitched grid never spans more than fs" begin
+    # The pass count rounds the grid up to whole passes, which can push it past
+    # `N_coh · samples_per_code` bins (the sampling frequency) even when the
+    # coverage itself fits; such a layout would search aliases. At 5 samples
+    # per code and ±2 kHz, 2 passes of 3 bins (6 > 5) were picked before.
+    @test Acquisition._doppler_search_layout(5, 1000.0, 2000.0, 1, 16, 32) === nothing
+    for samples_per_code in (5, 6, 7, 31, 62, 257, 1542), N_coh in (1, 5),
+        coverage_frac in 0.30:0.02:0.5
+        layout = Acquisition._doppler_search_layout(samples_per_code, 1000.0,
+            coverage_frac * samples_per_code * 1000.0, N_coh, 16, 32)
+        layout === nothing && continue
+        @test Acquisition._grid_bins(layout) <= N_coh * samples_per_code
+    end
 end
 
 @testset "Doppler grid labels match the FFT bins for an odd bin count" begin
@@ -167,6 +203,50 @@ end
     @test r_nostore.code_phase == r_store.code_phase
     @test r_nostore.carrier_doppler == r_store.carrier_doppler
     @test 2000Hz < r_store.carrier_doppler < 3000Hz   # pulled toward the truth
+end
+
+@testset "Doppler passes — no subsample interpolation across the grid edge" begin
+    # A single untrimmed grid spans a full alias period, so its first and last
+    # rows are neighbours. A stitched grid stops at the coverage edge: the row
+    # past +7 kHz is not -7 kHz, so a peak on an edge row keeps its bin Doppler.
+    fs = 1.542e6Hz
+    plan = plan_acquire(GPSL1CA(), fs, [4])
+    n = length(plan.doppler_freqs)
+    @test Acquisition._doppler_neighbour_rows(plan, 1) == (0, 2)
+    @test Acquisition._doppler_neighbour_rows(plan, n) == (n - 1, 0)
+    @test Acquisition._doppler_neighbour_rows(plan, 5) == (4, 6)
+    single = plan_acquire(GPSL1CA(), 2.048e6Hz, [4])
+    m = length(single.doppler_freqs)
+    @test Acquisition._doppler_neighbour_rows(single, 1) == (m, 2)
+    @test Acquisition._doppler_neighbour_rows(single, m) == (m - 1, 1)
+
+    for (doppler, edge) in ((7300Hz, 7000Hz), (-7300Hz, -7000Hz))
+        (; signal) = generate_test_signal(GPSL1CA(), 4; sampling_freq = fs,
+            num_samples = 1542, doppler, code_phase = 300.7, CN0 = 60,
+            interm_freq = 0.0Hz, seed = 9)
+        for store_power_bins in (false, true)
+            r = acquire!(plan, signal, 4; subsample_interpolation = true, store_power_bins)
+            @test r.carrier_doppler == edge
+        end
+    end
+end
+
+@testset "Doppler passes — the convenience wrappers forward max_doppler_passes" begin
+    fs = 1.542e6Hz
+    (; signal) = generate_test_signal(GPSL1CA(), 1; sampling_freq = fs,
+        num_samples = 1542, doppler = 1000Hz, code_phase = 100.2, CN0 = 50,
+        interm_freq = 0.0Hz, seed = 2)
+    grid_rows(r) = size(r.power_bins, 1)
+    @test grid_rows(acquire(GPSL1CA(), signal, fs, 1; store_power_bins = true)) == 15
+    @test grid_rows(acquire(GPSL1CA(), signal, fs, 1; store_power_bins = true,
+        max_doppler_passes = 1)) == 257
+    @test grid_rows(only(collect(acquire_stream(GPSL1CA(), signal, fs, [1];
+        store_power_bins = true, max_doppler_passes = 1)))) == 257
+    rows = acquire_stream(GPSL1CA(), signal, fs, [1]; store_power_bins = true,
+            max_doppler_passes = 1) do results
+        grid_rows(only(collect(results)))
+    end
+    @test rows == 257
 end
 
 @testset "Doppler passes — max_blocking_time bounds the stride across passes" begin
