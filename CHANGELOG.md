@@ -1,5 +1,23 @@
 # Changelog
 
+# [2.10.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.9.2...v2.10.0) (2026-11-09)
+
+
+### Bug Fixes
+
+* keep Doppler passes to sparse-divisor rates and stop interpolating across the grid edge ([f0a48ce](https://github.com/JuliaGNSS/Acquisition.jl/commit/f0a48ce76f907c04174ccf719cfa412fdaf940b6)), closes [#101](https://github.com/JuliaGNSS/Acquisition.jl/issues/101)
+
+
+### Features
+
+* split the Doppler search into narrow passes on sparse-divisor rates ([1554f11](https://github.com/JuliaGNSS/Acquisition.jl/commit/1554f117fae79be81715cd423e7ea4f13ba6a906)), closes [#101](https://github.com/JuliaGNSS/Acquisition.jl/issues/101)
+
+
+### Performance Improvements
+
+* count the per-pass signal preparation and downconvert without per-sample sincos ([ce71ad3](https://github.com/JuliaGNSS/Acquisition.jl/commit/ce71ad328c1e192b0de52fc6d1b328580a54a118))
+* precompile the Doppler-pass forms of the per-PRN kernels ([a669158](https://github.com/JuliaGNSS/Acquisition.jl/commit/a66915832634cc4539b31dfb88467c1ed210ed6b))
+
 ## [2.9.2](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.9.1...v2.9.2) (2026-11-09)
 
 
