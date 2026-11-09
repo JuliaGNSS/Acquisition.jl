@@ -42,9 +42,8 @@ struct DopplerLayout
     bins_per_pass::Int    # K — Doppler bins each pass contributes to the grid
 end
 
-# Doppler bins one pass's FM-DBZP grid has (the Doppler FFT length).
-_pass_doppler_bins(layout::DopplerLayout, num_coherently_integrated_code_periods::Int) =
-    num_coherently_integrated_code_periods * layout.num_blocks
+# Bins of the stitched Doppler grid: `P · K`.
+_grid_bins(layout::DopplerLayout) = layout.num_passes * layout.bins_per_pass
 
 # Smallest divisor of `samples_per_code` that is >= `min_num_blocks`.
 # Returns `nothing` if no such divisor exists.
@@ -72,21 +71,23 @@ Per pass, the pipeline runs `N_coh·B²` inner IFFTs of the padded length
 `M = N_coh·B` over `block_size` code phases each:
 
 ```
-per_prn = N_coh·B² × (561 + F·log₂F) + samples_per_code·M·log₂M × w(M)
-prep    = N_coh·B × (561 + F·log₂F) + 23 × N_coh·samples_per_code
-cost    = P × ( per_prn + prep / num_prns )
-w(M)    = 0.75 if M is 7-smooth, else 1.18
+inner   = N_coh·B² × (_INNER_FFT_CALL_COST + F·log₂F)
+doppler = samples_per_code·M·log₂M × w(M)
+prep    = N_coh·B × (_INNER_FFT_CALL_COST + F·log₂F) + _DOWNCONVERT_COST × N_coh·samples_per_code
+cost    = P × (inner + doppler + prep / num_prns)
+w(M)    = _SMOOTH_DOPPLER_FFT_WEIGHT if M is 7-smooth, else _ROUGH_DOPPLER_FFT_WEIGHT
 ```
 
 The per-call constant is the fixed overhead of a small inner transform, which
 dominates when blocks are short. `prep` is the per-pass signal preparation that
 all PRNs share — downconverting the segment and its `N_coh·B` forward
 double-block FFTs — so it matters when few PRNs are searched: many passes over
-a long coherent window cost little per PRN at 32 PRNs but can dominate at one. The constants are a weighted least-squares
-fit to single-threaded 32-PRN `acquire!` timings over 117 layouts (GPS L1 C/A,
-1.024–16.368 MHz, `N_coh ∈ {1, 10}`, FFTL, AMD Zen 5): median error 7%, and
-the cheapest layout by this model is within 12% of the measured fastest
-everywhere. Only the ranking matters.
+a long coherent window cost little per PRN at 32 PRNs but can dominate at one.
+The constants are a weighted least-squares fit to single-threaded 32-PRN
+`acquire!` timings over 117 layouts (GPS L1 C/A, 1.024–16.368 MHz,
+`N_coh ∈ {1, 10}`, FFTL, AMD Zen 5): median error 7%, and the cheapest layout
+by this model is within 12% of the measured fastest everywhere. Only the
+ranking matters.
 """
 function _search_cost(samples_per_code::Integer, num_blocks::Integer,
                       num_coherently_integrated_code_periods::Integer, num_passes::Integer,
@@ -95,12 +96,12 @@ function _search_cost(samples_per_code::Integer, num_blocks::Integer,
     block_size = samples_per_code ÷ B
     F = _inner_fft_size(2 * block_size)
     M = num_coherently_integrated_code_periods * B
-    inner = num_coherently_integrated_code_periods * B^2 *
-            (_INNER_FFT_CALL_COST + F * log2(F))
+    inner_fft = _INNER_FFT_CALL_COST + F * log2(F)
+    inner = num_coherently_integrated_code_periods * B^2 * inner_fft
     doppler_fft = M <= 1 ? 0.0 :
         float(samples_per_code) * M * log2(M) *
         (_largest_prime_factor(M) > 7 ? _ROUGH_DOPPLER_FFT_WEIGHT : _SMOOTH_DOPPLER_FFT_WEIGHT)
-    prep = num_coherently_integrated_code_periods * B * (_INNER_FFT_CALL_COST + F * log2(F)) +
+    prep = num_coherently_integrated_code_periods * B * inner_fft +
            _DOWNCONVERT_COST * num_coherently_integrated_code_periods * samples_per_code
     return num_passes * (inner + doppler_fft + prep / max(1, num_prns))
 end
@@ -111,25 +112,36 @@ const _ROUGH_DOPPLER_FFT_WEIGHT = 1.18
 const _DOWNCONVERT_COST = 23.0
 
 # A multi-pass layout replaces the single grid only when the model expects it
-# to be at least this much cheaper. Passes keep every Doppler within the loss of
-# an ideal rate's grid, but a single grid with spare blocks is better than that
-# at its edges — so a gain within the model's error is not worth taking.
+# to cost at most this fraction of the single grid. Passes keep every Doppler
+# within the loss of an ideal rate's grid, but a single grid with spare blocks
+# is better than that at its edges — so a gain within the model's error is not
+# worth taking.
 const _MULTI_PASS_MIN_GAIN = 0.9
+
+# Doppler passes are only considered when `samples_per_code`'s divisors are
+# sparse: the single grid needs at least this many times the blocks the coverage
+# asks for. That is where the divisor gap costs real time (1.542 MHz: 257 blocks
+# for 16 needed; 1.023 and 3.069 MHz: 31 for 16). Rates with a divisor closer
+# to the need (2.048 MHz at ±10 kHz: 32 for 22; 4 MHz at ±25 kHz: 80 for 52;
+# 5 MHz at ±5 kHz, 5 ms: 20 for 11; 1.5 MHz: 20 for 16) keep their single
+# grid, and with it the lower loss its spare blocks give near 0 Hz.
+const _SPARSE_DIVISOR_MIN_EXCESS = 1.9
 
 """
     _doppler_search_layout(samples_per_code, bin_width_hz, min_doppler_coverage_hz,
                            num_coherently_integrated_code_periods, max_doppler_passes,
-                           num_prns) -> DopplerLayout
+                           num_prns) -> Union{DopplerLayout,Nothing}
 
 Choose `num_blocks` and the pass layout for a search reaching
 `±min_doppler_coverage_hz`. The single-grid layout (smallest divisor of
-`samples_per_code` that reaches the coverage, one pass) is always a candidate;
-with `max_doppler_passes > 1` every smaller divisor is tried as a multi-pass
-layout that holds the sensitivity bound described at the top of this file, and
-the cheapest by [`_search_cost`](@ref) wins — a multi-pass layout only if it
-is expected to be at least 10% cheaper than the single grid. Returns `nothing` if no layout
-exists (only when `samples_per_code` is smaller than the blocks the coverage
-needs).
+`samples_per_code` that reaches the coverage, one pass) is the default. When
+that divisor is sparse (at least `_SPARSE_DIVISOR_MIN_EXCESS` times the blocks
+the coverage needs) and `max_doppler_passes > 1`, every smaller divisor is tried
+as a multi-pass layout that holds the sensitivity bound described at the top of
+this file; the cheapest by `_search_cost` wins, a multi-pass layout only if it
+costs at most `_MULTI_PASS_MIN_GAIN` times the single grid. Returns `nothing` if
+no layout exists (only when `samples_per_code` is smaller than the blocks the
+coverage needs).
 """
 function _doppler_search_layout(samples_per_code::Integer, bin_width_hz::Real,
                                 min_doppler_coverage_hz::Real,
@@ -140,17 +152,17 @@ function _doppler_search_layout(samples_per_code::Integer, bin_width_hz::Real,
     single_num_blocks = _smallest_valid_num_blocks(samples_per_code, min_num_blocks)
     best = single_num_blocks === nothing ? nothing :
         DopplerLayout(single_num_blocks, 1, N_coh * single_num_blocks)
+    max_doppler_passes > 1 || return best
+    sparse_divisors = single_num_blocks === nothing ||
+        single_num_blocks >= _SPARSE_DIVISOR_MIN_EXCESS * min_num_blocks
+    sparse_divisors || return best
     best_cost = best === nothing ? Inf :
         _MULTI_PASS_MIN_GAIN * _search_cost(samples_per_code, single_num_blocks, N_coh, 1, num_prns)
-    max_doppler_passes > 1 || return best
 
     # Grid the passes must fill: the fewest bins (odd, so symmetric about 0)
     # that reach ±min_doppler_coverage. `spacing = bin_width / N_coh`.
     coverage_in_bins = min_doppler_coverage_hz * N_coh / bin_width_hz
     min_grid_bins = 2 * max(0, ceil(Int, coverage_in_bins - 1e-9)) + 1
-    # The grid must not span more than the sampling frequency: beyond that the
-    # passes would search aliases of frequencies already on the grid.
-    min_grid_bins <= N_coh * samples_per_code || return best
     # Loss bound: a kept bin's far edge may sit at most `max_offset` of the
     # pass's block-loss scale `B · bin_width` from the pass centre — the offset
     # of the coverage edge on an ideal rate (`min_num_blocks` blocks).
@@ -166,10 +178,15 @@ function _doppler_search_layout(samples_per_code::Integer, bin_width_hz::Real,
         max_bins_per_pass = min(M, 2 * half + 1)
         num_passes = cld(min_grid_bins, max_bins_per_pass)
         num_passes <= max_doppler_passes || continue
+        layout = DopplerLayout(B, num_passes, cld(min_grid_bins, num_passes))
+        # The stitched grid (rounded up to whole passes) must not span more
+        # than the sampling frequency: beyond that the passes would search
+        # aliases of frequencies already on the grid.
+        _grid_bins(layout) <= N_coh * samples_per_code || continue
         cost = _search_cost(samples_per_code, B, N_coh, num_passes, num_prns)
         if cost < best_cost
             best_cost = cost
-            best = DopplerLayout(B, num_passes, cld(min_grid_bins, num_passes))
+            best = layout
         end
     end
     return best
@@ -181,7 +198,7 @@ end
 function _doppler_grid_hz(layout::DopplerLayout, bin_width_hz::Real,
                           num_coherently_integrated_code_periods::Integer)
     spacing = bin_width_hz / num_coherently_integrated_code_periods
-    n = layout.num_passes * layout.bins_per_pass
+    n = _grid_bins(layout)
     return range(-(n ÷ 2) * spacing, step = spacing, length = n)
 end
 
@@ -190,6 +207,45 @@ function _doppler_pass_offsets_hz(layout::DopplerLayout, bin_width_hz::Real,
                                   num_coherently_integrated_code_periods::Integer)
     spacing = bin_width_hz / num_coherently_integrated_code_periods
     P, K = layout.num_passes, layout.bins_per_pass
-    n = P * K
+    n = _grid_bins(layout)
     return [(-(n ÷ 2) + k * K + K ÷ 2) * spacing for k in 0:P-1]
+end
+
+# The rows one Doppler pass contributes: sorted rows
+# `src_offset+1 : src_offset+num_rows` of the pass's own FM-DBZP grid land on
+# rows `dest_offset+1 : dest_offset+num_rows` of the stitched grid. A single
+# untrimmed pass keeps every row in place (both offsets 0).
+struct PassRows
+    src_offset::Int
+    num_rows::Int
+    dest_offset::Int
+end
+
+PassRows(num_rows::Int) = PassRows(0, num_rows, 0)
+
+@inline _pass_rows(plan::AcquisitionPlan, pass_idx::Int) =
+    PassRows(plan.pass_row_offset, plan.doppler_bins_per_pass,
+        (pass_idx - 1) * plan.doppler_bins_per_pass)
+
+# Map a row of the stitched Doppler grid to `(pass_idx, pass_row)`: the Doppler
+# pass that produced it and its sorted row within that pass's own grid. The
+# inverse of `_pass_rows`.
+@inline function _doppler_row_to_pass(plan::AcquisitionPlan, row::Int)
+    K = plan.doppler_bins_per_pass
+    pass_idx = (row - 1) ÷ K + 1
+    return pass_idx, plan.pass_row_offset + (row - 1) % K + 1
+end
+
+# Rows on either side of `row` in the stitched Doppler grid, for subsample
+# interpolation, or `0` where there is none. A grid that is one whole FM-DBZP
+# pass spans its full alias period, so its ends are neighbours (row 1 follows
+# the last row). A stitched or trimmed grid stops at the coverage edge: the row
+# past it is not on the grid, and wrapping would pair the edge with a Doppler
+# on the far side of the range.
+@inline function _doppler_neighbour_rows(plan::AcquisitionPlan, row::Int)
+    n = length(plan.doppler_freqs)
+    wraps = plan.num_doppler_passes == 1 && plan.doppler_bins_per_pass == plan.pass_fft_bins
+    left = row > 1 ? row - 1 : (wraps ? n : 0)
+    right = row < n ? row + 1 : (wraps ? 1 : 0)
+    return left, right
 end

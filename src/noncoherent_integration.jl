@@ -549,11 +549,12 @@ end
 # drift rounds to 0 (caller uses the cheaper non-drift kernels — the typical
 # case at low-fs / short-T_coh grids).
 #
-# With Doppler passes, `shifts[i]` belongs to the `i`-th row Doppler pass
-# `pass_idx` contributes to the stitched grid — its drift follows that row's
-# true (global) Doppler, not the offset from the pass centre.
+# `shifts[i]` belongs to the `i`-th row a Doppler pass contributes to the
+# stitched grid (stitched row `rows.dest_offset + i`, see `PassRows`) — its
+# drift follows that row's true (global) Doppler, not the offset from the pass
+# centre.
 function _fill_code_drift_shifts!(shifts::Vector{Int}, plan::AcquisitionPlan,
-                                  accumulation_step_index::Int, pass_idx::Int = 1)
+                                  accumulation_step_index::Int, rows::PassRows)
     if accumulation_step_index == 0
         fill!(shifts, 0)
         return false
@@ -563,9 +564,8 @@ function _fill_code_drift_shifts!(shifts::Vector{Int}, plan::AcquisitionPlan,
     coherent_duration_s = plan.num_coherently_integrated_code_periods * plan.samples_per_code / sampling_freq_hz
     samples_per_code = plan.samples_per_code
     has_drift = false
-    row_offset = (pass_idx - 1) * plan.doppler_bins_per_pass
     @inbounds for r in 1:length(shifts)
-        doppler_hz = ustrip(Hz, plan.doppler_freqs[row_offset + r])
+        doppler_hz = ustrip(Hz, plan.doppler_freqs[rows.dest_offset + r])
         raw = round(Int, doppler_hz * accumulation_step_index * coherent_duration_s * sampling_freq_hz / carrier_freq_hz)
         if raw != 0
             has_drift = true
@@ -650,8 +650,8 @@ end
 # across bit-edge alignments and data combos (it depends only on Doppler row
 # and step), so max-then-shift equals shift-then-max.
 #
-# Only Doppler pass `pass_idx`'s kept stage rows are scattered, into its own
-# rows of the stitched grid (see `_doppler_row_to_pass`).
+# Only a Doppler pass's kept stage `rows` are scattered, into its own rows of
+# the stitched grid (see `PassRows`).
 function _accumulate_sign_tile!(
     nim::Matrix{Float32},
     tile::Matrix{ComplexF32},
@@ -660,13 +660,10 @@ function _accumulate_sign_tile!(
     scratch,
     prn::Int,
     has_drift::Bool,
-    pass_idx::Int = 1,
+    rows::PassRows,
 )
     block_size = plan.block_size
     samples_per_code = plan.samples_per_code
-    num_rows = plan.doppler_bins_per_pass
-    src_row_offset = plan.pass_row_offset
-    dest_row_offset = (pass_idx - 1) * num_rows
     stage = scratch.stage_buf
     num_slices = size(stage, 2)
     shifts = scratch.code_drift_shifts
@@ -691,17 +688,17 @@ function _accumulate_sign_tile!(
         if has_drift
             @inbounds for s in 0:num_slices-1
                 base = s * samples_per_code
-                for i in 1:num_rows
+                for i in 1:rows.num_rows
                     shifted = (cp_col - 1) + shifts[i]
                     shifted >= samples_per_code && (shifted -= samples_per_code)
-                    nim[dest_row_offset + i, base + shifted + 1] += stage[src_row_offset + i, s + 1]
+                    nim[rows.dest_offset + i, base + shifted + 1] += stage[rows.src_offset + i, s + 1]
                 end
             end
         else
             @inbounds for s in 0:num_slices-1
                 base = s * samples_per_code
-                @simd for i in 1:num_rows
-                    nim[dest_row_offset + i, base + cp_col] += stage[src_row_offset + i, s + 1]
+                @simd for i in 1:rows.num_rows
+                    nim[rows.dest_offset + i, base + cp_col] += stage[rows.src_offset + i, s + 1]
                 end
             end
         end
@@ -709,9 +706,10 @@ function _accumulate_sign_tile!(
 end
 
 const _EMPTY_TILED_PATTERNS = Array{Float32,3}(undef, 0, 0, 0)
+const _EMPTY_SIGN_PATTERNS = Matrix{Float32}(undef, 0, 0)
 
 """
-    _accumulate_prn_step_tiled!(nim, signal_block_ffts, plan, scratch, prn, accumulation_step_index, pass_idx=1)
+    _accumulate_prn_step_tiled!(nim, signal_block_ffts, plan, scratch, prn, accumulation_step_index, pass_idx)
 
 One PRN × one non-coherent step × one Doppler pass of the multistep (N_nc > 1)
 pipeline, tiled (the pass fills only its own rows of `nim`):
@@ -728,17 +726,16 @@ function _accumulate_prn_step_tiled!(
     scratch,
     prn::Int,
     accumulation_step_index::Int,
-    pass_idx::Int = 1,
+    pass_idx::Int,
 )
-    num_doppler_bins = plan.pass_doppler_bins
+    num_doppler_bins = plan.pass_fft_bins
     rotation_active = plan.num_secondary_rotations > 1 &&
                       plan.num_coherently_integrated_code_periods > 1
     simple_path = plan.num_data_bits == 1 && plan.bit_edge_search_steps == 1 &&
                   !rotation_active
+    rows = _pass_rows(plan, pass_idx)
     has_drift = _fill_code_drift_shifts!(scratch.code_drift_shifts, plan,
-        accumulation_step_index, pass_idx)
-    num_rows = plan.doppler_bins_per_pass
-    dest_row_offset = (pass_idx - 1) * num_rows
+        accumulation_step_index, rows)
     block_idx_offset = (pass_idx - 1) * plan.num_blocks
     prn_conj_fft = plan.prn_conj_ffts[prn]
     tile = scratch.coherent_tile
@@ -753,15 +750,14 @@ function _accumulate_prn_step_tiled!(
                 scratch.doppler_fft_plan)
             _accumulate_power_tile_t!(nim, tile_t, plan.samples_per_code,
                 num_doppler_bins, scratch.code_drift_shifts, has_drift,
-                col_block_idx * plan.block_size,
-                plan.pass_row_offset, num_rows, dest_row_offset)
+                col_block_idx * plan.block_size, rows)
         else
             _build_coherent_tile!(tile, signal_block_ffts, prn_conj_fft,
                 col_block_idx, plan.num_blocks, plan.block_size,
                 plan.num_coherently_integrated_code_periods,
                 scratch.corr_buf, scratch.double_block_bfft_plan)
             _accumulate_sign_tile!(nim, tile, col_block_idx, plan, scratch, prn, has_drift,
-                pass_idx)
+                rows)
         end
         _maybe_yield_block(plan, block_idx_offset + col_block_idx)
     end
@@ -781,6 +777,7 @@ integration matrix; it mirrors the routing of the tiled production driver
 tests. Sign-search staging buffers are allocated locally (this entry point is
 not on the hot path). The simple path always uses the per-column fused kernels
 — the plan's batched FFT plan is tile-shaped and does not fit a full matrix.
+Only single-grid plans are supported: the matrix is one untrimmed FM-DBZP grid.
 """
 function _accumulate_noncoherent_integration_step!(
     noncoherent_integration_matrix::Matrix{Float32},
@@ -790,7 +787,10 @@ function _accumulate_noncoherent_integration_step!(
     prn::Int,
     accumulation_step_index::Int,
 )
-    num_doppler_bins = plan.num_coherently_integrated_code_periods * plan.num_blocks
+    num_doppler_bins = plan.pass_fft_bins
+    length(plan.doppler_freqs) == num_doppler_bins || throw(ArgumentError(
+        "_accumulate_noncoherent_integration_step! needs a single-grid plan " *
+        "(max_doppler_passes = 1), got $(plan.num_doppler_passes) Doppler passes"))
     rotation_search_active = plan.num_secondary_rotations > 1 &&
                              plan.num_coherently_integrated_code_periods > 1
 
@@ -799,7 +799,8 @@ function _accumulate_noncoherent_integration_step!(
         # straight into `noncoherent_integration_matrix`.
         drift_shifts = length(scratch.code_drift_shifts) == num_doppler_bins ?
             scratch.code_drift_shifts : zeros(Int, num_doppler_bins)
-        has_drift = _fill_code_drift_shifts!(drift_shifts, plan, accumulation_step_index)
+        has_drift = _fill_code_drift_shifts!(drift_shifts, plan, accumulation_step_index,
+            PassRows(num_doppler_bins))
         if !has_drift
             _accumulate_fftshifted_power_pilot!(
                 noncoherent_integration_matrix, coherent_integration_matrix,
@@ -883,10 +884,8 @@ _accumulate_noncoherent_integration_step!(nim, cim, plan::AcquisitionPlan, accum
 # the per-row code-drift column shift. Iterates sorted rows so each row's drift
 # is a single offset over its contiguous code-phase run.
 #
-# Only sorted rows `src_row_offset+1 : src_row_offset+num_rows` of the tile (a
-# Doppler pass's kept bins) are accumulated, into accumulator rows
-# `dest_row_offset+1 : …`; `code_drift_shifts[i]` belongs to the `i`-th of them.
-# The defaults keep every row in place (a single-pass grid).
+# Only the tile's kept `rows` (a Doppler pass's, see `PassRows`) are
+# accumulated; `code_drift_shifts[i]` belongs to the `i`-th of them.
 function _accumulate_power_tile_t!(
     accumulator::Matrix{Float32},
     tile_t::AbstractMatrix{ComplexF32},
@@ -895,16 +894,14 @@ function _accumulate_power_tile_t!(
     code_drift_shifts::Vector{Int},
     has_drift::Bool,
     dest_col_offset::Int,
-    src_row_offset::Int = 0,
-    num_rows::Int = num_doppler_bins,
-    dest_row_offset::Int = 0,
+    rows::PassRows,
 )
     block_size = size(tile_t, 1)
     shift = num_doppler_bins ÷ 2
     front = num_doppler_bins - shift
-    @inbounds for i in 1:num_rows
-        r = _raw_doppler_bin(src_row_offset + i, shift, front)
-        dst = dest_row_offset + i
+    @inbounds for i in 1:rows.num_rows
+        r = _raw_doppler_bin(rows.src_offset + i, shift, front)
+        dst = rows.dest_offset + i
         if has_drift
             base = dest_col_offset + code_drift_shifts[i]
             for c in 1:block_size
