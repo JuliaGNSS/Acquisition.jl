@@ -722,7 +722,7 @@ function plan_acquire(
     # Rotation-search tile buffers. The max-reduced power tile is needed only
     # when a rotation has several patterns to fold.
     rotation_tile_size = rotation_search_active ? (block_size, pass_fft_bins) : (0, 0)
-    patterns_per_rotation = (1 << (num_data_bits - 1)) * bit_edge_search_steps
+    patterns_per_rotation = _num_data_combos(num_data_bits) * bit_edge_search_steps
     rotation_power_size = rotation_search_active && patterns_per_rotation > 1 ?
         (block_size, pass_fft_bins) : (0, 0)
 
