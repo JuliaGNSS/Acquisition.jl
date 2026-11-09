@@ -10,9 +10,9 @@
 # `Pkg.precompile`. The search is specialised on the signal type, so a signal
 # left out here would pay its own first call live. FFTL compiles a kernel per
 # transform shape on first use, so running the transforms here also moves that
-# compilation into the package image — for these shapes only; a plan at another
-# sampling frequency compiles its own FFT kernels on its first `acquire!`
-# (~0.1–0.4 s per shape). Every signal costs ~3 s of compilation here.
+# compilation into the package image — for these shapes only; a plan of another
+# shape compiles its FFT and per-PRN kernels in `plan_acquire` (~1–2 s, see
+# `_precompile_search`). Every signal costs ~3 s of compilation here.
 using PrecompileTools: @setup_workload, @compile_workload
 
 # Galileo E5b, E6 and the E5a pilot's QP component only exist from GNSSSignals 4

@@ -245,6 +245,8 @@ end
     plan = plan_acquire(GPSL1CA(), 2.048e6Hz, [1];
         num_coherently_integrated_code_periods = 1)
     duplicated_fields = (
+        :double_block_bfft_plan,
+        :col_fft_plan,
         :coherent_tile,
         :coherent_tile_t,
         :col_max_buf,
@@ -584,6 +586,7 @@ end
 
 @testset "plan_acquire compiles the search upfront" begin
     # runtests.jl switches the warm-up off for speed; exercise it here.
+    previous = Acquisition._PRECOMPILE_SEARCH[]
     Acquisition._PRECOMPILE_SEARCH[] = true
     try
         # Every warm-up signature must still match its kernel; `precompile`
@@ -595,6 +598,22 @@ end
             @test Acquisition._precompile_search(plan) === true
         end
     finally
-        Acquisition._PRECOMPILE_SEARCH[] = false
+        Acquisition._PRECOMPILE_SEARCH[] = previous
+    end
+end
+
+@testset "each scratch slot owns its FFT plans" begin
+    # FFTL plans carry their own work buffers, so two tasks applying one plan at
+    # once would race. Every per-PRN kernel takes its plans from the scratch slot
+    # it claimed; that is only safe while no two slots share a plan object.
+    # Needs a pool of >= 2 slots to bite (the 4-thread CI job).
+    plan = plan_acquire(GPSL1CA(), 5e6Hz, collect(1:8))
+    slots = plan.thread_scratch
+    for f in (:double_block_bfft_plan, :col_fft_plan, :doppler_fft_plan,
+              :coherent_tile, :corr_buf)
+        for i in eachindex(slots), j in eachindex(slots)
+            i < j || continue
+            @test getfield(slots[i], f) !== getfield(slots[j], f)
+        end
     end
 end

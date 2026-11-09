@@ -18,6 +18,8 @@ using BenchmarkTools
 using Unitful: Hz, ustrip
 using Acquisition
 using GNSSSignals
+# FFTW stays: the PR benchmark job runs this file against the base commit too,
+# and before the switch to FFTL `plan_acquire` took `fft_flag = FFTW.MEASURE`.
 using FFTW
 using LinearAlgebra: mul!
 using Random
