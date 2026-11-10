@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.10.1](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.10.0...v2.10.1) (2026-11-10)
+
+
+### Performance Improvements
+
+* compute each secondary-code pattern as one Doppler FFT across the tile ([12a300b](https://github.com/JuliaGNSS/Acquisition.jl/commit/12a300bc3ce9d5a62ce7ebab00a11ed0fb4694a0))
+
 # [2.10.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.9.2...v2.10.0) (2026-11-09)
 
 
