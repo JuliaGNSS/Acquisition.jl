@@ -15,8 +15,9 @@ Null (noise-only) distribution of the test statistic `peak_to_noise_ratio` for
 one search cell when the cell's power is the maximum over `num_hypotheses`
 correlated sign hypotheses, summed over `num_noncoherent_integrations` steps.
 Built by `plan_acquire` and carried by every [`AcquisitionResults`](@ref) of
-that plan; [`cfar_threshold`](@ref) reads its tail. Internal: tabulates
-`log P(peak_to_noise_ratio > pnr)` on an increasing `pnr` grid.
+that plan; [`cfar_threshold`](@ref) reads its tail. Not exported, and only
+`plan_acquire` constructs it; its fields tabulate `log P(peak_to_noise_ratio > pnr)`
+on an increasing `pnr` grid.
 """
 struct SignSearchNull
     num_hypotheses::Int
@@ -42,25 +43,29 @@ end
 
 # Per-row signs (`num_doppler_bins × K`) of the K sign hypotheses one cell is
 # maximised over — rotation 0's data-bit polarities at every bit-edge alignment
-# — built with the kernel's own sign construction (`_fill_hypothesis_signs!`)
-# for a column aligned to row 0. Rotations are not included: each rotation has
-# its own cell (`get_num_cells`).
-function _hypothesis_signs(patterns::Matrix{Float32}, num_data_bits::Int,
-        num_coh::Int, num_edges::Int, num_blocks::Int)
-    num_doppler_bins = num_coh * num_blocks
-    signs = Matrix{Float32}(undef, num_doppler_bins,
-        _num_sign_hypotheses(num_data_bits, num_coh, num_edges))
+# — for a code-phase column whose first code-period boundary is row `off`,
+# built with the kernel's own sign construction (`_fill_hypothesis_signs!`).
+# Rotations are not included: each rotation has its own cell (`get_num_cells`).
+function _hypothesis_signs(patterns::Matrix{Float32}, layout::SignSearchLayout, off::Int)
+    num_doppler_bins = layout.num_coh * layout.num_blocks
+    signs = Matrix{Float32}(undef, num_doppler_bins, _num_sign_hypotheses(layout))
     k = 0
-    for edge in 0:num_edges-1
-        num_segments = _edge_segments(edge, num_data_bits, num_coh, num_edges)[3]
-        for combo in _edge_combos(num_segments, num_data_bits)
+    for edge in 0:layout.num_edges-1
+        alignment = _edge_alignment(layout, edge)
+        for combo in alignment.combos
             k += 1
-            _fill_hypothesis_signs!(view(signs, :, k), patterns, 1, edge, combo, 0,
-                num_data_bits, num_coh, num_edges, num_blocks)
+            _fill_hypothesis_signs!(view(signs, :, k), patterns, 1, layout, alignment,
+                combo, off)
         end
     end
     return signs
 end
+
+# Null model of a plan's sign search, for a column aligned to row 0.
+_sign_search_null(patterns::Matrix{Float32}, layout::SignSearchLayout,
+    num_noncoherent_integrations::Int; kwargs...) =
+    _sign_search_null(_hypothesis_signs(patterns, layout, 0),
+        num_noncoherent_integrations; kwargs...)
 
 """
     _sign_search_null(signs, num_noncoherent_integrations; num_samples, rng) -> SignSearchNull

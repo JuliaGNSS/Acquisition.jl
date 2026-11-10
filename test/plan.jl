@@ -323,8 +323,8 @@ end
             @test all(t -> size(t) == (plan.block_size, ndop), scratch.segment_tiles)
             @test size(scratch.col_max_buf) == (plan.block_size, plan.num_secondary_rotations)
             # Rotation-search tiles are tile-sized, like the coherent tile.
-            @test size(scratch.rotation_tile) ∈ ((0, 0), (plan.block_size, ndop))
-            @test size(scratch.rotation_power) ∈ ((0, 0), (plan.block_size, ndop))
+            @test size(scratch.modulated_tile) ∈ ((0, 0), (plan.block_size, ndop))
+            @test size(scratch.hypothesis_power) ∈ ((0, 0), (plan.block_size, ndop))
             # Row sums span the stitched grid of all Doppler passes.
             @test length(scratch.row_sums_buf) <= length(plan.doppler_freqs)
             @test length(scratch.col_power_buf) <= ndop
@@ -389,9 +389,9 @@ end
     @test simple_plan.bit_edge_search_steps == 1
     # Every pool slot — not just slot 1.
     for t_scratch in simple_plan.thread_scratch
-        @test size(t_scratch.rotation_tile) == (0, 0)
-        @test size(t_scratch.rotation_power) == (0, 0)
-        @test size(t_scratch.rotation_signs) == (0, 0)
+        @test size(t_scratch.modulated_tile) == (0, 0)
+        @test size(t_scratch.hypothesis_power) == (0, 0)
+        @test size(t_scratch.row_signs) == (0, 0)
         @test isempty(t_scratch.segment_tiles)
     end
 
@@ -417,10 +417,9 @@ end
     for (plan, num_hypotheses, num_segment_tiles) in cases
         scratch = Acquisition._default_scratch(plan)
         ndop = plan.pass_fft_bins
-        @test Acquisition._num_sign_hypotheses(plan.num_data_bits,
-            plan.num_coherently_integrated_code_periods, plan.bit_edge_search_steps) == num_hypotheses
-        @test size(scratch.rotation_tile) == (plan.block_size, ndop)
-        @test size(scratch.rotation_power) ==
+        @test Acquisition._num_sign_hypotheses(Acquisition._sign_search_layout(plan)) == num_hypotheses
+        @test size(scratch.modulated_tile) == (plan.block_size, ndop)
+        @test size(scratch.hypothesis_power) ==
             (num_hypotheses > 1 ? (plan.block_size, ndop) : (0, 0))
         @test length(scratch.segment_tiles) == num_segment_tiles
         @test size(scratch.col_max_buf) == (plan.block_size, plan.num_secondary_rotations)

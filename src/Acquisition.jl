@@ -9,6 +9,7 @@ using Unitful: ustrip
 using PrettyTables: pretty_table, TextHighlighter
 using CPUSummary: num_cores
 
+include("sign_search_layout.jl")
 include("sign_search_null.jl")
 
 export acquire,

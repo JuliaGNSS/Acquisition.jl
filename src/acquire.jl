@@ -763,7 +763,7 @@ end
 
 # Reduce one Doppler-domain transposed tile `(block_size, pass_fft_bins)` in
 # raw FFT-bin order — complex (see `_build_doppler_tile_t!`) or already power
-# (see `_rotation_tile_power!`) — into the streaming statistics: per sorted
+# (see `_sign_search_tile_power!`) — into the streaming statistics: per sorted
 # (fftshifted) Doppler row sums, optional per-code-phase column sums and stored
 # power, written at effective cp columns `dest_col_offset .+ (1:block_size)`.
 # Only the pass's kept `rows` are reduced, into their rows of the stitched grid
@@ -965,6 +965,24 @@ function _estimate_secondary_code_phase(plan, prn, signal, interm_freq_hz,
     return best_r
 end
 
+# Whether a peak is strong enough to run the secondary-code phase estimator:
+# the CFAR test of `is_detected` at its default pfa. Absent PRNs in a wide
+# search pay nothing for the estimator (it's the few detected PRNs that run it).
+#
+# The cell count INCLUDES the rotation expansion: the rotation path's power_bins
+# is `num_doppler_bins × (samples_per_code × num_secondary_rotations)`. Omitting
+# the `× num_secondary_rotations` understates the cell count L-fold, dropping
+# the CFAR threshold enough that pure-noise peaks clear it and the estimator
+# fires on absent PRNs — that was the AcquireSignals/L5I regression. This
+# matches `get_num_cells` of the result — the public `is_detected` undercounted
+# the same way until issue #70.
+function _passes_secondary_phase_gate(plan, num_doppler_bins, peak_to_noise)
+    num_cells = num_doppler_bins * plan.samples_per_code * plan.num_secondary_rotations
+    threshold = _cfar_threshold(0.01, num_cells, plan.num_noncoherent_accumulations,
+        plan.sign_search_null)
+    return peak_to_noise > threshold
+end
+
 # Read the peak out of `power_bins` and assemble an AcquisitionResults. Used by
 # both the sequential and multistep paths; in the sequential path `power_bins`
 # is the per-thread accumulator (and is reused by the next PRN), so the
@@ -1055,18 +1073,7 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins, signal, inter
     # absent PRNs in a wide search pay nothing for the estimator (it's the few detected
     # PRNs that run it). The gate uses the same default pfa as [`is_detected`](@ref).
     secondary_code_phase = if plan.num_secondary_rotations > 1
-        # True searched-cell count INCLUDING the rotation expansion: the rotation
-        # path's power_bins is `num_doppler_bins × (samples_per_code ×
-        # num_secondary_rotations)`. Omitting the `× num_secondary_rotations`
-        # understates the cell count L-fold, dropping the CFAR threshold enough
-        # that pure-noise peaks clear it and the estimator fires on absent PRNs —
-        # that was the AcquireSignals/L5I regression. (`num_blocks × block_size ==
-        # samples_per_code`.) This matches `get_num_cells` of the result built below
-        # — the public `is_detected` undercounted the same way until issue #70.
-        num_cells = num_doppler_bins * plan.samples_per_code * plan.num_secondary_rotations
-        threshold = _cfar_threshold(0.01, num_cells,
-            plan.num_noncoherent_accumulations, plan.sign_search_null)
-        if peak_to_noise > threshold
+        if _passes_secondary_phase_gate(plan, num_doppler_bins, peak_to_noise)
             _estimate_secondary_code_phase(plan, prn, signal, interm_freq_hz,
                 sampling_freq_hz, code_phase, ustrip(Hz, doppler))
         else
@@ -1195,10 +1202,7 @@ function _extract_result_streamed!(plan, scratch, prn,
 
     # Exact secondary-code phase — same gate and estimator as `_extract_result!`.
     secondary_code_phase = if plan.num_secondary_rotations > 1
-        num_cells = num_doppler_bins * plan.samples_per_code * plan.num_secondary_rotations
-        threshold = _cfar_threshold(0.01, num_cells,
-            plan.num_noncoherent_accumulations, plan.sign_search_null)
-        if peak_to_noise > threshold
+        if _passes_secondary_phase_gate(plan, num_doppler_bins, peak_to_noise)
             _estimate_secondary_code_phase(plan, prn, signal, interm_freq_hz,
                 sampling_freq_hz, code_phase, ustrip(Hz, doppler))
         else

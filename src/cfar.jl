@@ -62,12 +62,9 @@ at `1 - pfa_per_cell`.
 [`AcquisitionResults`](@ref), [`acquire`](@ref)
 """
 function cfar_threshold(pfa, num_cells; num_noncoherent_integrations = 1)
-    0 < pfa < 1 || throw(ArgumentError("pfa must be in (0, 1), got $pfa"))
-    num_cells > 0 || throw(ArgumentError("num_cells must be positive, got $num_cells"))
     num_noncoherent_integrations > 0 ||
         throw(ArgumentError("num_noncoherent_integrations must be positive"))
-    # Per-cell false alarm probability (Bonferroni-like correction)
-    pfa_per_cell = 1 - (1 - pfa)^(1 / num_cells)
+    pfa_per_cell = _pfa_per_cell(pfa, num_cells)
     # Under H0 (noise only), each power bin is |I|²+|Q|² ~ χ²(2) with E[noise]=2
     # (Springer Handbook of GNSS, Eq. 14.26). After M non-coherent integrations,
     # the raw power S_nc ~ χ²(2M) (Eq. 14.28).
@@ -108,10 +105,14 @@ end
 _cfar_threshold(pfa, num_cells, num_noncoherent_integrations, ::Nothing) =
     cfar_threshold(pfa, num_cells; num_noncoherent_integrations)
 
-function _cfar_threshold(pfa, num_cells, num_noncoherent_integrations, null::SignSearchNull)
+_cfar_threshold(pfa, num_cells, num_noncoherent_integrations, null::SignSearchNull) =
+    _threshold(null, _pfa_per_cell(pfa, num_cells))
+
+# Per-cell false-alarm probability for a search-wide `pfa` over `num_cells`
+# independent cells (Bonferroni-like correction): `1 - (1 - pfa)^(1/num_cells)`,
+# computed accurately for tiny per-cell probabilities.
+function _pfa_per_cell(pfa, num_cells)
     0 < pfa < 1 || throw(ArgumentError("pfa must be in (0, 1), got $pfa"))
     num_cells > 0 || throw(ArgumentError("num_cells must be positive, got $num_cells"))
-    # 1 - (1 - pfa)^(1/num_cells), accurate for tiny per-cell probabilities.
-    pfa_cell = -expm1(log1p(-pfa) / num_cells)
-    return _threshold(null, pfa_cell)
+    return -expm1(log1p(-pfa) / num_cells)
 end
