@@ -58,19 +58,19 @@ struct AcquisitionScratch{P2,P3,P4}
     # rows) for the on-demand column recompute used by subsample interpolation
     # on the streamed path.
     col_power_buf::Vector{Float32}
-    # Sign search (`_rotation_tile_power!`: secondary-code rotations, data-bit
+    # Sign search (`_sign_search_tile_power!`: secondary-code rotations, data-bit
     # polarities, bit-edge alignments), all 0-sized on the simple path:
     # one sign-modulated, Doppler-transformed copy of `coherent_tile_t`,
-    # (block_size, pass_fft_bins) — the tile itself is reused by every pattern;
-    rotation_tile::Matrix{ComplexF32}
-    # the power of a rotation's patterns max-reduced, (block_size,
-    # pass_fft_bins) — only when a rotation has more than one pattern (data-bit
-    # polarities or bit-edge alignments), otherwise `rotation_tile` is reduced
+    # (block_size, pass_fft_bins) — the tile itself is reused by every hypothesis;
+    modulated_tile::Matrix{ComplexF32}
+    # the power of a rotation's hypotheses max-reduced, (block_size,
+    # pass_fft_bins) — only when a rotation has more than one hypothesis (data-bit
+    # polarities or bit-edge alignments), otherwise `modulated_tile` is reduced
     # directly;
-    rotation_power::Matrix{Float32}
-    # the per-row pattern signs for the tile's two code-phase ranges,
+    hypothesis_power::Matrix{Float32}
+    # the per-row hypothesis signs for the tile's two code-phase ranges,
     # (pass_fft_bins, 2);
-    rotation_signs::Matrix{Float32}
+    row_signs::Matrix{Float32}
     # one Doppler-transformed tile per data-bit segment, (block_size,
     # num_doppler_bins) each, for alignments whose sign combinations are
     # combined by Gray code (`_direct_hypotheses`) — empty when none are; and the
@@ -214,7 +214,7 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     num_secondary_rotations::Int
     # Pre-computed ±1 secondary-code pattern per rotation, (num_coh_periods,
     # num_secondary_rotations) per PRN — a single all-+1 column without a
-    # rotation search — consumed by `_rotation_tile_power!`, which adds the
+    # rotation search — consumed by `_sign_search_tile_power!`, which adds the
     # data-bit signs itself. Built once in `plan_acquire`. Empty on the simple
     # path. For PRN-independent patterns (no rotation, or shared
     # secondary code) the same matrix value is stored under every PRN key — keeps
@@ -643,7 +643,7 @@ function plan_acquire(
             "bit_edge_search_steps=$bit_edge_search_steps must divide bit_period_codes=$bit_period_codes."))
     end
     # Sub-bit windows search a single transition at `bit_edge_search_steps`
-    # evenly spaced code-period boundaries (see `_edge_segments`), so the step
+    # evenly spaced code-period boundaries (see `_edge_alignment`), so the step
     # count must divide the window.
     if has_data && num_coherently_integrated_code_periods < bit_period_codes
         num_coherently_integrated_code_periods % bit_edge_search_steps == 0 || throw(ArgumentError(
@@ -733,23 +733,19 @@ function plan_acquire(
 
     # Every search other than the simple path (num_data_bits == 1,
     # bit_edge_search_steps == 1, no rotation search) is a sign search, run per
-    # tile by `_rotation_tile_power!`.
+    # tile by `_sign_search_tile_power!`.
     sign_search_path_active = num_data_bits > 1 || bit_edge_search_steps > 1 ||
                               rotation_search_active
-    rotation_tile_size = sign_search_path_active ? (block_size, pass_fft_bins) : (0, 0)
+    sign_layout = SignSearchLayout(num_data_bits, num_coherently_integrated_code_periods,
+        bit_edge_search_steps, num_blocks)
+    modulated_tile_size = sign_search_path_active ? (block_size, pass_fft_bins) : (0, 0)
     # Sign hypotheses per rotation; the max-reduced power tile is needed only
     # when there are several.
-    patterns_per_rotation = _num_sign_hypotheses(num_data_bits,
-        num_coherently_integrated_code_periods, bit_edge_search_steps)
-    rotation_power_size = sign_search_path_active && patterns_per_rotation > 1 ?
+    hypotheses_per_rotation = _num_sign_hypotheses(sign_layout)
+    hypothesis_power_size = sign_search_path_active && hypotheses_per_rotation > 1 ?
         (block_size, pass_fft_bins) : (0, 0)
     # Segment tiles for the alignments the kernel combines by Gray code.
-    num_segment_tiles = maximum(0:bit_edge_search_steps-1) do edge
-        num_segments = _edge_segments(edge, num_data_bits,
-            num_coherently_integrated_code_periods, bit_edge_search_steps)[3]
-        _direct_hypotheses(length(_edge_combos(num_segments, num_data_bits)), num_segments) ?
-            0 : num_segments
-    end
+    num_segment_tiles = _num_segment_tiles(sign_layout)
 
     # Streaming-reduction state exists only on the sequential (N_nc == 1) path;
     # the multistep path reduces from the per-scratch accumulator surface.
@@ -808,8 +804,8 @@ function plan_acquire(
             zeros(Float32, accumulator_rows, accumulator_cols),
             zeros(Float32, row_sums_len),
             zeros(Float32, sequential_prn_mode ? pass_fft_bins : 0),
-            zeros(ComplexF32, rotation_tile_size),
-            zeros(Float32, rotation_power_size),
+            zeros(ComplexF32, modulated_tile_size),
+            zeros(Float32, hypothesis_power_size),
             zeros(Float32, sign_search_path_active ? pass_fft_bins : 0,
                 sign_search_path_active ? 2 : 0),
             [zeros(ComplexF32, block_size, pass_fft_bins) for _ in 1:num_segment_tiles],
@@ -863,10 +859,8 @@ function plan_acquire(
     # Built from rotation 0 of the first PRN: a secondary code multiplies all
     # hypotheses of a rotation alike, so their correlation — all the null model
     # depends on — is the same for every rotation and PRN.
-    sign_search_null = if patterns_per_rotation > 1 && sign_search_path_active
-        _sign_search_null(
-            _hypothesis_signs(sign_patterns_by_prn[first(prns)], num_data_bits,
-                num_coherently_integrated_code_periods, bit_edge_search_steps, num_blocks),
+    sign_search_null = if hypotheses_per_rotation > 1 && sign_search_path_active
+        _sign_search_null(sign_patterns_by_prn[first(prns)], sign_layout,
             num_noncoherent_accumulations)
     else
         nothing

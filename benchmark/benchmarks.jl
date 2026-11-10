@@ -265,7 +265,7 @@ if _is_fmdbzp
     end
 
     # Secondary-code rotation search path — exercises
-    # `_rotation_tile_power!` and the (samples_per_code × L)-wide effective
+    # `_sign_search_tile_power!` and the (samples_per_code × L)-wide effective
     # code-phase axis. L5I at 12 MHz / N_coh=10 is the canonical rotation
     # workload (the case the rotation-vs-LongL5I sensitivity work is tuned
     # for). Without this entry,

@@ -82,7 +82,7 @@ This ensures that for the true code delay `tau_samples = k_true*block_size + fin
 
 ## Delay recovery
 
-After the column-wise FFT (`_accumulate_noncoherent_integration_pilot!` or `_rotation_tile_power!`), the peak
+After the column-wise FFT (`_accumulate_noncoherent_integration_pilot!` or `_sign_search_tile_power!`), the peak
 column index `pc` (0-indexed) satisfies:
 
     tau_samples = (num_blocks - pc ÷ block_size) mod num_blocks * block_size + pc mod block_size
@@ -182,7 +182,7 @@ strided row.
 The simple path follows this with one Doppler FFT along dim 2
 ([`_build_doppler_tile_t!`](@ref)); the secondary-code rotation search first
 sign-modulates the Doppler axis once per pattern (see
-[`_rotation_tile_power!`](@ref)).
+[`_sign_search_tile_power!`](@ref)).
 """
 function _build_coherent_tile_t!(
     tile_t::AbstractMatrix{ComplexF32},       # (block_size, num_coh*num_blocks)

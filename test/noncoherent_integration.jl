@@ -761,7 +761,7 @@ end
 @testset "Sign-search tile kernel matches the per-column references (N_nc=1, streamed)" begin
     # Production computes each sign hypothesis as ONE Doppler FFT of the
     # sign-modulated transposed tile, or combines per-segment FFTs by Gray code
-    # (`_rotation_tile_power!`); the reference dispatcher FFTs each column per
+    # (`_sign_search_tile_power!`); the reference dispatcher FFTs each column per
     # hypothesis (`_sign_search_reference_step!`). With one pattern per rotation
     # the original per-column kernel (`_rotation_column!`: sub-block FFTs
     # combined with phase-ramped patterns, an independent algorithm) is checked
@@ -813,7 +813,7 @@ end
             # Not `argmax(stored) == argmax(ref)`: near-equal cells can order
             # differently under the two kernels' rounding.
             @test ref[argmax(stored)] >= (1 - 1e-5) * maximum(ref)
-            if Acquisition._num_sign_hypotheses(plan.num_data_bits, ncoh, edges) == 1
+            if Acquisition._num_sign_hypotheses(Acquisition._sign_search_layout(plan)) == 1
                 num_blocks = plan.num_blocks
                 tiled = Acquisition.tile_phase_patterns(Acquisition.combined_phase_patterns(
                     plan.sign_patterns_by_prn[prn], ncoh), ndop)
@@ -930,12 +930,12 @@ end
 end
 
 @testset "Rotation tile offsets equal the per-column block alignment" begin
-    # `_rotation_tile_offsets` replaces the per-column row-offset snap of
+    # `_tile_row_offsets` replaces the per-column row-offset snap of
     # `_rotation_column!` with two contiguous code-phase ranges per tile.
     for (num_blocks, block_size) in ((10, 1024), (10, 1023), (25, 160), (7, 1))
         half_block = block_size >> 1
         for col_block_idx in 0:num_blocks-1
-            off_lo, off_hi, split = Acquisition._rotation_tile_offsets(
+            off_lo, off_hi, split = Acquisition._tile_row_offsets(
                 col_block_idx, num_blocks, block_size)
             for local_col in 1:block_size
                 pc = col_block_idx * block_size + local_col - 1

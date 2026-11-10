@@ -8,7 +8,7 @@
 # The kernels here therefore come in two granularities:
 #
 #   - tile consumers (`_accumulate_power_tile_t!` for the simple path,
-#     `_rotation_tile_power!` for every sign search: secondary-code rotations,
+#     `_sign_search_tile_power!` for every sign search: secondary-code rotations,
 #     data-bit polarities, bit-edge alignments) — the production hot path;
 #   - full-matrix references (`_sign_search_reference_step!`,
 #     `_sign_search_step_with_rotations!`, `_accumulate_noncoherent_integration_step!`)
@@ -53,7 +53,7 @@ end
                       tiled_phase_patterns_re, tiled_phase_patterns_im, use_max)
 
 Reference (test-only) secondary-code rotation search for ONE code-phase column;
-production uses the equivalent tile kernel [`_rotation_tile_power!`](@ref).
+production uses the equivalent tile kernel [`_sign_search_tile_power!`](@ref).
 Computes one sub-block
 FFT per coherent period from column `src_col` of `cim`, combines them with the
 pre-tiled complex phasors, and writes `|result|²` of each pattern into its
@@ -499,7 +499,7 @@ end
 const _EMPTY_SIGN_PATTERNS = Matrix{Float32}(undef, 0, 0)
 
 # Pilot path: no sign search at all, one Doppler FFT per tile. Every other plan
-# runs the sign-search tile kernel `_rotation_tile_power!` (with
+# runs the sign-search tile kernel `_sign_search_tile_power!` (with
 # `plan.num_secondary_rotations == 1` when there is no rotation search).
 @inline _simple_path_active(plan::AcquisitionPlan) =
     plan.num_data_bits == 1 && plan.bit_edge_search_steps == 1 &&
@@ -508,7 +508,7 @@ const _EMPTY_SIGN_PATTERNS = Matrix{Float32}(undef, 0, 0)
 # The pilot and sign-search paths share the transposed tile
 # `scratch.coherent_tile_t`. Build tile `col_block_idx` into it: Doppler-transformed
 # on the pilot path; left before the Doppler FFT on the sign-search path, where
-# each hypothesis runs its own FFT over a sign-modulated copy (`_rotation_tile_power!`).
+# each hypothesis runs its own FFT over a sign-modulated copy (`_sign_search_tile_power!`).
 function _build_search_tile_t!(
     scratch,
     signal_block_ffts::AbstractMatrix{ComplexF32},
@@ -544,10 +544,10 @@ end
 @inline _slice_power_tile!(scratch, tile_t::Matrix{ComplexF32}, patterns::Matrix{Float32},
     slice_idx::Int, col_block_idx::Int, plan::AcquisitionPlan, simple_path::Bool) =
     simple_path ? tile_t :
-    _rotation_tile_power!(scratch, tile_t, patterns, slice_idx, col_block_idx, plan)
+    _sign_search_tile_power!(scratch, tile_t, patterns, slice_idx, col_block_idx, plan)
 
 """
-    _rotation_tile_power!(scratch, tile_t, patterns, rotation_idx, col_block_idx, plan)
+    _sign_search_tile_power!(scratch, tile_t, patterns, rotation_idx, col_block_idx, plan)
 
 Sign search for one column-block tile and one secondary-code rotation: the
 Doppler-domain power `|·|²` of every sign hypothesis of rotation `rotation_idx`
@@ -561,9 +561,9 @@ untouched.
 
 Returns a `(block_size, num_doppler_bins)` matrix in raw (un-fftshifted)
 Doppler-bin order, ready for `_stream_power_tile_t!` /
-`_accumulate_power_tile_t!`: `scratch.rotation_tile` (complex — power
+`_accumulate_power_tile_t!`: `scratch.modulated_tile` (complex — power
 is `abs2`) when the rotation has a single hypothesis, else
-`scratch.rotation_power` (power).
+`scratch.hypothesis_power` (power).
 
 ## Algorithm
 
@@ -583,20 +583,20 @@ with `nb = num_blocks` and `sign_q[k]` the pattern's sign in coherent period
 `off` is the per-column block alignment of
 [`_sign_search_step_with_rotations!`](@ref), which inside one tile takes only
 two values, on two contiguous code-phase ranges (see
-`_rotation_tile_offsets`). So each hypothesis is one sign-modulated copy
+`_tile_row_offsets`). So each hypothesis is one sign-modulated copy
 of the tile and one dim-2 Doppler FFT, vectorised across code phases — the
 same transform as the simple path.
 
 ## Data bits
 
 At each bit-edge alignment the window splits into data-bit segments
-(`_edge_segments`), each with an unknown sign. When an alignment has at least twice
+(`_edge_alignment`), each with an unknown sign. When an alignment has at least twice
 as many sign combinations as segments, the FFT's linearity is used instead: each segment
 (the tile masked to that segment, secondary code applied) is transformed once,
 and the combinations are enumerated in Gray-code order, so each costs one
 complex add per cell instead of an FFT.
 """
-function _rotation_tile_power!(
+function _sign_search_tile_power!(
     scratch,
     tile_t::Matrix{ComplexF32},
     patterns::Matrix{Float32},                # (num_coh_periods, num_rotations)
@@ -605,30 +605,25 @@ function _rotation_tile_power!(
     plan::AcquisitionPlan,
 )
     block_size, num_doppler_bins = size(tile_t)
-    num_blocks = plan.num_blocks
-    num_data_bits = plan.num_data_bits
-    num_coh = plan.num_coherently_integrated_code_periods
-    num_edges = plan.bit_edge_search_steps
-    modulated_tile = scratch.rotation_tile
-    power = scratch.rotation_power
-    signs = scratch.rotation_signs
-    sign_lo = view(signs, :, 1)
-    sign_hi = view(signs, :, 2)
+    layout = _sign_search_layout(plan)
+    modulated_tile = scratch.modulated_tile
+    power = scratch.hypothesis_power
+    sign_lo = view(scratch.row_signs, :, 1)
+    sign_hi = view(scratch.row_signs, :, 2)
     off_lo, off_hi, split_col =
-        _rotation_tile_offsets(col_block_idx, num_blocks, block_size)
+        _tile_row_offsets(col_block_idx, layout.num_blocks, block_size)
     pattern_idx = rotation_idx + 1
-    single_pattern = _num_sign_hypotheses(num_data_bits, num_coh, num_edges) == 1
+    single_pattern = _num_sign_hypotheses(layout) == 1
     first_pattern = true
-    for edge in 0:num_edges-1
-        num_segments = _edge_segments(edge, num_data_bits, num_coh, num_edges)[3]
-        combos = _edge_combos(num_segments, num_data_bits)
-        if _direct_hypotheses(length(combos), num_segments)
+    for edge in 0:layout.num_edges-1
+        alignment = _edge_alignment(layout, edge)
+        if _direct_hypotheses(alignment)
             # One FFT per hypothesis.
-            for combo in combos
-                _fill_hypothesis_signs!(sign_lo, patterns, pattern_idx, edge, combo, off_lo,
-                    num_data_bits, num_coh, num_edges, num_blocks)
-                _fill_hypothesis_signs!(sign_hi, patterns, pattern_idx, edge, combo, off_hi,
-                    num_data_bits, num_coh, num_edges, num_blocks)
+            for combo in alignment.combos
+                _fill_hypothesis_signs!(sign_lo, patterns, pattern_idx, layout, alignment,
+                    combo, off_lo)
+                _fill_hypothesis_signs!(sign_hi, patterns, pattern_idx, layout, alignment,
+                    combo, off_hi)
                 _modulate_tile!(modulated_tile, tile_t, sign_lo, sign_hi, split_col)
                 mul!(modulated_tile, scratch.doppler_fft_plan, modulated_tile)
                 single_pattern && return modulated_tile
@@ -637,12 +632,13 @@ function _rotation_tile_power!(
             end
         else
             # One FFT per segment, then the combinations by Gray code.
+            num_segments = alignment.num_segments
             segments = scratch.segment_tiles
             for seg in 0:num_segments-1
-                _fill_segment_signs!(sign_lo, patterns, pattern_idx, edge, seg, off_lo,
-                    num_data_bits, num_coh, num_edges, num_blocks)
-                _fill_segment_signs!(sign_hi, patterns, pattern_idx, edge, seg, off_hi,
-                    num_data_bits, num_coh, num_edges, num_blocks)
+                _fill_segment_signs!(sign_lo, patterns, pattern_idx, layout, alignment,
+                    seg, off_lo)
+                _fill_segment_signs!(sign_hi, patterns, pattern_idx, layout, alignment,
+                    seg, off_hi)
                 zs = segments[seg + 1]
                 _modulate_tile!(zs, tile_t, sign_lo, sign_hi, split_col)
                 mul!(zs, scratch.doppler_fft_plan, zs)
@@ -658,7 +654,7 @@ function _rotation_tile_power!(
             # keeps +1), so modulated_tile moves by ∓2 × that segment's transform.
             seg_signs = scratch.segment_signs
             fill!(seg_signs, 1f0)
-            for g in 1:length(combos)-1
+            for g in 1:length(alignment.combos)-1
                 seg = trailing_zeros(g) + 2
                 seg_signs[seg] = -seg_signs[seg]
                 _add_max_power!(power, modulated_tile, segments[seg], 2f0 * seg_signs[seg], false)
@@ -669,7 +665,7 @@ function _rotation_tile_power!(
 end
 
 # z[c, m] = tile_t[c, m] · sign[m], with `sign_lo` for the code-phase columns
-# `1:split` and `sign_hi` for the rest (see `_rotation_tile_offsets`).
+# `1:split` and `sign_hi` for the rest (see `_tile_row_offsets`).
 @inline function _modulate_tile!(z::Matrix{ComplexF32}, tile_t::Matrix{ComplexF32},
         sign_lo::AbstractVector{Float32}, sign_hi::AbstractVector{Float32}, split::Int)
     block_size, num_doppler_bins = size(tile_t)
@@ -719,128 +715,17 @@ end
     return power
 end
 
-# Per-column block alignment of the rotation search (see
+# Per-column block alignment of the sign search (see
 # `_sign_search_step_with_rotations!`) for the tile `col_block_idx`. The row
 # shift `round(W(c) / block_size) mod num_blocks` of code-phase column `c` is
 # `off_lo` for the tile's local columns `1:split` and `off_hi` for
 # `split+1:block_size`: within a tile the wrap sample `W(c)` grows by one per
 # column from a multiple of `block_size`, so the rounding steps up exactly once.
-@inline function _rotation_tile_offsets(col_block_idx::Int, num_blocks::Int, block_size::Int)
+@inline function _tile_row_offsets(col_block_idx::Int, num_blocks::Int, block_size::Int)
     off_lo = (num_blocks - col_block_idx) % num_blocks
     off_hi = (off_lo + 1) % num_blocks
     split = block_size - (block_size >> 1)
     return off_lo, off_hi, split
-end
-
-# Data-bit segments of bit-edge alignment `edge` (0-based). The window holds
-# `num_data_bits` bit periods of `bit_period = N_coh ÷ num_data_bits` code
-# periods; alignment `edge` puts the first bit edge `first_edge = edge ·
-# bit_period ÷ N_be` code periods into the window. Aligned (`first_edge == 0`),
-# the window is `num_data_bits` whole bits; otherwise a partial bit, the
-# `num_data_bits − 1` whole bits and another partial bit, each with its own sign.
-@inline function _edge_segments(edge::Int, num_data_bits::Int, num_coh::Int, num_edges::Int)
-    bit_period = num_coh ÷ num_data_bits
-    first_edge = edge * bit_period ÷ num_edges
-    num_segments = first_edge == 0 ? num_data_bits : num_data_bits + 1
-    return first_edge, bit_period, num_segments
-end
-
-# Sign combinations searched at an alignment with `num_segments` segments,
-# encoded with bit `s − 1` the sign of segment `s ≥ 1` (segment 0 is +1; only
-# |·|² is used). A one-bit window at a nonzero alignment searches only the
-# transition: its no-transition combination repeats alignment 0.
-@inline _edge_combos(num_segments::Int, num_data_bits::Int) =
-    num_data_bits == 1 && num_segments == 2 ? (1:1) : (0:(1 << (num_segments - 1)) - 1)
-
-# Whether an alignment's sign combinations are each transformed directly, or
-# its segments are transformed once and combined by Gray code. A Gray step is
-# one fused pass over the tile; an FFTL tile FFT costs a few such passes plus
-# the sign modulation, so segments pay off from twice as many combinations as
-# segments on (measured: 8 over 4 segments 1.3× faster, 4 over 3 1.1–1.35×
-# slower).
-@inline _direct_hypotheses(num_combos::Int, num_segments::Int) = num_combos < 2 * num_segments
-
-# Sign hypotheses per rotation, over all alignments.
-_num_sign_hypotheses(num_data_bits::Int, num_coh::Int, num_edges::Int) =
-    sum(0:num_edges-1) do edge
-        length(_edge_combos(_edge_segments(edge, num_data_bits, num_coh, num_edges)[3], num_data_bits))
-    end
-
-# First row (0-based) of segment `seg` for a column whose first code-period
-# boundary is row `off`: segment boundaries are code-period boundaries, and the
-# leading rows before `off` belong to segment 0. Past the last segment: N.
-@inline function _segment_start_row(seg::Int, num_segments::Int, first_edge::Int,
-        bit_period::Int, off::Int, num_blocks::Int, num_doppler_bins::Int)
-    seg == 0 && return 0
-    seg >= num_segments && return num_doppler_bins
-    period = first_edge == 0 ? seg * bit_period : first_edge + (seg - 1) * bit_period
-    return off + period * num_blocks
-end
-
-"""
-    _fill_hypothesis_signs!(signs, patterns, q, edge, combo, off,
-                            num_data_bits, num_coh, num_edges, num_blocks)
-
-Per-row signs of one sign hypothesis of the tile kernel, for a column whose
-first code-period boundary is row `off`: secondary-code pattern `q` (cyclic,
-see `_fill_rotation_signs!`) times the data-bit sign of each row's segment at
-bit-edge alignment `edge` (`_edge_segments`), with segment signs encoded in
-`combo` (`_edge_combos`). Shared by [`_rotation_tile_power!`](@ref) and the
-CFAR null model (`_sign_search_null`), so both see the same hypotheses.
-"""
-function _fill_hypothesis_signs!(
-    signs::AbstractVector{Float32},
-    patterns::Matrix{Float32},
-    q::Int,
-    edge::Int,
-    combo::Int,
-    off::Int,
-    num_data_bits::Int,
-    num_coh::Int,
-    num_edges::Int,
-    num_blocks::Int,
-)
-    num_doppler_bins = length(signs)
-    _fill_rotation_signs!(signs, patterns, q, off, num_blocks)
-    first_edge, bit_period, num_segments = _edge_segments(edge, num_data_bits, num_coh, num_edges)
-    for seg in 1:num_segments-1
-        (combo >> (seg - 1)) & 1 == 1 || continue
-        lo = _segment_start_row(seg, num_segments, first_edge, bit_period, off, num_blocks, num_doppler_bins)
-        hi = _segment_start_row(seg + 1, num_segments, first_edge, bit_period, off, num_blocks, num_doppler_bins)
-        @inbounds @simd for m in lo+1:hi
-            signs[m] = -signs[m]
-        end
-    end
-    return signs
-end
-
-# Secondary-code signs of pattern `q` on the rows of segment `seg` at alignment
-# `edge`, zero elsewhere: the mask the segment-wise FFTs of
-# `_rotation_tile_power!` apply.
-function _fill_segment_signs!(
-    signs::AbstractVector{Float32},
-    patterns::Matrix{Float32},
-    q::Int,
-    edge::Int,
-    seg::Int,
-    off::Int,
-    num_data_bits::Int,
-    num_coh::Int,
-    num_edges::Int,
-    num_blocks::Int,
-)
-    num_doppler_bins = length(signs)
-    _fill_rotation_signs!(signs, patterns, q, off, num_blocks)
-    first_edge, bit_period, num_segments = _edge_segments(edge, num_data_bits, num_coh, num_edges)
-    lo = _segment_start_row(seg, num_segments, first_edge, bit_period, off, num_blocks, num_doppler_bins)
-    hi = _segment_start_row(seg + 1, num_segments, first_edge, bit_period, off, num_blocks, num_doppler_bins)
-    @inbounds for m in 1:lo
-        signs[m] = 0f0
-    end
-    @inbounds for m in hi+1:num_doppler_bins
-        signs[m] = 0f0
-    end
-    return signs
 end
 
 # Sign of pattern `q` at coherent-integration row `m` for a column whose
@@ -867,7 +752,7 @@ end
 
 Reference (test-only) sign search over a fully materialised coherent integration
 matrix, one code-phase column and one hypothesis at a time with a plain column
-FFT; production runs the tile kernel [`_rotation_tile_power!`](@ref). Written
+FFT; production runs the tile kernel [`_sign_search_tile_power!`](@ref). Written
 independently of the kernel's helpers. For every column `c`, rotation `r`,
 bit-edge alignment `e` and data-bit sign combination it FFTs the column times
 
@@ -937,7 +822,7 @@ pipeline, tiled (the pass fills only its own rows of `nim`):
 for each FM-DBZP column block, build the coherent tile from the step's
 `signal_block_ffts` slice and accumulate its power into `nim` — the
 Doppler-transformed tile on the simple path, the sign-search tile kernel
-([`_rotation_tile_power!`](@ref)) otherwise, one slice per secondary-code
+([`_sign_search_tile_power!`](@ref)) otherwise, one slice per secondary-code
 rotation. Code drift is folded into the destination columns; no intermediate
 surface is materialised.
 """
@@ -1046,7 +931,7 @@ _accumulate_noncoherent_integration_step!(nim, cim, plan::AcquisitionPlan, accum
 # `_accumulate_fftshifted_power_drift_pilot*!`: accumulate the power of a
 # Doppler-domain `(block_size, num_doppler_bins)` tile in raw FFT-bin order —
 # complex (see `_build_doppler_tile_t!`; power is `abs2`) or already power (see
-# `_rotation_tile_power!`) — into the accumulator, folding the fftshift row
+# `_sign_search_tile_power!`) — into the accumulator, folding the fftshift row
 # permutation and — when `has_drift` — the per-row code-drift column shift.
 # `slice_offset` places the tile in a rotation's `samples_per_code`-wide slice
 # of the effective cp axis; the drift shift wraps inside that slice. Iterates
