@@ -61,17 +61,35 @@ function _hypothesis_signs(patterns::Matrix{Float32}, layout::SignSearchLayout, 
     return signs
 end
 
-# Null model of a plan's sign search, for a column aligned to row 0.
-_sign_search_null(patterns::Matrix{Float32}, layout::SignSearchLayout,
-    num_noncoherent_integrations::Int; kwargs...) =
-    _sign_search_null(_hypothesis_signs(patterns, layout, 0),
-        num_noncoherent_integrations; kwargs...)
+# Column offsets the null model averages over: the kernel's per-column offset
+# `off` (`_tile_row_offsets`) takes every value in `0:num_blocks-1` equally
+# often, and moves the partial segments at both window ends, so the hypotheses'
+# correlation differs slightly from column to column (thresholds within ~1%).
+# A few evenly spaced offsets represent that spread.
+_null_model_offsets(num_blocks::Int; max_offsets::Int = 4) =
+    unique(round.(Int, (0:min(max_offsets, num_blocks)-1) .* (num_blocks / min(max_offsets, num_blocks))))
 
 """
-    _sign_search_null(signs, num_noncoherent_integrations; num_samples, rng) -> SignSearchNull
+    _sign_search_null(patterns, layout, num_noncoherent_integrations) -> SignSearchNull
 
-Null distribution of the per-cell statistic for the sign hypotheses `signs`
-(rows × K, entries ±1).
+Null model of a plan's sign search: the cells of the surface mix the
+hypothesis sets of every column offset, so the per-cell survival is averaged
+over `_null_model_offsets` (the same total number of samples, split evenly).
+"""
+_sign_search_null(patterns::Matrix{Float32}, layout::SignSearchLayout,
+    num_noncoherent_integrations::Int; kwargs...) =
+    _sign_search_null([_hypothesis_signs(patterns, layout, off)
+                       for off in _null_model_offsets(layout.num_blocks)],
+        num_noncoherent_integrations; kwargs...)
+
+_sign_search_null(signs::AbstractMatrix, num_noncoherent_integrations::Int; kwargs...) =
+    _sign_search_null([signs], num_noncoherent_integrations; kwargs...)
+
+"""
+    _sign_search_null(sign_sets, num_noncoherent_integrations; num_samples, rng) -> SignSearchNull
+
+Null distribution of the per-cell statistic for cells that each hold one of the
+hypothesis sets `sign_sets` (each rows × K, entries ±1), in equal proportion.
 
 Under noise, the K hypothesis outputs of one cell, `X_k = Σ_m s_k[m] x[m] e^{-iωm}`,
 are jointly complex Gaussian with correlation `R = SᵀS / N` (white noise across
@@ -83,7 +101,8 @@ noise power) and the cell is `W = max_k |X_k|²`.
    `|X_k|² > w`, count the hypotheses `N(X)` above `w`; then
    `P(W > w) = K e^{-w} E[1/N]`. Bounded relative error at any tail depth, so
    the ~1e-8 per-cell false-alarm probabilities CFAR needs come out of a few
-   thousand samples.
+   thousand samples. With several sets, `P(W > w)` is the average of the sets'
+   survivals, each estimated from `num_samples / length(sign_sets)` samples (rounded up).
 2. `M = num_noncoherent_integrations` steps sum `M` independent copies of `W`.
    For `M > 1` the tail of the sum comes from the Lugannani–Rice saddle-point
    approximation, with `W`'s cumulant generating function integrated from step 1.
@@ -92,39 +111,20 @@ noise power) and the cell is `W = max_k |X_k|²`.
 
 Deterministic: `rng` defaults to a fixed seed.
 """
-function _sign_search_null(signs::AbstractMatrix, num_noncoherent_integrations::Int;
-        num_samples::Int = 4000, rng = Xoshiro(0x5157))
-    num_rows, K = size(signs)
-    S = Float64.(signs)
-    R = (S' * S) ./ num_rows
-    # Z = A g ~ CN(0, R) for g ~ CN(0, I); R may be singular (repeated hypotheses).
-    eig = eigen(Symmetric(R))
-    A = eig.vectors * Diagonal(sqrt.(max.(eig.values, 0.0)))
-
-    # Common random numbers across the w grid keep the survival curve smooth.
-    Z = A * (randn(rng, ComplexF64, K, num_samples))
-    ks = rand(rng, 1:K, num_samples)
-    excess = randexp(rng, num_samples)
-    phase = cis.(2π .* rand(rng, num_samples))
-
+function _sign_search_null(sign_sets::AbstractVector{<:AbstractMatrix},
+        num_noncoherent_integrations::Int; num_samples::Int = 4000, rng = Xoshiro(0x5157))
+    K = size(first(sign_sets), 2)
+    all(s -> size(s, 2) == K, sign_sets) ||
+        throw(ArgumentError("every hypothesis set must hold the same number of hypotheses"))
     dw = 0.25
     w_grid = collect(0.0:dw:60.0)
-    log_sw = similar(w_grid)
-    X = zeros(ComplexF64, K)
-    for (i, w) in enumerate(w_grid)
-        acc = 0.0
-        for n in 1:num_samples
-            k = ks[n]
-            c = sqrt(w + excess[n]) * phase[n]
-            δ = c - Z[k, n]
-            count = 0
-            @inbounds for j in 1:K
-                count += abs2(Z[j, n] + R[j, k] * δ) >= w
-            end
-            acc += 1 / count
-        end
-        log_sw[i] = min(0.0, log(K) - w + log(acc / num_samples))
+    samples_per_set = cld(num_samples, length(sign_sets))
+    # Mean of the sets' survivals, accumulated in log space.
+    log_sw = fill(-Inf, length(w_grid))
+    for signs in sign_sets
+        log_sw .= _logaddexp.(log_sw, _aloe_log_survival(signs, w_grid, samples_per_set, rng))
     end
+    log_sw .= min.(0.0, log_sw .- log(length(sign_sets)))
     # E[W] = ∫ P(W > w) dw, exponential within each grid segment; beyond the
     # grid the tail is e^{-w}-like and contributes ≲ K·e^{-60}.
     mean_w = 0.0
@@ -190,3 +190,39 @@ function _saddlepoint_sum_tail(w_grid, log_sw, M)
     end
     return y, log_s
 end
+
+# log P(max_k |X_k|² > w) on `w_grid` for the hypotheses `signs` (rows × K), by
+# ALOE (see `_sign_search_null`).
+function _aloe_log_survival(signs::AbstractMatrix, w_grid, num_samples::Int, rng)
+    num_rows, K = size(signs)
+    S = Float64.(signs)
+    R = (S' * S) ./ num_rows
+    # Z = A g ~ CN(0, R) for g ~ CN(0, I); R may be singular (repeated hypotheses).
+    eig = eigen(Symmetric(R))
+    A = eig.vectors * Diagonal(sqrt.(max.(eig.values, 0.0)))
+
+    # Common random numbers across the w grid keep the survival curve smooth.
+    Z = A * (randn(rng, ComplexF64, K, num_samples))
+    ks = rand(rng, 1:K, num_samples)
+    excess = randexp(rng, num_samples)
+    phase = cis.(2π .* rand(rng, num_samples))
+
+    log_sw = similar(w_grid)
+    for (i, w) in enumerate(w_grid)
+        acc = 0.0
+        for n in 1:num_samples
+            k = ks[n]
+            c = sqrt(w + excess[n]) * phase[n]
+            δ = c - Z[k, n]
+            count = 0
+            @inbounds for j in 1:K
+                count += abs2(Z[j, n] + R[j, k] * δ) >= w
+            end
+            acc += 1 / count
+        end
+        log_sw[i] = min(0.0, log(K) - w + log(acc / num_samples))
+    end
+    return log_sw
+end
+
+_logaddexp(a, b) = a == -Inf ? b : b == -Inf ? a : max(a, b) + log1p(exp(-abs(a - b)))
