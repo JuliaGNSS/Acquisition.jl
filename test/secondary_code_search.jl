@@ -431,10 +431,14 @@ end
         # periods (same property `_LongL5I` exploits), so `code_full` *is* the
         # NH10·primary product over 10 periods.
 
+        # This algebraic comparison uses a signal without code Doppler and
+        # needs the same uncompensated carrier grid for both representations.
         plan_rot = plan_acquire(system, sampling_freq, [prn];
-            num_coherently_integrated_code_periods = N_coh, num_noncoherent_accumulations = 1)
+            num_coherently_integrated_code_periods = N_coh,
+            num_noncoherent_accumulations = 1, max_doppler_passes = 1)
         plan_long = plan_acquire(long_system, sampling_freq, [prn];
-            num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 1)
+            num_coherently_integrated_code_periods = 1,
+            num_noncoherent_accumulations = 1, max_doppler_passes = 1)
 
         # Helper: run both plans on the same noiseless signal at `doppler_hz`
         # and return (peak_rot_power, peak_long_power). Both plans share the

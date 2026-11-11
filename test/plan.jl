@@ -30,12 +30,16 @@ end
         min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4, num_noncoherent_accumulations = 5)
 
     @test plan.samples_per_code == 2048
-    @test plan.num_blocks == 32              # smallest divisor of 2048 >= ceil(20000/1000 + 2/40)=21 → 32
+    # This window drifts by >0.1 chip, so even L1 benefits from narrow passes.
+    @test plan.num_doppler_passes > 1
+    @test any(!iszero, plan.code_doppler_shifts_per_period)
     @test plan.num_coherently_integrated_code_periods == 40
     @test plan.num_data_bits == 2            # 40 code periods / 20 code periods per GPS bit
     @test plan.bit_edge_search_steps == 4
     @test plan.num_noncoherent_accumulations == 5
-    @test length(plan.doppler_freqs) == 1280 # num_doppler_bins = 40*32
+    @test length(plan.doppler_freqs) == plan.num_doppler_passes * plan.doppler_bins_per_pass
+    @test first(plan.doppler_freqs) <= -10_000Hz
+    @test last(plan.doppler_freqs) >= 10_000Hz
     @test step(plan.doppler_freqs) ≈ 25Hz    # 32000/1280
 end
 

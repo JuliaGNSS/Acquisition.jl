@@ -298,6 +298,7 @@ end
         min_doppler_coverage = 10_000Hz,
         num_coherently_integrated_code_periods = 40,
         bit_edge_search_steps = 1,
+        max_doppler_passes = 1,
         fft_flag = FFTL.ESTIMATE)
     @test plan.num_coherently_integrated_code_periods * plan.num_blocks > 320
 

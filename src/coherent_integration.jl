@@ -1,13 +1,17 @@
 # src/coherent_integration.jl
 
 """
-    _precompute_signal_block_ffts!(signal_block_ffts, signal_f32, samples_per_code, num_blocks, block_size, num_coherently_integrated_code_periods, double_block_buf, fft_plan)
+    _precompute_signal_block_ffts!(signal_block_ffts, signal_f32, samples_per_code, num_blocks, block_size, num_coherently_integrated_code_periods, double_block_buf, fft_plan, code_doppler_shift_per_period=0.0)
 
 Precompute the FFT of every signal double-block once per `acquire!` call.
 Each column `global_block_idx + 1` of `signal_block_ffts` (size
 `(double_block_size, num_coh*num_blocks)`) holds the FFT of the
 `global_block_idx`-th double-block of `signal_f32`. Hoisting this out of the
 PRN loop avoids redoing the same FFT for each of the (typically 32) PRNs.
+When `code_doppler_shift_per_period` is nonzero, period `p` is delayed by
+`p * code_doppler_shift_per_period` samples with a fractional-delay phase ramp.
+This compensates the pass centre's code advance while retaining the original
+sample grid and PRN FFTs. Drift within one code period remains uncompensated.
 """
 function _precompute_signal_block_ffts!(
     signal_block_ffts::AbstractMatrix{ComplexF32},  # (double_block_size, num_coh * num_blocks) — may be one segment slice of the plan's all-segment cache
@@ -18,6 +22,7 @@ function _precompute_signal_block_ffts!(
     num_coherently_integrated_code_periods::Int,
     double_block_buf::Vector{ComplexF32},
     fft_plan,
+    code_doppler_shift_per_period::Float64 = 0.0,
 )
     double_block_size = 2 * block_size
     # The inner FFT is run at `fft_size` (>= double_block_size) — the padded,
@@ -49,6 +54,24 @@ function _precompute_signal_block_ffts!(
             copyto!(double_block_buf, block_size+remaining+1,  signal_f32, 1,           block_size - remaining)
         end
         mul!(double_block_buf, fft_plan, double_block_buf)
+        # Delay period p by p * delta samples to remove the pass centre's
+        # code advance. Use signed FFT frequencies for a fractional delay;
+        # padding is left in place and only the retained linear-correlation
+        # lags are consumed. The zero-delay path is exactly the original FFT.
+        delay = (global_block_idx ÷ num_blocks) * code_doppler_shift_per_period
+        if !iszero(delay)
+            phase_step = cis(-2π * delay / fft_size)
+            phase = 1.0 + 0.0im
+            for i in 1:fft_size÷2+1
+                double_block_buf[i] *= ComplexF32(phase)
+                phase *= phase_step
+            end
+            phase = cis(2π * (fft_size - (fft_size ÷ 2 + 1)) * delay / fft_size)
+            for i in fft_size÷2+2:fft_size
+                double_block_buf[i] *= ComplexF32(phase)
+                phase *= phase_step
+            end
+        end
         copyto!(signal_block_ffts, global_block_idx * fft_size + 1,
                 double_block_buf, 1, fft_size)
     end
