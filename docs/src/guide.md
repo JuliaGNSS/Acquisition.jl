@@ -750,6 +750,41 @@ falls back to the original layout. `max_doppler_passes = 1` keeps the
 uncompensated single grid. Code-drift correction between noncoherent steps continues to use each
 bin's true Doppler.
 
+### Measured Layout Selection
+
+The default planner uses a cost model. For a reusable plan, `tune = true` can
+measure layouts on the actual machine before selecting one:
+
+```julia
+plan = plan_acquire(GPSL1CA(), 2.048e6Hz, collect(1:32);
+    num_coherently_integrated_code_periods = 20,
+    min_doppler_coverage = 10000Hz,
+    tune = true,
+    tuning_prns = [1])  # optimize a 32-PRN plan for single-PRN subset searches
+```
+
+It compares the model's choice with up to two other valid layouts, shortlisted
+for the tuning batch. All candidates retain the requested coverage, block-loss
+bound, code-drift tolerance, and explicit pass cap. Compilation and buffer warmup
+happen before timing. Measurements alternate the candidate order and use minimum
+times; a layout must beat the incumbent by more than 5% to replace it. No timing
+runs during later `acquire!` calls.
+
+Tuning uses a private random stream to generate reproducible `ComplexF32` noise.
+It measures the complete acquisition pipeline, including signal preparation,
+noncoherent steps, secondary/data-bit hypotheses, parallel PRN tasks, and result
+extraction. `tuning_prns` defaults to the full planned batch. Set
+`tuning_interm_freq` to the intermediate frequency you expect to pass to
+`acquire!` (default `0.0Hz`). Other sample types or batch sizes may favor a
+different layout.
+
+Planning can take substantially longer because each candidate needs its own
+buffers, FFT/PRN preparation, and warmup. Only one challenger is considered at a
+time; discarded plans are released. The result is the fastest measured layout
+among the shortlist, with a noise margin, rather than a guarantee of the global
+optimum or a speedup on every later call. Sampling-frequency recommendations
+continue to use the cost model.
+
 ### Picking a Good Sampling Frequency
 
 When you have flexibility in the front-end clock,

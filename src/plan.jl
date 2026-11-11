@@ -478,6 +478,21 @@ multi-threaded acquisition. Scratch buffers are tile-sized (nothing scales with
   compensates its centre's drift once per code period; narrower passes keep
   the residual across the window within 0.1 chip when the pass cap permits.
   `1` always uses the original, uncompensated single grid.
+- `tune`: measure alternative Doppler layouts on this machine during planning
+  (default: `false`). Compares the model-selected layout with up to two other
+  valid layouts shortlisted by cost. Warmed `acquire!` calls time the complete
+  search, including signal preparation and the requested PRN batch. A challenger
+  must improve the measured minimum by more than 5% to replace the incumbent.
+  This increases planning time and temporarily holds candidate plans; the
+  selected layout is fixed for subsequent acquisitions. See [Measured Layout
+  Selection](@ref).
+- `tuning_prns`: PRN batch used for measurements (default: `prns`). Must be a
+  nonempty subset of the planned PRNs. For a plan reused for single-PRN searches,
+  pass e.g. `tune = true, tuning_prns = [1]` while planning all required PRNs.
+- `tuning_interm_freq`: Intermediate frequency used in measurements (default:
+  `0.0Hz`). Tuning uses reproducible synthetic `ComplexF32` noise and the plan's
+  actual search settings. Match this frequency and `tuning_prns` to the intended
+  workload; a different sample type or workload can have a different optimum.
 - `max_blocking_time`: upper bound on how long the per-PRN work may hold a
   thread without giving the Julia scheduler a chance to run something else
   (default: `nothing`, i.e. unbounded — today's behaviour). Pass a time
@@ -520,6 +535,35 @@ function plan_acquire(
     system::AbstractGNSSSignal,
     sampling_freq,
     prns::AbstractVector{<:Integer};
+    tune::Bool = false,
+    tuning_prns::AbstractVector{<:Integer} = prns,
+    tuning_interm_freq = 0.0Hz,
+    max_blocking_time = nothing,
+    kwargs...,
+)
+    if tune
+        isempty(tuning_prns) && throw(ArgumentError("tuning_prns must not be empty"))
+        all(prn -> prn in prns, tuning_prns) || throw(ArgumentError(
+            "tuning_prns must be a subset of the planned PRNs"))
+        isfinite(ustrip(Hz, tuning_interm_freq)) || throw(ArgumentError(
+            "tuning_interm_freq must be finite"))
+    end
+    plan = _plan_acquire(system, sampling_freq, prns;
+        max_blocking_time = max_blocking_time, kwargs...)
+    if tune
+        build(layout) = _plan_acquire(system, sampling_freq, prns;
+            max_blocking_time = max_blocking_time, _doppler_layout = layout, kwargs...)
+        plan = _tune_acquisition_plan(plan, tuning_prns, tuning_interm_freq, build;
+            min_doppler_coverage = get(kwargs, :min_doppler_coverage, 7000Hz),
+            max_doppler_passes = get(kwargs, :max_doppler_passes, nothing))
+    end
+    return plan
+end
+
+function _plan_acquire(
+    system::AbstractGNSSSignal,
+    sampling_freq,
+    prns::AbstractVector{<:Integer};
     min_doppler_coverage = 7000Hz,
     num_coherently_integrated_code_periods::Int = 1,
     bit_edge_search_steps::Int = 1,
@@ -530,6 +574,7 @@ function plan_acquire(
     fft_flag = FFTL.MEASURE,
     max_blocking_time = nothing,
     max_doppler_passes::Union{Int,Nothing} = nothing,
+    _doppler_layout = nothing,
 )
     num_noncoherent_accumulations >= 1 || throw(ArgumentError("num_noncoherent_accumulations must be >= 1, got $num_noncoherent_accumulations"))
     num_coherently_integrated_code_periods >= 1 || throw(ArgumentError("num_coherently_integrated_code_periods must be >= 1"))
@@ -628,9 +673,10 @@ function plan_acquire(
     bin_width = sampling_freq_hz / samples_per_code
     min_doppler_coverage_hz = ustrip(Hz, min_doppler_coverage)
     (max_doppler_passes === nothing || max_doppler_passes >= 1) || throw(ArgumentError("max_doppler_passes must be nothing or >= 1, got $max_doppler_passes"))
-    layout = _doppler_search_layout(samples_per_code, bin_width, min_doppler_coverage_hz,
-        num_coherently_integrated_code_periods, max_doppler_passes, length(prns),
-        get_code_center_frequency_ratio(system))
+    layout = _doppler_layout === nothing ?
+        _doppler_search_layout(samples_per_code, bin_width, min_doppler_coverage_hz,
+            num_coherently_integrated_code_periods, max_doppler_passes, length(prns),
+            get_code_center_frequency_ratio(system)) : _doppler_layout
     if isnothing(layout)
         throw(ArgumentError(
             "No valid num_blocks found: samples_per_code=$samples_per_code has no divisor " *

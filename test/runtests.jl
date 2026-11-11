@@ -22,6 +22,7 @@ include("secondary_code_search.jl")
     include("acquire.jl")
     include("doppler_passes.jl")
     include("code_doppler.jl")
+    include("tune_layout.jl")
     include("plot.jl")
 end
 
