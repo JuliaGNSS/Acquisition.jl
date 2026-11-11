@@ -116,15 +116,15 @@ end
     end
 end
 
-@testset "Cached code delays equal time-domain integer delays" begin
+@testset "Cached and uncached code delays equal time-domain integer delays" begin
     # Check signed-frequency reconstruction independently of the recurrence:
     # an integer code advance must become a circular time-domain delay of the
     # double block, including when that double block has a zero-padded tail.
     signal = randn(ComplexF32, 48)
-    for fft_size in (16, 24), shift in (-1.0, 1.0)
+    for fft_size in (16, 24), shift in (-1.0, 1.0), use_cache in (false, true)
         fft_plan = plan_fft!(zeros(ComplexF32, fft_size); threads = 1)
         cache = zeros(ComplexF32, fft_size, 6)
-        phasors = Acquisition._code_doppler_phasors(fft_size, 3, shift)
+        phasors = use_cache ? Acquisition._code_doppler_phasors(fft_size, 3, shift) : nothing
         Acquisition._precompute_signal_block_ffts!(cache, signal, 16, 2, 8, 3,
             zeros(ComplexF32, fft_size), fft_plan, shift, phasors)
         for block in 0:5
