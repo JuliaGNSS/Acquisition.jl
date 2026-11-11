@@ -704,12 +704,12 @@ end
             num_noncoherent_accumulations = 2, fft_flag = FFTL.ESTIMATE), 1),
         # Bit-transition search of a one-bit window, with drift.
         ("transition+drift", plan_acquire(GPSL1CA(), 2.048e6Hz, [prn];
-            min_doppler_coverage = 12_000Hz,
+            max_doppler_passes = 1, min_doppler_coverage = 12_000Hz,
             num_coherently_integrated_code_periods = 20, bit_edge_search_steps = 4,
             num_noncoherent_accumulations = 8, fft_flag = FFTL.ESTIMATE), 7),
         # Rotation × bit transition (L5I, one 10 ms symbol per window), with drift.
         ("rotation+transition+drift", plan_acquire(GPSL5I(), 10.24e6Hz, [prn];
-            num_coherently_integrated_code_periods = 10, bit_edge_search_steps = 5,
+            max_doppler_passes = 1, num_coherently_integrated_code_periods = 10, bit_edge_search_steps = 5,
             num_noncoherent_accumulations = 3, fft_flag = FFTL.ESTIMATE), 2),
         # Data-bit + bit-edge search (max across alignments), no drift at step 0.
         ("bitedge", plan_acquire(GPSL1CA(), 2.048e6Hz, [prn];
