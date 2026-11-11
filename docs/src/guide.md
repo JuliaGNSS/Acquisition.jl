@@ -74,7 +74,23 @@ threshold = cfar_threshold(0.01, get_num_cells(result); num_noncoherent_integrat
 `is_detected(result; pfa)` takes care of both arguments for you — it reads
 `num_cells` and `num_noncoherent_integrations` directly from the result — so
 you only need [`cfar_threshold`](@ref) when you want to inspect the threshold
-separately (e.g. for plotting or custom logic).
+separately (e.g. for plotting or custom logic). Prefer
+`cfar_threshold(result; pfa)`, which is what `is_detected` uses:
+
+```@example guide
+threshold = cfar_threshold(result; pfa = 0.01)
+```
+
+**Sign searches.** With a data-bit polarity search (a window longer than one
+data bit) or a bit-edge search (`bit_edge_search_steps > 1`), each cell is the
+maximum over several sign hypotheses. Under noise that maximum has a higher
+mean — which the noise estimate absorbs — and a much shorter tail relative to
+it than one χ² cell, so the χ² threshold would be far too high: no false
+alarms at all, and weak signals missed. [`plan_acquire`](@ref) therefore
+computes the null distribution of the maximum from the plan's sign patterns,
+and `cfar_threshold(result; pfa)` / `is_detected` use it. The raw
+`peak_to_noise_ratio` of a sign search is consequently lower than without one,
+for the same signal; compare it to its own threshold, not across plans.
 
 Choosing `pfa`:
 
@@ -794,9 +810,14 @@ reachable BBPLL). Other SDRs can be supported by subtyping
 GPS L1 C/A data bits flip every 20 ms. Integrating across a bit transition cancels
 signal energy. The library handles this automatically:
 
-**Sub-bit integration** (`num_coherently_integrated_code_periods < 20`):
+**Windows of at most one bit** (`num_coherently_integrated_code_periods ≤ 20`):
 At most one bit transition can fall in the window. Use `bit_edge_search_steps > 1`
-to search over candidate alignment positions:
+to search for it: the window is split into `bit_edge_search_steps` equal parts,
+and a sign flip is tried at each of the `bit_edge_search_steps − 1` inner part
+boundaries, next to the no-transition hypothesis. Each hypothesis costs one
+Doppler FFT, so the search runs about `bit_edge_search_steps` times as long as
+without it. `bit_edge_search_steps` must divide the window length in code
+periods:
 
 ```julia
 plan = plan_acquire(system, sampling_freq, prns;
@@ -810,7 +831,11 @@ The window spans whole data bit periods. Two constraints apply:
 2. `bit_period_codes` must be divisible by `bit_edge_search_steps`
 
 The algorithm searches all `2^(num_data_bits - 1)` sign-flip combinations across
-the data bits in the window.
+the data bits in the window. With `bit_edge_search_steps > 1` the first bit edge
+is also placed at `bit_edge_search_steps` evenly spaced positions within a bit
+period; away from the window start the window then holds a partial bit at each
+end, and all `2^num_data_bits` sign combinations of the partial and whole bits
+are searched.
 
 **Pilot channels** (e.g. GPS L5-Q, Galileo E1-C): no data bit constraint; set
 `num_coherently_integrated_code_periods` freely.

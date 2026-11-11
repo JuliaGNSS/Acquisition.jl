@@ -9,6 +9,9 @@ using Unitful: ustrip
 using PrettyTables: pretty_table, TextHighlighter
 using CPUSummary: num_cores
 
+include("sign_search_layout.jl")
+include("sign_search_null.jl")
+
 export acquire,
     acquire!,
     acquire_stream,
@@ -66,6 +69,10 @@ Results from GNSS signal acquisition for a single PRN.
   - `block_size::Int`: FM-DBZP samples per block
   - `num_secondary_rotations::Int`: Secondary-code rotation hypotheses per cell (`1` off
     the rotation-search path). Part of the CFAR cell count — see [`get_num_cells`](@ref).
+  - `sign_search_null::Union{SignSearchNull,Nothing}`: Null distribution of
+    `peak_to_noise_ratio` when each cell is the maximum over several sign hypotheses
+    (data-bit polarities, bit-edge alignments); `nothing` when each cell is a single
+    hypothesis. Used by [`cfar_threshold`](@ref)`(result)` and [`is_detected`](@ref).
 
 # Plotting
 
@@ -109,6 +116,9 @@ struct AcquisitionResults{S<:AbstractGNSSSignal,T,D<:AbstractRange}
     # expanded `num_doppler_bins × (samples_per_code × num_secondary_rotations)`
     # surface, so this factor is part of the CFAR cell count (see `get_num_cells`).
     num_secondary_rotations::Int
+    # Null distribution of `peak_to_noise_ratio` for a cell that is the max over
+    # several sign hypotheses (see `SignSearchNull`); `nothing` for one hypothesis.
+    sign_search_null::Union{SignSearchNull,Nothing}
 end
 
 """
@@ -132,17 +142,12 @@ get_num_cells(result::AcquisitionResults) =
     is_detected(result::AcquisitionResults; pfa=0.01) -> Bool
 
 Return `true` if the satellite signal is detected at the given probability of false alarm.
-Compares `result.peak_to_noise_ratio` against [`cfar_threshold`](@ref), using the
-number of search cells and non-coherent integrations stored in the result.
+Compares `result.peak_to_noise_ratio` against [`cfar_threshold`](@ref)`(result; pfa)`,
+which uses the number of search cells, the non-coherent integrations and, after a
+sign search, the null distribution stored in the result.
 """
-function is_detected(result::AcquisitionResults; pfa = 0.01)
-    threshold = cfar_threshold(
-        pfa,
-        get_num_cells(result);
-        num_noncoherent_integrations = result.num_noncoherent_integrations,
-    )
-    result.peak_to_noise_ratio > threshold
-end
+is_detected(result::AcquisitionResults; pfa = 0.01) =
+    result.peak_to_noise_ratio > cfar_threshold(result; pfa)
 
 function Base.show(io::IO, ::MIME"text/plain", acq::AcquisitionResults)
     print(io, "AcquisitionResults: PRN $(acq.prn), ")

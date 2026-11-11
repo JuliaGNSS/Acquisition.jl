@@ -1,5 +1,34 @@
 # Changelog
 
+# [3.0.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.10.1...v3.0.0) (2026-11-10)
+
+
+### Bug Fixes
+
+* **cfar:** average the sign-search null model over column offsets ([383504c](https://github.com/JuliaGNSS/Acquisition.jl/commit/383504c6573b252f17cb1374994a131284eea1fd))
+* **cfar:** calibrate the threshold for cells that maximise over sign hypotheses ([5cd0af7](https://github.com/JuliaGNSS/Acquisition.jl/commit/5cd0af744ba3c6d0e88fc0b17ca70982307cf6f1))
+* search a bit transition when the coherent window holds one data bit ([318f8b5](https://github.com/JuliaGNSS/Acquisition.jl/commit/318f8b57f958ae52197177d4b5797683e0a25dd4))
+* search partial data bits at both window ends, on the sign-search tile kernel ([6a7b607](https://github.com/JuliaGNSS/Acquisition.jl/commit/6a7b6070a0f69effa34c70741e8025d4c40df3d0))
+
+
+### BREAKING CHANGES
+
+* **cfar:** AcquisitionResults has a new field,
+sign_search_null, so its positional constructor takes one more argument.
+is_detected and cfar_threshold(result) use a lower threshold after every
+sign search (data-bit polarities, bit-edge alignments, rotations × data
+bits), so they report detections and false alarms at the requested rate
+where they reported almost none before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+* plan_acquire throws an ArgumentError for
+bit_edge_search_steps > 1 on a signal without data bits (e.g. GPS L5Q,
+Galileo E1C), and for a bit_edge_search_steps that does not divide a
+window shorter than one data bit. Both were accepted before and had no
+effect; set bit_edge_search_steps = 1, or pick a divisor of the window.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
 ## [2.10.1](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.10.0...v2.10.1) (2026-11-10)
 
 

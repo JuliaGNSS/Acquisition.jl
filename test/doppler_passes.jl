@@ -15,6 +15,22 @@ function _single_grid_plan(system, sampling_freq, prns, num_blocks; kwargs...)
     return plan
 end
 
+# Max |stored − reference| / max(reference) of a single-grid plan's surface,
+# against the materialised reference dispatcher on the plan's current signal
+# blocks (left by the last `acquire!`, N_nc = 1).
+function _reference_surface_error(plan, prn, stored)
+    scratch = Acquisition._default_scratch(plan)
+    ndop = length(plan.doppler_freqs)
+    ncoh = plan.num_coherently_integrated_code_periods
+    cim = zeros(ComplexF32, ndop, plan.samples_per_code)
+    Acquisition._build_coherent_integration_matrix!(cim, plan.signal_block_ffts,
+        plan.prn_conj_ffts[prn], plan.samples_per_code, plan.num_blocks,
+        plan.block_size, ncoh, scratch.corr_buf, scratch.double_block_bfft_plan)
+    ref = zeros(Float32, ndop, plan.samples_per_code_eff)
+    Acquisition._accumulate_noncoherent_integration_step!(ref, cim, plan, scratch, prn, 0)
+    return maximum(abs.(stored .- ref)) / maximum(ref)
+end
+
 @testset "Doppler passes — layout and grid at 1.542 MHz" begin
     # 1542 = 2·3·257: the only divisor reaching ±7 kHz in one grid is 257.
     plan = plan_acquire(GPSL1CA(), 1.542e6Hz, [1])
@@ -116,8 +132,15 @@ end
             ref = acquire!(ref_plan, signal, prn;
                 store_power_bins = true)
             @test stitched[(k-1)*K+1 : k*K, :] == ref.power_bins[rows, :]
-            @test ref_plan.doppler_freqs[rows] .+ offset * Hz ==
-                  plan.doppler_freqs[(k-1)*K+1 : k*K]
+            # Each single grid of a sign search also matches the per-column
+            # reference (`_sign_search_reference_step!`) on the signal blocks
+            # `acquire!` just downconverted, so every pass is checked against it.
+            if !Acquisition._simple_path_active(ref_plan)
+                @test _reference_surface_error(ref_plan, prn, ref.power_bins) <= 1e-5
+            end
+            # ≈: the two grids' bin labels round differently (e.g. 60 code periods).
+            @test ref_plan.doppler_freqs[rows] .+ offset * Hz ≈
+                  plan.doppler_freqs[(k-1)*K+1 : k*K] rtol = 1e-12
         end
     end
     fs = 1.542e6Hz
@@ -130,6 +153,13 @@ end
         num_noncoherent_accumulations = 3)
     @testset "data-bit + bit-edge search" check_stitching(GPSL1CA(), fs, 3, signal;
         num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4)
+    @testset "bit transition (one-bit window)" check_stitching(GPSL1CA(), fs, 3, signal;
+        num_coherently_integrated_code_periods = 20, bit_edge_search_steps = 5)
+    @testset "3 bits + bit edges (Gray code)" check_stitching(GPSL1CA(), fs, 3,
+        ComplexF32.(generate_test_signal(GPSL1CA(), 3; sampling_freq = fs,
+            num_samples = 61 * 1542, doppler = 2300Hz, code_phase = 123.4, CN0 = 45,
+            interm_freq = 0.0Hz, seed = 3).signal);
+        num_coherently_integrated_code_periods = 60, bit_edge_search_steps = 5)
     @testset "GlobalMean estimator" check_stitching(GPSL1CA(), fs, 3, signal;
         noise_estimator = GlobalMeanNoiseEstimator())
 

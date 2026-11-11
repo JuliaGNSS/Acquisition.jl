@@ -429,7 +429,7 @@ end
         r_store = acquire!(plan, ComplexF32.(signal), prn;
             interm_freq = 0.0Hz, subsample_interpolation = true, store_power_bins = true)
         @test is_detected(r_nostore)
-        # The recompute runs the same tile kernel (`_rotation_tile_power!`) as
+        # The recompute runs the same tile kernel (`_sign_search_tile_power!`) as
         # the streamed pass, so the estimates are bit-identical here too.
         @test r_nostore.code_phase == r_store.code_phase
         @test r_nostore.carrier_doppler == r_store.carrier_doppler

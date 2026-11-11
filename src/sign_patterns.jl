@@ -8,8 +8,10 @@
     sign_patterns(secondary_code, prn, num_data_bits, num_secondary_rotations, num_coh_periods, use_secondary_code)
         -> Matrix{Float32}  # (num_coh_periods, num_patterns)
 
-Pure enumeration of ±1 sign patterns to search inside `_sign_search_step!`. Each column is
-one pattern over `num_coh_periods` coherent code periods.
+Pure enumeration of ±1 sign patterns over `num_coh_periods` coherent code periods, one per
+column. Production uses only the secondary-code axis (`num_data_bits = 1`) and adds the
+data-bit signs per bit-edge alignment itself ([`_fill_hypothesis_signs!`](@ref)); the
+data-bit axis serves the per-column reference [`_sign_search_step_with_rotations!`](@ref).
 
 Two independent search axes:
 - Data-bit polarities: `2^(num_data_bits − 1)` patterns with `d[0] = +1` fixed.
@@ -58,7 +60,7 @@ Pre-multiply each per-period ±1 sign pattern by the inter-sub-block DFT phase
 ramp so the reference rotation kernel's ([`_rotation_column!`](@ref))
 combination across sub-blocks becomes a full length-`num_doppler_bins` column
 FFT (LongL5I-equivalent). Test/reference only: production computes that FFT
-directly ([`_rotation_tile_power!`](@ref)). Without this ramp,
+directly ([`_sign_search_tile_power!`](@ref)). Without this ramp,
 the kernel's `Σ_p sign[p] · sub_block_FFT_p[ω]` combination is matched-filter
 optimal only when the true Doppler lands on the coarse 1-kHz sub-block FFT
 grid — between grid points the inter-sub-block phase rotates by some
@@ -110,9 +112,9 @@ shares the same fine-bin class `s = (ω-1) mod num_coh_periods`, so the tile
 is just `num_blocks = num_doppler_bins / num_coh_periods` copies of the
 compact phasor.
 
-The rotation kernel's inner loop wants contiguous access to both
-`tiled[ω, p, q]` and `sub_block_ffts[ω, p]` for fixed `(p, q)` while ω
-sweeps across the column. The compact form requires looking up
+The reference kernel's inner loop wants contiguous access to both
+`tiled[ω, p, q]` and the column's zero-padded sub-block FFT `p` (at `ω`) for
+fixed `(p, q)` while ω sweeps across the column. The compact form requires looking up
 `combined[p+1, q, ((ω-1) mod num_coh_periods)+1]` per ω, which is
 SIMD-hostile (per-iteration modulo + non-contiguous coefficient). Pre-tiling
 trades a small amount of storage (`num_blocks ×` blow-up; ~120 kB per PRN at
