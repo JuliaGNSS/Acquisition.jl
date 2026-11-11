@@ -308,3 +308,23 @@ if _is_fmdbzp
             @benchmarkable _acquire!($plan, $signal, $(1:32))
     end
 end
+
+# ============================================================================
+# CodeDoppler — wide, long L5 searches that need in-window compensation.
+# Compare runtime on each revision's automatically chosen layout. Signal FFT
+# preparation is shared across PRNs, so include both one and 32 PRNs.
+# ============================================================================
+
+if _is_fmdbzp
+    SUITE["CodeDoppler"] = BenchmarkGroup()
+    for num_prns in (1, 32)
+        sig_obj = GNSSSignals.GPSL5I()
+        prns = collect(1:num_prns)
+        plan = plan_acquire(sig_obj, 10.24e6Hz, prns;
+            min_doppler_coverage = 15_000Hz,
+            num_coherently_integrated_code_periods = 20)
+        signal = _make_signal(plan, 1)
+        SUITE["CodeDoppler"]["L5I_10.24MHz_20ms_15kHz_$(num_prns)prns"] =
+            @benchmarkable acquire!($plan, $signal, $prns; interm_freq = 0.0Hz)
+    end
+end
