@@ -694,7 +694,8 @@ Doppler in the searched range is worse off than on a well-chosen rate. Near
 0 Hz, though, a grid with more blocks than it needs is nearly loss-free, and
 passes give up some of that.
 
-Passes are therefore only considered on sparse-divisor rates, where the single
+For searches with negligible code drift, passes are only considered on
+sparse-divisor rates, where the single
 grid needs at least 1.9× the blocks the coverage asks for (1.542 MHz: 257 for
 16; 1.023 and 3.069 MHz: 31 for 16). Rates whose next divisor is closer — 1.5 MHz
 (20 for 16), 2.048 MHz at ±10 kHz (32 for 22), 4 MHz at ±25 kHz (80 for 52) —
@@ -729,10 +730,17 @@ keep the original layout and FFTs exactly.
 Pass widths target at most 0.1 chip of residual drift across the coherent
 window, in addition to the uncompensated drift within one code period. This is
 an approximation, not a power-loss guarantee: fractional delays of sampled
-codes and block boundaries also affect the peak. `max_doppler_passes` limits
-the available layouts; if none meets the tolerance, the planner falls back to
-the original layout. `max_doppler_passes = 1` keeps the uncompensated single
-grid. Code-drift correction between noncoherent steps continues to use each
+codes and block boundaries also affect the peak. By default,
+`max_doppler_passes = nothing` lets the cost model choose the pass count
+without a fixed cap, including for wide searches such as L5 at ±15 kHz over
+20 ms. Each pass performs signal preparation and a PRN search, so the phase
+ramp's small cost does not make extra passes free. Fewer blocks per pass can
+offset that work, and the cost model compares the complete layouts.
+
+An explicit integer `max_doppler_passes` limits time and cache memory by
+restricting the available layouts. If none meets the tolerance, the planner
+falls back to the original layout. `max_doppler_passes = 1` keeps the
+uncompensated single grid. Code-drift correction between noncoherent steps continues to use each
 bin's true Doppler.
 
 ### Picking a Good Sampling Frequency

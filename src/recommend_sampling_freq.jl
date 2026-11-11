@@ -128,7 +128,7 @@ end
         sort_by = :cost,
         fs_step = 1000Hz,
         sdr_clock_plan = nothing,
-        max_doppler_passes = 16,
+        max_doppler_passes = nothing,
         num_prns = 32,
     ) -> Vector{SamplingFreqRecommendation}
 
@@ -170,8 +170,9 @@ deduplicated — the first matching `sampling_freq` is reported.
     intersected with [`sample_rate_range`](@ref)`(plan)` and every
     candidate must satisfy [`is_valid_sample_rate`](@ref)`(plan, fs)`.
     Default `nothing` — no hardware filtering.
-  - `max_doppler_passes`: As in [`plan_acquire`](@ref) (default `16`); `1`
-    restricts every candidate to a single Doppler grid.
+  - `max_doppler_passes`: As in [`plan_acquire`](@ref) (default `nothing`,
+    automatic selection with no fixed cap); `1` restricts every candidate to
+    a single Doppler grid.
   - `code_center_frequency_ratio`: Chip-rate to carrier-frequency ratio used
     to account for in-window code Doppler (default `0`, unknown carrier).
     The signal overload derives it from `system` automatically.
@@ -215,7 +216,7 @@ function recommend_sampling_freqs(
     sort_by::Symbol = :cost,
     fs_step = 1000Hz,
     sdr_clock_plan::Union{AbstractSDRClockPlan,Nothing} = nothing,
-    max_doppler_passes::Int = 16,
+    max_doppler_passes::Union{Int,Nothing} = nothing,
     num_prns::Int = 32,
     code_center_frequency_ratio::Real = 0.0,
 )
@@ -223,7 +224,7 @@ function recommend_sampling_freqs(
         "sort_by must be :cost or :smoothness, got :$sort_by"))
     num_alternatives >= 1 || throw(ArgumentError("num_alternatives must be >= 1"))
     max_prime >= 2 || throw(ArgumentError("max_prime must be >= 2"))
-    max_doppler_passes >= 1 || throw(ArgumentError("max_doppler_passes must be >= 1"))
+    (max_doppler_passes === nothing || max_doppler_passes >= 1) || throw(ArgumentError("max_doppler_passes must be nothing or >= 1"))
     num_prns >= 1 || throw(ArgumentError("num_prns must be >= 1"))
     isfinite(code_center_frequency_ratio) && code_center_frequency_ratio >= 0 ||
         throw(ArgumentError("code_center_frequency_ratio must be finite and nonnegative"))

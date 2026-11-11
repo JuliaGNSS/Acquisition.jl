@@ -151,7 +151,7 @@ Choose `num_blocks` and the pass layout for a search reaching
 `±min_doppler_coverage_hz`. The single-grid layout (smallest divisor of
 `samples_per_code` that reaches the coverage, one pass) is the default. When
 that divisor is sparse (at least `_SPARSE_DIVISOR_MIN_EXCESS` times the blocks
-the coverage needs) and `max_doppler_passes > 1`, every smaller divisor is tried
+the coverage needs) and passes are allowed, every smaller divisor is tried
 as a multi-pass layout that holds the sensitivity bound described at the top of
 this file; the cheapest by `_search_cost` wins, a multi-pass layout only if it
 costs at most `_MULTI_PASS_MIN_GAIN` times the single grid. Returns `nothing` if
@@ -159,19 +159,22 @@ no layout exists (only when `samples_per_code` is smaller than the blocks the
 coverage needs). With a nonzero `code_center_frequency_ratio`, drift above
 `_MAX_CODE_DOPPLER_DRIFT` also enables passes at ordinary rates and constrains
 their kept width. The cheapest compensated layout wins without a speedup
-requirement; if the pass cap prevents this, the original layout is retained.
+requirement. `max_doppler_passes = nothing` leaves the count to the cost model;
+an explicit integer caps it. If that cap prevents compensation, the original
+layout is retained.
 """
 function _doppler_search_layout(samples_per_code::Integer, bin_width_hz::Real,
                                 min_doppler_coverage_hz::Real,
                                 num_coherently_integrated_code_periods::Integer,
-                                max_doppler_passes::Integer, num_prns::Integer,
+                                max_doppler_passes::Union{Integer,Nothing}, num_prns::Integer,
                                 code_center_frequency_ratio::Real = 0.0)
     N_coh = num_coherently_integrated_code_periods
     min_num_blocks = _min_num_blocks(min_doppler_coverage_hz, bin_width_hz, N_coh)
     single_num_blocks = _smallest_valid_num_blocks(samples_per_code, min_num_blocks)
     best = single_num_blocks === nothing ? nothing :
         DopplerLayout(single_num_blocks, 1, N_coh * single_num_blocks)
-    max_doppler_passes > 1 || return best
+    pass_limit = something(max_doppler_passes, typemax(Int))
+    pass_limit > 1 || return best
     sparse_divisors = single_num_blocks === nothing ||
         single_num_blocks >= _SPARSE_DIVISOR_MIN_EXCESS * min_num_blocks
     compensate = _code_doppler_compensation(min_doppler_coverage_hz,
@@ -209,7 +212,7 @@ function _doppler_search_layout(samples_per_code::Integer, bin_width_hz::Real,
         max_bins_per_pass = min(M, 2 * half + 1, max_code_bins)
         max_bins_per_pass >= 1 || continue
         num_passes = cld(min_grid_bins, max_bins_per_pass)
-        num_passes <= max_doppler_passes || continue
+        num_passes <= pass_limit || continue
         layout = DopplerLayout(B, num_passes, cld(min_grid_bins, num_passes))
         # The stitched grid (rounded up to whole passes) must not span more
         # than the sampling frequency: beyond that the passes would search
