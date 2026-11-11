@@ -111,6 +111,11 @@ for (fs, fs_label) in [(2.048e6Hz, "2.048MHz"), (5.0e6Hz, "5MHz")]
             prns   = collect(1:num_prns)
             plan   = _make_plan(fs, N_ms; prns = 1:32, num_noncoherent_accumulations = 1)
             signal = _make_signal(plan, 1)
+            if _is_fmdbzp && fs == 2.048e6Hz && N_ms == 20 && num_prns == 1
+                # Keep this subset-search workload intact and expose the
+                # planner's choices alongside the CI timing comparison.
+                @info "20 ms subset-search plan" planned_prns = length(plan.avail_prns) searched_prns = num_prns workers = length(plan.thread_scratch) blocks = plan.num_blocks passes = plan.num_doppler_passes
+            end
 
             SUITE["Acquire"][fs_label]["$(N_ms)ms"]["$(num_prns)prns"] =
                 @benchmarkable _acquire!($plan, $signal, $prns)

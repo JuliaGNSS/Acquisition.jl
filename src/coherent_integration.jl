@@ -1,7 +1,7 @@
 # src/coherent_integration.jl
 
 """
-    _precompute_signal_block_ffts!(signal_block_ffts, signal_f32, samples_per_code, num_blocks, block_size, num_coherently_integrated_code_periods, double_block_buf, fft_plan, code_doppler_shift_per_period=0.0)
+    _precompute_signal_block_ffts!(signal_block_ffts, signal_f32, samples_per_code, num_blocks, block_size, num_coherently_integrated_code_periods, double_block_buf, fft_plan, code_doppler_shift_per_period=0.0, code_doppler_phasors=nothing)
 
 Precompute the FFT of every signal double-block once per `acquire!` call.
 Each column `global_block_idx + 1` of `signal_block_ffts` (size
@@ -11,7 +11,9 @@ PRN loop avoids redoing the same FFT for each of the (typically 32) PRNs.
 When `code_doppler_shift_per_period` is nonzero, period `p` is delayed by
 `p * code_doppler_shift_per_period` samples with a fractional-delay phase ramp.
 This compensates the pass centre's code advance while retaining the original
-sample grid and PRN FFTs. Drift within one code period remains uncompensated.
+sample grid and PRN FFTs. Production calls use the plan's cached phase factors
+so only complex multiplication is needed at runtime. Drift within one code
+period remains uncompensated.
 """
 function _precompute_signal_block_ffts!(
     signal_block_ffts::AbstractMatrix{ComplexF32},  # (double_block_size, num_coh * num_blocks) — may be one segment slice of the plan's all-segment cache
@@ -23,6 +25,7 @@ function _precompute_signal_block_ffts!(
     double_block_buf::Vector{ComplexF32},
     fft_plan,
     code_doppler_shift_per_period::Float64 = 0.0,
+    code_doppler_phasors::Union{Nothing,Matrix{ComplexF32}} = nothing,
 )
     double_block_size = 2 * block_size
     # The inner FFT is run at `fft_size` (>= double_block_size) — the padded,
@@ -59,7 +62,16 @@ function _precompute_signal_block_ffts!(
         # padding is left in place and only the retained linear-correlation
         # lags are consumed. The zero-delay path is exactly the original FFT.
         delay = (global_block_idx ÷ num_blocks) * code_doppler_shift_per_period
-        if !iszero(delay)
+        if !iszero(delay) && code_doppler_phasors !== nothing
+            period = global_block_idx ÷ num_blocks
+            @simd for i in 1:fft_size÷2+1
+                double_block_buf[i] *= code_doppler_phasors[i, period]
+            end
+            @simd for i in fft_size÷2+2:fft_size
+                double_block_buf[i] *= conj(code_doppler_phasors[fft_size - i + 2, period])
+            end
+        elseif !iszero(delay)
+            # Reference form for direct kernel callers without a plan cache.
             phase_step = cis(-2π * delay / fft_size)
             phase = 1.0 + 0.0im
             for i in 1:fft_size÷2+1
@@ -276,3 +288,21 @@ end
 # that already holds power (the max-reduced rotation-search tile).
 @inline _cell_power(x::ComplexF32) = abs2(x)
 @inline _cell_power(x::Float32) = x
+
+# Fixed phase factors are signal-independent. Cache only the nonnegative FFT
+# frequencies; negative frequencies use their conjugates. Period zero and
+# zero-shift passes need no storage. A column is shared by every block within
+# its code period and by every noncoherent step and acquire! call.
+function _code_doppler_phasors(fft_size::Int, num_periods::Int, shift::Float64)
+    (iszero(shift) || num_periods <= 1) && return nothing
+    phasors = Matrix{ComplexF32}(undef, fft_size ÷ 2 + 1, num_periods - 1)
+    for period in 1:num_periods-1
+        phase_step = cis(-2π * period * shift / fft_size)
+        phase = 1.0 + 0.0im
+        @inbounds for i in axes(phasors, 1)
+            phasors[i, period] = ComplexF32(phase)
+            phase *= phase_step
+        end
+    end
+    return phasors
+end

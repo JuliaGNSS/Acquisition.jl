@@ -74,9 +74,14 @@ Per pass, the pipeline runs `N_coh·B²` inner IFFTs of the padded length
 inner   = N_coh·B² × (_INNER_FFT_CALL_COST + F·log₂F)
 doppler = samples_per_code·M·log₂M × w(M)
 prep    = N_coh·B × (_INNER_FFT_CALL_COST + F·log₂F) + _DOWNCONVERT_COST × N_coh·samples_per_code
-cost    = P × (inner + doppler + prep / num_prns)
+cost    = P × (inner + doppler + prep / cld(num_prns, workers))
 w(M)    = _SMOOTH_DOPPLER_FFT_WEIGHT if M is 7-smooth, else _ROUGH_DOPPLER_FFT_WEIGHT
 ```
+
+`workers` is the number of PRNs the acquisition loop processes concurrently.
+Preparation is serial and shared by all workers, so it is amortized over the
+number of PRNs per worker, rather than over the full batch. With one worker
+this reduces to `prep / num_prns`.
 
 The per-call constant is the fixed overhead of a small inner transform, which
 dominates when blocks are short. `prep` is the per-pass signal preparation that
@@ -109,14 +114,19 @@ function _search_cost(samples_per_code::Integer, num_blocks::Integer,
     if compensate_code_doppler && num_passes > 1
         prep += _CODE_DOPPLER_COST * num_coherently_integrated_code_periods * B * F
     end
-    return num_passes * (inner + doppler_fft + prep / max(1, num_prns))
+    prns_per_worker = cld(max(1, num_prns), _num_prn_workers(num_prns))
+    return num_passes * (inner + doppler_fft + prep / prns_per_worker)
 end
+
+# Use the same concurrency bound for planning and the scratch/task pool.
+_num_prn_workers(num_prns::Integer) =
+    min(Threads.nthreads(), max(1, Int(num_cores())), max(1, num_prns))
 
 const _INNER_FFT_CALL_COST = 561.0
 const _SMOOTH_DOPPLER_FFT_WEIGHT = 0.75
 const _ROUGH_DOPPLER_FFT_WEIGHT = 1.18
 const _DOWNCONVERT_COST = 23.0
-# Estimated cost of a phase recurrence and complex multiply per FFT element.
+# Estimated cost of a cached phase-factor load and complex multiply per FFT element.
 const _CODE_DOPPLER_COST = 6.0
 
 # A multi-pass layout replaces the single grid only when the model expects it

@@ -177,8 +177,10 @@ deduplicated — the first matching `sampling_freq` is reported.
     to account for in-window code Doppler (default `0`, unknown carrier).
     The signal overload derives it from `system` automatically.
   - `num_prns`: Number of PRNs searched per `acquire!` call (default `32`). The
-    per-pass signal preparation is shared by all PRNs, so it weighs more in the
-    cost — and so in the layout — when fewer PRNs are searched. `plan_acquire`
+    per-pass signal preparation is shared by all PRNs and runs serially. Its
+    cost is amortized over the PRNs per active worker, accounting for the
+    current Julia thread count and available cores. It weighs more in the
+    layout when fewer PRNs are searched. `plan_acquire`
     uses the length of its `prns` argument.
 
 # Cost Model
@@ -190,7 +192,7 @@ inner_cost   = N_coh × num_blocks² × (561 + inner_fft_size × log₂(inner_ff
 doppler_cost = samples_per_code × num_doppler_bins × log₂(num_doppler_bins) × w
 prep_cost    = N_coh × num_blocks × (561 + inner_fft_size × log₂(inner_fft_size))
                + 23 × N_coh × samples_per_code
-cost         = num_doppler_passes × (inner_cost + doppler_cost + prep_cost / num_prns)
+cost         = num_doppler_passes × (inner_cost + doppler_cost + prep_cost / cld(num_prns, workers))
 ```
 
 with `w = 0.75` for a 7-smooth `num_doppler_bins` and `1.18` otherwise. The
