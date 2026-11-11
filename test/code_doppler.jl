@@ -5,7 +5,7 @@
     for N_coh in (10, 20)
         plan = plan_acquire(system, fs, [1];
             num_coherently_integrated_code_periods = N_coh, use_secondary_code = false)
-        @test 1 < plan.num_doppler_passes <= 16
+        @test plan.num_doppler_passes > 1
         @test first(plan.doppler_freqs) <= -7000Hz
         @test last(plan.doppler_freqs) >= 7000Hz
         # Include half a bin beyond the most distant kept bin.
@@ -33,6 +33,25 @@
     limited = plan_acquire(system, fs, [1];
         num_coherently_integrated_code_periods = 20, max_doppler_passes = 2)
     @test limited.num_doppler_passes <= 2
+
+    # A wide search must compensate automatically, without knowing its pass
+    # count in advance. The old default cap of 16 disabled it at ±15 kHz.
+    wide = plan_acquire(system, fs, [1]; min_doppler_coverage = 15000Hz,
+        num_coherently_integrated_code_periods = 20, use_secondary_code = false)
+    @test wide.num_doppler_passes > 16
+    @test any(!iszero, wide.code_doppler_shifts_per_period)
+    @test (wide.doppler_bins_per_pass ÷ 2 + 0.5) *
+        get_code_center_frequency_ratio(system) <= Acquisition._MAX_CODE_DOPPLER_DRIFT
+    wide_rec = only(recommend_sampling_freqs(system; fs_min = fs, fs_max = fs,
+        min_doppler_coverage = 15000Hz, num_prns = 1,
+        num_coherently_integrated_code_periods = 20))
+    @test wide_rec.num_blocks == wide.num_blocks
+    @test wide_rec.num_doppler_passes == wide.num_doppler_passes
+    @test wide_rec.doppler_bins_per_pass == wide.doppler_bins_per_pass
+    capped = plan_acquire(system, fs, [1]; min_doppler_coverage = 15000Hz,
+        num_coherently_integrated_code_periods = 20, max_doppler_passes = 16,
+        use_secondary_code = false)
+    @test capped.num_doppler_passes <= 16
 end
 
 @testset "Code Doppler — low-drift L1 retains the original FFTs" begin

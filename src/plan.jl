@@ -461,7 +461,8 @@ multi-threaded acquisition. Scratch buffers are tile-sized (nothing scales with
 - `fft_flag`: FFT planning flag, accepted for compatibility and ignored — FFTL
   plans do not measure (default: `FFTL.MEASURE`).
 - `max_doppler_passes`: largest number of narrow Doppler passes the search may
-  be split into (default: `16`). When `samples_per_code` has sparse divisors,
+  be split into (default: `nothing`, automatic selection with no fixed cap).
+  When `samples_per_code` has sparse divisors,
   the smallest `num_blocks` that reaches `min_doppler_coverage` in one FM-DBZP
   grid can be far too large (1.542 MHz needs 257 for ±7 kHz). `plan_acquire`
   then covers the range in several passes with a small `num_blocks` instead,
@@ -525,7 +526,7 @@ function plan_acquire(
     max_secondary_code_rotations::Int = 32,
     fft_flag = FFTL.MEASURE,
     max_blocking_time = nothing,
-    max_doppler_passes::Int = 16,
+    max_doppler_passes::Union{Int,Nothing} = nothing,
 )
     num_noncoherent_accumulations >= 1 || throw(ArgumentError("num_noncoherent_accumulations must be >= 1, got $num_noncoherent_accumulations"))
     num_coherently_integrated_code_periods >= 1 || throw(ArgumentError("num_coherently_integrated_code_periods must be >= 1"))
@@ -623,7 +624,7 @@ function plan_acquire(
     sampling_freq_hz = ustrip(Hz, sampling_freq)
     bin_width = sampling_freq_hz / samples_per_code
     min_doppler_coverage_hz = ustrip(Hz, min_doppler_coverage)
-    max_doppler_passes >= 1 || throw(ArgumentError("max_doppler_passes must be >= 1, got $max_doppler_passes"))
+    (max_doppler_passes === nothing || max_doppler_passes >= 1) || throw(ArgumentError("max_doppler_passes must be nothing or >= 1, got $max_doppler_passes"))
     layout = _doppler_search_layout(samples_per_code, bin_width, min_doppler_coverage_hz,
         num_coherently_integrated_code_periods, max_doppler_passes, length(prns),
         get_code_center_frequency_ratio(system))

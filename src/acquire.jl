@@ -1276,7 +1276,8 @@ Convenience wrapper: calls [`plan_acquire`](@ref) then [`acquire!`](@ref).
     (default: `FFTL.MEASURE`)
   - `max_doppler_passes`: largest number of narrow Doppler passes the search may be
     split into for sparse divisors or in-window code-Doppler compensation
-    (default: `16`; `1` uses an uncompensated single grid). See [`plan_acquire`](@ref).
+    (default: `nothing`, automatic selection; `1` uses an uncompensated single
+    grid). See [`plan_acquire`](@ref).
 
 # Keyword Arguments forwarded to `acquire!`:
 
@@ -1307,7 +1308,7 @@ function acquire(
     use_secondary_code::Bool = true,
     max_secondary_code_rotations::Int = 32,
     fft_flag = FFTL.MEASURE,
-    max_doppler_passes::Int = 16,
+    max_doppler_passes::Union{Int,Nothing} = nothing,
     subsample_interpolation::Bool = false,
     store_power_bins::Bool = false,
 )
@@ -1365,7 +1366,7 @@ function acquire_stream(
     use_secondary_code::Bool = true,
     max_secondary_code_rotations::Int = 32,
     fft_flag = FFTL.MEASURE,
-    max_doppler_passes::Int = 16,
+    max_doppler_passes::Union{Int,Nothing} = nothing,
     subsample_interpolation::Bool = false,
     store_power_bins::Bool = false,
     buffer_size::Int = length(prns),
@@ -1422,7 +1423,7 @@ function acquire_stream(
     use_secondary_code::Bool = true,
     max_secondary_code_rotations::Int = 32,
     fft_flag = FFTL.MEASURE,
-    max_doppler_passes::Int = 16,
+    max_doppler_passes::Union{Int,Nothing} = nothing,
     subsample_interpolation::Bool = false,
     store_power_bins::Bool = false,
     buffer_size::Int = length(prns),
