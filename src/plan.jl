@@ -144,6 +144,9 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     pass_fft_bins::Int
     pass_row_offset::Int
     doppler_pass_offsets_hz::Vector{Float64}
+    # Delay per code period in samples, shared across PRNs within each pass.
+    # All zeros when the requested code drift is below the tolerance.
+    code_doppler_shifts_per_period::Vector{Float64}
     # Signal-block FFT cache: (fft_size, num_coh*num_blocks*N_nc*num_doppler_passes).
     # Holds FFT(signal double-block k) for EVERY accumulation segment and pass
     # (pass-major: see `_signal_block_ffts_for_step`),
@@ -456,7 +459,11 @@ multi-threaded acquisition. Scratch buffers are tile-sized (nothing scales with
   uniform Doppler grid. It picks this only when a cost model expects it to be
   clearly cheaper, and keeps every searched Doppler within the edge loss a
   single grid has on an ideal rate — see
-  [Doppler Passes](@ref) in the guide. `1` always uses a single grid.
+  [Doppler Passes](@ref) in the guide. Passes are also used when code Doppler
+  would drift by more than 0.1 chip within a coherent window. Each pass
+  compensates its centre's drift once per code period; narrower passes keep
+  the residual across the window within 0.1 chip when the pass cap permits.
+  `1` always uses the original, uncompensated single grid.
 - `max_blocking_time`: upper bound on how long the per-PRN work may hold a
   thread without giving the Julia scheduler a chance to run something else
   (default: `nothing`, i.e. unbounded — today's behaviour). Pass a time
@@ -608,7 +615,8 @@ function plan_acquire(
     min_doppler_coverage_hz = ustrip(Hz, min_doppler_coverage)
     max_doppler_passes >= 1 || throw(ArgumentError("max_doppler_passes must be >= 1, got $max_doppler_passes"))
     layout = _doppler_search_layout(samples_per_code, bin_width, min_doppler_coverage_hz,
-        num_coherently_integrated_code_periods, max_doppler_passes, length(prns))
+        num_coherently_integrated_code_periods, max_doppler_passes, length(prns),
+        get_code_center_frequency_ratio(system))
     if isnothing(layout)
         throw(ArgumentError(
             "No valid num_blocks found: samples_per_code=$samples_per_code has no divisor " *
@@ -669,6 +677,14 @@ function plan_acquire(
     doppler_freqs = _doppler_grid_hz(layout, bin_width, num_coherently_integrated_code_periods) .* Hz
     doppler_pass_offsets_hz = _doppler_pass_offsets_hz(layout, bin_width,
         num_coherently_integrated_code_periods)
+
+    compensate = _code_doppler_compensation(min_doppler_coverage_hz,
+        get_code_center_frequency_ratio(system), num_coherently_integrated_code_periods,
+        bin_width)
+    code_doppler_shifts_per_period = compensate ?
+        doppler_pass_offsets_hz .* (get_code_center_frequency_ratio(system) *
+            samples_per_code / ustrip(Hz, get_code_frequency(system))) :
+        zeros(Float64, num_doppler_passes)
 
     segment_length = num_coherently_integrated_code_periods * samples_per_code
     # Pre-allocated signal-block FFT cache: holds FFT(signal double-block k) for
@@ -845,6 +861,7 @@ function plan_acquire(
         pass_fft_bins,
         pass_row_offset,
         doppler_pass_offsets_hz,
+        code_doppler_shifts_per_period,
         signal_block_ffts,
         sig_buf,
         fftshift_perm,
@@ -910,7 +927,7 @@ function _precompile_search(plan::AcquisitionPlan)
     # the streamed (N_nc == 1) and the multistep (N_nc > 1) kernels alike.
     for ffts in (typeof(plan.signal_block_ffts), step_ffts)
         ok &= precompile(_precompute_signal_block_ffts!, (ffts,
-            Vector{ComplexF32}, Int, Int, Int, Int, Vector{ComplexF32}, fwd))
+            Vector{ComplexF32}, Int, Int, Int, Int, Vector{ComplexF32}, fwd, Float64))
     end
     # `nothing`: streamed statistics; a matrix: `store_power_bins = true`.
     ok &= precompile(_acquire_prn_streamed!, (P, S, Int, Nothing))

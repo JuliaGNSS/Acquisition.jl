@@ -43,9 +43,9 @@ end
     @test_throws ArgumentError plan_acquire(GPSL1CA(), 1.542e6Hz, [1]; max_doppler_passes = 0)
 end
 
-@testset "Doppler passes — only on sparse-divisor rates" begin
-    # Passes only replace a single grid that needs far more blocks than the
-    # coverage asks for. A grid with a few spare blocks is kept even where
+@testset "Doppler passes — sparse divisors or code drift" begin
+    # Without significant code drift, passes only replace a single grid that
+    # needs far more blocks than the coverage asks for. A grid with a few spare blocks is kept even where
     # passes would be faster: its spare blocks make Dopplers near 0 Hz
     # nearly loss-free.
     for (fs, coverage) in ((1.5e6Hz, 7000Hz),      # 20 blocks for 16
@@ -55,8 +55,13 @@ end
         N_coh in (1, 10)
         plan = plan_acquire(GPSL1CA(), fs, [1]; min_doppler_coverage = coverage,
             num_coherently_integrated_code_periods = N_coh)
-        @test plan.num_doppler_passes == 1
-        @test length(plan.doppler_freqs) == plan.pass_fft_bins
+        if Acquisition._code_doppler_compensation(ustrip(Hz, coverage),
+            get_code_center_frequency_ratio(GPSL1CA()), N_coh, 1000.0)
+            @test plan.num_doppler_passes > 1
+        else
+            @test plan.num_doppler_passes == 1
+            @test length(plan.doppler_freqs) == plan.pass_fft_bins
+        end
     end
     # Sparse divisors: 1023 = 3·11·31 and 3069 = 3²·11·31 need 31 blocks for 16.
     for fs in (1.023e6Hz, 3.069e6Hz)
@@ -106,7 +111,9 @@ end
         K = plan.doppler_bins_per_pass
         rows = plan.pass_row_offset+1 : plan.pass_row_offset+K
         for (k, offset) in enumerate(plan.doppler_pass_offsets_hz)
-            ref = acquire!(ref_plan, signal, prn; interm_freq = offset * Hz,
+            ref_plan.doppler_pass_offsets_hz[1] = offset
+            ref_plan.code_doppler_shifts_per_period[1] = plan.code_doppler_shifts_per_period[k]
+            ref = acquire!(ref_plan, signal, prn;
                 store_power_bins = true)
             @test stitched[(k-1)*K+1 : k*K, :] == ref.power_bins[rows, :]
             @test ref_plan.doppler_freqs[rows] .+ offset * Hz ==
@@ -167,7 +174,9 @@ end
             shifts = zeros(Int, K)
             for m in 0:N_nc-1
                 segment = signal[m*step_len+1 : end]
-                step = acquire!(ref_plan, segment, prn; interm_freq = offset * Hz,
+                ref_plan.doppler_pass_offsets_hz[1] = offset
+                ref_plan.code_doppler_shifts_per_period[1] = plan.code_doppler_shifts_per_period[k]
+                step = acquire!(ref_plan, segment, prn;
                     store_power_bins = true).power_bins[rows, :]
                 Acquisition._fill_code_drift_shifts!(shifts, plan, m,
                     Acquisition._pass_rows(plan, k))

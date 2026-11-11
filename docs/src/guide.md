@@ -700,11 +700,24 @@ Measured on GPS L1 C/A, 32 PRNs, `min_doppler_coverage = 7000Hz`, one thread
 So a 0.1 % change in `fs` (1.500 → 1.542 MHz) no longer costs ~50×. The same
 applies at longer coherent integration: 1.542 MHz with
 `num_coherently_integrated_code_periods = 10` goes from 1.29 s to 18 ms.
-Well-behaved rates are unaffected — they keep their single grid.
+For these low-drift L1 searches, rates with suitable divisors keep their single grid.
 
-Doppler passes change only the carrier. The code Doppler inside a coherent
-window is uncompensated exactly as with a single grid, and the code-drift
-correction between noncoherent steps uses each bin's true Doppler.
+For signals whose code Doppler would drift by more than 0.1 chip across the
+requested coherent window and Doppler coverage, the planner also uses narrow
+passes to compensate that drift. Each pass delays the signal by its centre's
+code advance once per code period, using phase ramps on the signal-block FFTs
+shared by all PRNs. The cost model counts both the extra passes and their signal
+preparation. Low-drift searches (GPS L1 C/A at ±7 kHz through 20 ms, for example)
+keep the original layout and FFTs exactly.
+
+Pass widths target at most 0.1 chip of residual drift across the coherent
+window, in addition to the uncompensated drift within one code period. This is
+an approximation, not a power-loss guarantee: fractional delays of sampled
+codes and block boundaries also affect the peak. `max_doppler_passes` limits
+the available layouts; if none meets the tolerance, the planner falls back to
+the original layout. `max_doppler_passes = 1` keeps the uncompensated single
+grid. Code-drift correction between noncoherent steps continues to use each
+bin's true Doppler.
 
 ### Picking a Good Sampling Frequency
 

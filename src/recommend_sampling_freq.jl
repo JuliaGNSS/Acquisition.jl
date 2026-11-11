@@ -172,6 +172,9 @@ deduplicated — the first matching `sampling_freq` is reported.
     Default `nothing` — no hardware filtering.
   - `max_doppler_passes`: As in [`plan_acquire`](@ref) (default `16`); `1`
     restricts every candidate to a single Doppler grid.
+  - `code_center_frequency_ratio`: Chip-rate to carrier-frequency ratio used
+    to account for in-window code Doppler (default `0`, unknown carrier).
+    The signal overload derives it from `system` automatically.
   - `num_prns`: Number of PRNs searched per `acquire!` call (default `32`). The
     per-pass signal preparation is shared by all PRNs, so it weighs more in the
     cost — and so in the layout — when fewer PRNs are searched. `plan_acquire`
@@ -214,6 +217,7 @@ function recommend_sampling_freqs(
     sdr_clock_plan::Union{AbstractSDRClockPlan,Nothing} = nothing,
     max_doppler_passes::Int = 16,
     num_prns::Int = 32,
+    code_center_frequency_ratio::Real = 0.0,
 )
     sort_by in (:cost, :smoothness) || throw(ArgumentError(
         "sort_by must be :cost or :smoothness, got :$sort_by"))
@@ -221,6 +225,8 @@ function recommend_sampling_freqs(
     max_prime >= 2 || throw(ArgumentError("max_prime must be >= 2"))
     max_doppler_passes >= 1 || throw(ArgumentError("max_doppler_passes must be >= 1"))
     num_prns >= 1 || throw(ArgumentError("num_prns must be >= 1"))
+    isfinite(code_center_frequency_ratio) && code_center_frequency_ratio >= 0 ||
+        throw(ArgumentError("code_center_frequency_ratio must be finite and nonnegative"))
     num_coherently_integrated_code_periods >= 1 || throw(ArgumentError(
         "num_coherently_integrated_code_periods must be >= 1"))
 
@@ -255,7 +261,7 @@ function recommend_sampling_freqs(
             bin_width = fs_hz / samples_per_code
             layout = _doppler_search_layout(samples_per_code, bin_width,
                 min_doppler_coverage_hz, num_coherently_integrated_code_periods,
-                max_doppler_passes, num_prns)
+                max_doppler_passes, num_prns, code_center_frequency_ratio)
             if layout !== nothing
                 num_blocks = layout.num_blocks
                 block_size = samples_per_code ÷ num_blocks
@@ -287,7 +293,9 @@ function recommend_sampling_freqs(
                         ndb_max_prime,
                         _search_cost(samples_per_code, num_blocks,
                             num_coherently_integrated_code_periods, layout.num_passes,
-                            num_prns),
+                            num_prns, _code_doppler_compensation(min_doppler_coverage_hz,
+                                code_center_frequency_ratio,
+                                num_coherently_integrated_code_periods, bin_width)),
                     ))
                 end
             end
@@ -317,6 +325,7 @@ function recommend_sampling_freqs(system::AbstractGNSSSignal; kwargs...)
     recommend_sampling_freqs(
         get_code_length(system),
         get_code_frequency(system);
+        code_center_frequency_ratio = get_code_center_frequency_ratio(system),
         kwargs...,
     )
 end

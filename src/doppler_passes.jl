@@ -87,11 +87,12 @@ The constants are a weighted least-squares fit to single-threaded 32-PRN
 `acquire!` timings over 117 layouts (GPS L1 C/A, 1.024–16.368 MHz,
 `N_coh ∈ {1, 10}`, FFTL, AMD Zen 5): median error 7%, and the cheapest layout
 by this model is within 12% of the measured fastest everywhere. Only the
-ranking matters.
+ranking matters. When code-Doppler compensation is active, an additional
+`_CODE_DOPPLER_COST * N_coh * B * F` models phase-ramp work in `prep`.
 """
 function _search_cost(samples_per_code::Integer, num_blocks::Integer,
                       num_coherently_integrated_code_periods::Integer, num_passes::Integer,
-                      num_prns::Integer)
+                      num_prns::Integer, compensate_code_doppler::Bool = false)
     B = num_blocks
     block_size = samples_per_code ÷ B
     F = _inner_fft_size(2 * block_size)
@@ -103,6 +104,11 @@ function _search_cost(samples_per_code::Integer, num_blocks::Integer,
         (_largest_prime_factor(M) > 7 ? _ROUGH_DOPPLER_FFT_WEIGHT : _SMOOTH_DOPPLER_FFT_WEIGHT)
     prep = num_coherently_integrated_code_periods * B * inner_fft +
            _DOWNCONVERT_COST * num_coherently_integrated_code_periods * samples_per_code
+    # Fractional-delay phase ramps touch every padded signal FFT once. This
+    # work, like the forward FFTs, is shared across PRNs in a pass.
+    if compensate_code_doppler && num_passes > 1
+        prep += _CODE_DOPPLER_COST * num_coherently_integrated_code_periods * B * F
+    end
     return num_passes * (inner + doppler_fft + prep / max(1, num_prns))
 end
 
@@ -110,6 +116,8 @@ const _INNER_FFT_CALL_COST = 561.0
 const _SMOOTH_DOPPLER_FFT_WEIGHT = 0.75
 const _ROUGH_DOPPLER_FFT_WEIGHT = 1.18
 const _DOWNCONVERT_COST = 23.0
+# Estimated cost of a phase recurrence and complex multiply per FFT element.
+const _CODE_DOPPLER_COST = 6.0
 
 # A multi-pass layout replaces the single grid only when the model expects it
 # to cost at most this fraction of the single grid. Passes keep every Doppler
@@ -118,14 +126,21 @@ const _DOWNCONVERT_COST = 23.0
 # worth taking.
 const _MULTI_PASS_MIN_GAIN = 0.9
 
-# Doppler passes are only considered when `samples_per_code`'s divisors are
-# sparse: the single grid needs at least this many times the blocks the coverage
+# Without code-Doppler compensation, passes are only considered when
+# `samples_per_code`'s divisors are sparse: the single grid needs at least this many times the blocks the coverage
 # asks for. That is where the divisor gap costs real time (1.542 MHz: 257 blocks
 # for 16 needed; 1.023 and 3.069 MHz: 31 for 16). Rates with a divisor closer
 # to the need (2.048 MHz at ±10 kHz: 32 for 22; 4 MHz at ±25 kHz: 80 for 52;
 # 5 MHz at ±5 kHz, 5 ms: 20 for 11; 1.5 MHz: 20 for 16) keep their single
 # grid, and with it the lower loss its spare blocks give near 0 Hz.
 const _SPARSE_DIVISOR_MIN_EXCESS = 1.9
+
+# Maximum uncompensated drift across a coherent window, in chips. Below this
+# threshold the original pipeline is used, including for narrow L1 searches.
+const _MAX_CODE_DOPPLER_DRIFT = 0.1
+
+_code_doppler_compensation(coverage, ratio, N_coh, bin_width) =
+    coverage * ratio * N_coh / bin_width > _MAX_CODE_DOPPLER_DRIFT
 
 """
     _doppler_search_layout(samples_per_code, bin_width_hz, min_doppler_coverage_hz,
@@ -141,12 +156,16 @@ as a multi-pass layout that holds the sensitivity bound described at the top of
 this file; the cheapest by `_search_cost` wins, a multi-pass layout only if it
 costs at most `_MULTI_PASS_MIN_GAIN` times the single grid. Returns `nothing` if
 no layout exists (only when `samples_per_code` is smaller than the blocks the
-coverage needs).
+coverage needs). With a nonzero `code_center_frequency_ratio`, drift above
+`_MAX_CODE_DOPPLER_DRIFT` also enables passes at ordinary rates and constrains
+their kept width. The cheapest compensated layout wins without a speedup
+requirement; if the pass cap prevents this, the original layout is retained.
 """
 function _doppler_search_layout(samples_per_code::Integer, bin_width_hz::Real,
                                 min_doppler_coverage_hz::Real,
                                 num_coherently_integrated_code_periods::Integer,
-                                max_doppler_passes::Integer, num_prns::Integer)
+                                max_doppler_passes::Integer, num_prns::Integer,
+                                code_center_frequency_ratio::Real = 0.0)
     N_coh = num_coherently_integrated_code_periods
     min_num_blocks = _min_num_blocks(min_doppler_coverage_hz, bin_width_hz, N_coh)
     single_num_blocks = _smallest_valid_num_blocks(samples_per_code, min_num_blocks)
@@ -155,7 +174,13 @@ function _doppler_search_layout(samples_per_code::Integer, bin_width_hz::Real,
     max_doppler_passes > 1 || return best
     sparse_divisors = single_num_blocks === nothing ||
         single_num_blocks >= _SPARSE_DIVISOR_MIN_EXCESS * min_num_blocks
-    sparse_divisors || return best
+    compensate = _code_doppler_compensation(min_doppler_coverage_hz,
+        code_center_frequency_ratio, N_coh, bin_width_hz)
+    (sparse_divisors || compensate) || return best
+    # When code drift requires narrower passes, compare all layouts at their
+    # full cost rather than requiring a speedup over the uncompensated grid.
+    fallback = best
+    compensate && (best = nothing)
     best_cost = best === nothing ? Inf :
         _MULTI_PASS_MIN_GAIN * _search_cost(samples_per_code, single_num_blocks, N_coh, 1, num_prns)
 
@@ -167,7 +192,13 @@ function _doppler_search_layout(samples_per_code::Integer, bin_width_hz::Real,
     # pass's block-loss scale `B · bin_width` from the pass centre — the offset
     # of the coverage edge on an ideal rate (`min_num_blocks` blocks).
     max_offset = min_doppler_coverage_hz / (min_num_blocks * bin_width_hz)
+    # Local bin edges must drift by at most the tolerance over N_coh periods.
+    # spacing * T_coh = 1, so the limit in bins is tolerance / ratio.
+    max_code_bins = compensate ?
+        2 * floor(Int, _MAX_CODE_DOPPLER_DRIFT / code_center_frequency_ratio - 0.5) + 1 :
+        typemax(Int)
     last_divisor = something(single_num_blocks, samples_per_code + 1) - 1
+    compensate && (last_divisor = something(single_num_blocks, samples_per_code))
     for B in 1:last_divisor
         samples_per_code % B == 0 || continue
         M = N_coh * B
@@ -175,7 +206,8 @@ function _doppler_search_layout(samples_per_code::Integer, bin_width_hz::Real,
         # bins out, which must stay within max_offset · B · N_coh bins.
         half = floor(Int, max_offset * B * N_coh - 0.5 + 1e-9)
         half < 0 && continue
-        max_bins_per_pass = min(M, 2 * half + 1)
+        max_bins_per_pass = min(M, 2 * half + 1, max_code_bins)
+        max_bins_per_pass >= 1 || continue
         num_passes = cld(min_grid_bins, max_bins_per_pass)
         num_passes <= max_doppler_passes || continue
         layout = DopplerLayout(B, num_passes, cld(min_grid_bins, num_passes))
@@ -183,13 +215,14 @@ function _doppler_search_layout(samples_per_code::Integer, bin_width_hz::Real,
         # than the sampling frequency: beyond that the passes would search
         # aliases of frequencies already on the grid.
         _grid_bins(layout) <= N_coh * samples_per_code || continue
-        cost = _search_cost(samples_per_code, B, N_coh, num_passes, num_prns)
+        cost = _search_cost(samples_per_code, B, N_coh, num_passes, num_prns, compensate)
         if cost < best_cost
             best_cost = cost
             best = layout
         end
     end
-    return best
+    # Honour the user's pass cap even if it cannot meet the drift tolerance.
+    return best === nothing ? fallback : best
 end
 
 # Doppler grid of a layout, in Hz: `n = P·K` bins at multiples of `spacing`,

@@ -47,6 +47,7 @@ function _fill_signal_block_ffts!(plan::AcquisitionPlan, signal, segment_length,
                 plan.num_coherently_integrated_code_periods,
                 main_scratch.double_block_buf,
                 plan.double_block_fft_plan,
+                plan.code_doppler_shifts_per_period[pass_idx],
             )
         end
     end
@@ -1347,8 +1348,8 @@ Convenience wrapper: calls [`plan_acquire`](@ref) then [`acquire!`](@ref).
   - `fft_flag`: FFT planning flag, accepted for compatibility and ignored
     (default: `FFTL.MEASURE`)
   - `max_doppler_passes`: largest number of narrow Doppler passes the search may be
-    split into on sparse-divisor sampling rates (default: `16`; `1` always uses a
-    single Doppler grid). See [`plan_acquire`](@ref).
+    split into for sparse divisors or in-window code-Doppler compensation
+    (default: `16`; `1` uses an uncompensated single grid). See [`plan_acquire`](@ref).
 
 # Keyword Arguments forwarded to `acquire!`:
 
