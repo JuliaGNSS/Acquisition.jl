@@ -129,6 +129,7 @@ end
         for (k, offset) in enumerate(plan.doppler_pass_offsets_hz)
             ref_plan.doppler_pass_offsets_hz[1] = offset
             ref_plan.code_doppler_shifts_per_period[1] = plan.code_doppler_shifts_per_period[k]
+            ref_plan.code_doppler_phasors[1] = plan.code_doppler_phasors[k]
             ref = acquire!(ref_plan, signal, prn;
                 store_power_bins = true)
             @test stitched[(k-1)*K+1 : k*K, :] == ref.power_bins[rows, :]
@@ -206,6 +207,7 @@ end
                 segment = signal[m*step_len+1 : end]
                 ref_plan.doppler_pass_offsets_hz[1] = offset
                 ref_plan.code_doppler_shifts_per_period[1] = plan.code_doppler_shifts_per_period[k]
+                ref_plan.code_doppler_phasors[1] = plan.code_doppler_phasors[k]
                 step = acquire!(ref_plan, segment, prn;
                     store_power_bins = true).power_bins[rows, :]
                 Acquisition._fill_code_drift_shifts!(shifts, plan, m,

@@ -48,6 +48,7 @@ function _fill_signal_block_ffts!(plan::AcquisitionPlan, signal, segment_length,
                 main_scratch.double_block_buf,
                 plan.double_block_fft_plan,
                 plan.code_doppler_shifts_per_period[pass_idx],
+                plan.code_doppler_phasors[pass_idx],
             )
         end
     end

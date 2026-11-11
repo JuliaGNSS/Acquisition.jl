@@ -723,7 +723,10 @@ For signals whose code Doppler would drift by more than 0.1 chip across the
 requested coherent window and Doppler coverage, the planner also uses narrow
 passes to compensate that drift. Each pass delays the signal by its centre's
 code advance once per code period, using phase ramps on the signal-block FFTs
-shared by all PRNs. The cost model counts both the extra passes and their signal
+shared by all PRNs. Phase-ramp coefficients are computed when the plan is built;
+only complex multiplications are repeated during acquisition. The cache stores
+one frequency half per code period and pass, reusing it across blocks and
+noncoherent steps. The cost model counts both the extra passes and their signal
 preparation. Low-drift searches (GPS L1 C/A at ±7 kHz through 20 ms, for example)
 keep the original layout and FFTs exactly.
 
@@ -735,7 +738,11 @@ codes and block boundaries also affect the peak. By default,
 without a fixed cap, including for wide searches such as L5 at ±15 kHz over
 20 ms. Each pass performs signal preparation and a PRN search, so the phase
 ramp's small cost does not make extra passes free. Fewer blocks per pass can
-offset that work, and the cost model compares the complete layouts.
+offset that work, and the cost model compares the complete layouts. Shared
+signal preparation runs serially, so its cost is amortized over the PRNs per
+active worker, accounting for the Julia thread count and available cores.
+The plan is optimized for the PRN batch passed to `plan_acquire`; searching a
+subset can change the preparation-to-correlation balance.
 
 An explicit integer `max_doppler_passes` limits time and cache memory by
 restricting the available layouts. If none meets the tolerance, the planner

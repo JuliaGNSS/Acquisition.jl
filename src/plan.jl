@@ -144,6 +144,9 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     # Delay per code period in samples, shared across PRNs within each pass.
     # All zeros when the requested code drift is below the tolerance.
     code_doppler_shifts_per_period::Vector{Float64}
+    # Positive-frequency phase ramps per pass, excluding period zero. Nothing
+    # for inactive passes; conjugate symmetry halves the coefficient storage.
+    code_doppler_phasors::Vector{Union{Nothing,Matrix{ComplexF32}}}
     # Signal-block FFT cache: (fft_size, num_coh*num_blocks*N_nc*num_doppler_passes).
     # Holds FFT(signal double-block k) for EVERY accumulation segment and pass
     # (pass-major: see `_signal_block_ffts_for_step`),
@@ -711,6 +714,9 @@ function plan_acquire(
         doppler_pass_offsets_hz .* (get_code_center_frequency_ratio(system) *
             samples_per_code / ustrip(Hz, get_code_frequency(system))) :
         zeros(Float64, num_doppler_passes)
+    code_doppler_phasors = Union{Nothing,Matrix{ComplexF32}}[
+        _code_doppler_phasors(fft_size, num_coherently_integrated_code_periods, shift)
+        for shift in code_doppler_shifts_per_period]
 
     segment_length = num_coherently_integrated_code_periods * samples_per_code
     # Pre-allocated signal-block FFT cache: holds FFT(signal double-block k) for
@@ -799,7 +805,7 @@ function plan_acquire(
     # concurrency instead of the PRN count. All slots are built up front (the
     # size is known here), so the plan's construction footprint is its
     # steady-state footprint — no first-`acquire!` spike.
-    nthreads = min(Threads.nthreads(), max(1, Int(num_cores())), max(1, length(prns)))
+    nthreads = _num_prn_workers(length(prns))
     thread_scratch = map(1:nthreads) do _
         tile = zeros(ComplexF32, pass_fft_bins, block_size)
         tile_t = reshape(tile, block_size, pass_fft_bins)   # shares `tile`'s memory
@@ -895,6 +901,7 @@ function plan_acquire(
         pass_row_offset,
         doppler_pass_offsets_hz,
         code_doppler_shifts_per_period,
+        code_doppler_phasors,
         signal_block_ffts,
         sig_buf,
         fftshift_perm,
@@ -960,8 +967,11 @@ function _precompile_search(plan::AcquisitionPlan)
     # `num_noncoherent_accumulations` at run time, so its first call compiles
     # the streamed (N_nc == 1) and the multistep (N_nc > 1) kernels alike.
     for ffts in (typeof(plan.signal_block_ffts), step_ffts)
-        ok &= precompile(_precompute_signal_block_ffts!, (ffts,
-            Vector{ComplexF32}, Int, Int, Int, Int, Vector{ComplexF32}, fwd, Float64))
+        for phasors in (Nothing, Matrix{ComplexF32})
+            ok &= precompile(_precompute_signal_block_ffts!, (ffts,
+                Vector{ComplexF32}, Int, Int, Int, Int, Vector{ComplexF32}, fwd,
+                Float64, phasors))
+        end
     end
     # `nothing`: streamed statistics; a matrix: `store_power_bins = true`.
     ok &= precompile(_acquire_prn_streamed!, (P, S, Int, Nothing))

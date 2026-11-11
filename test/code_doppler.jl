@@ -115,3 +115,41 @@ end
         @test minimum(losses) > minimum(uncompensated_losses) + 1.0
     end
 end
+
+@testset "Cached code delays equal time-domain integer delays" begin
+    # Check signed-frequency reconstruction independently of the recurrence:
+    # an integer code advance must become a circular time-domain delay of the
+    # double block, including when that double block has a zero-padded tail.
+    signal = randn(ComplexF32, 48)
+    for fft_size in (16, 24), shift in (-1.0, 1.0)
+        fft_plan = plan_fft!(zeros(ComplexF32, fft_size); threads = 1)
+        cache = zeros(ComplexF32, fft_size, 6)
+        phasors = Acquisition._code_doppler_phasors(fft_size, 3, shift)
+        Acquisition._precompute_signal_block_ffts!(cache, signal, 16, 2, 8, 3,
+            zeros(ComplexF32, fft_size), fft_plan, shift, phasors)
+        for block in 0:5
+            period = block ÷ 2
+            padded = zeros(ComplexF32, fft_size)
+            for i in 0:15
+                padded[i+1] = signal[mod(block * 8 + i, length(signal)) + 1]
+            end
+            expected = fft(circshift(padded, period * Int(shift)))
+            @test cache[:, block+1] ≈ expected rtol = 2e-6
+        end
+    end
+    @test Acquisition._code_doppler_phasors(16, 3, 0.0) === nothing
+    @test Acquisition._code_doppler_phasors(16, 1, 1.0) === nothing
+end
+
+@testset "Parallel batches avoid excessive serial signal preparation" begin
+    if Acquisition._num_prn_workers(32) >= 3
+        # This batch-sized plan is also used to search single-PRN subsets.
+        # Treating all 32 PRNs as serial work chose eleven passes, almost
+        # doubling the subset search time. Account for parallel PRN workers.
+        plan = plan_acquire(GPSL1CA(), 2.048e6Hz, collect(1:32);
+            min_doppler_coverage = 10000Hz,
+            num_coherently_integrated_code_periods = 20)
+        @test 1 < plan.num_doppler_passes < 11
+        @test any(!iszero, plan.code_doppler_shifts_per_period)
+    end
+end
