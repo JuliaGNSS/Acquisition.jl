@@ -1,5 +1,25 @@
 # Changelog
 
+# [3.1.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v3.0.0...v3.1.0) (2026-11-12)
+
+
+### Bug Fixes
+
+* allow Acquisition 3 in the documentation environment ([e4d989b](https://github.com/JuliaGNSS/Acquisition.jl/commit/e4d989b436779756bcdfc0a5188e2b2f1bbbdf1b))
+* compensate code Doppler within coherent windows ([6a586ee](https://github.com/JuliaGNSS/Acquisition.jl/commit/6a586ee5f19cc0b007d1ec500bb31b7ae226a922))
+* select enough code Doppler passes automatically ([3e23880](https://github.com/JuliaGNSS/Acquisition.jl/commit/3e238807f4e6229743bc222e121ddb6af1db8efb))
+
+
+### Features
+
+* measure acquisition layouts during plan construction ([90f8ded](https://github.com/JuliaGNSS/Acquisition.jl/commit/90f8dedecc26ef7db252e167afb7d8e680710fb8))
+
+
+### Performance Improvements
+
+* benchmark wide L5 code Doppler searches ([f052838](https://github.com/JuliaGNSS/Acquisition.jl/commit/f052838e8bb059bbe2c6556e22faf667675f8289))
+* cache code delays and account for parallel PRN work ([ffb5470](https://github.com/JuliaGNSS/Acquisition.jl/commit/ffb547090fb8231e05db7e7d1c5630383b9445ab))
+
 # [3.0.0](https://github.com/JuliaGNSS/Acquisition.jl/compare/v2.10.1...v3.0.0) (2026-11-10)
 
 
