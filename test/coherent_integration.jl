@@ -3,10 +3,10 @@
 
 @testset "Coherent integration matrix assembly — Tier 1: peak at known code delay" begin
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
+    sampling_frequency = 2.048e6Hz
     prn = 1
 
-    plan = plan_acquire(signal, sampling_freq, [prn];
+    plan = plan_acquire(signal, sampling_frequency, [prn];
         min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = 1)
     scratch = Acquisition._default_scratch(plan)
     # The production pipeline is tiled and never materialises the full coherent
@@ -20,11 +20,11 @@
     code_phase_1 = 991.0
     tau_samples_1 = round(Int, (get_code_length(signal) - code_phase_1) * plan.samples_per_code / get_code_length(signal))
 
-    # Strong signal, zero doppler, zero interm_freq for clean coherent integration matrix test
+    # Strong signal, zero doppler, zero intermediate_frequency for clean coherent integration matrix test
     (; samples) = generate_test_signal(signal, prn;
         num_samples = plan.samples_per_code,
         carrier_doppler = 0Hz, code_phase = code_phase_1,
-        sampling_freq = sampling_freq, interm_freq = 0.0Hz, cn0 = 100)
+        sampling_frequency = sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 100)
 
     signal_f32 = ComplexF32.(samples)
     Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, signal_f32,
@@ -55,7 +55,7 @@
     result_2 = generate_test_signal(signal, prn;
         num_samples = plan.samples_per_code,
         carrier_doppler = 0Hz, code_phase = code_phase_2,
-        sampling_freq = sampling_freq, interm_freq = 0.0Hz, cn0 = 100)
+        sampling_frequency = sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 100)
     signal_f32_2 = ComplexF32.(result_2.samples)
     Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, signal_f32_2,
         plan.samples_per_code, plan.num_blocks, plan.block_size,

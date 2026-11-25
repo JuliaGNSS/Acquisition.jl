@@ -18,10 +18,10 @@ subsequent `acquire!` call.
 Pass to [`plan_acquire`](@ref) via the `noise_estimator` keyword:
 
 ```julia
-plan = plan_acquire(signal, sampling_freq, prns;
+plan = plan_acquire(signal, sampling_frequency, prns;
     noise_estimator = OppositeRowNoiseEstimator())  # default
 
-plan = plan_acquire(signal, sampling_freq, prns;
+plan = plan_acquire(signal, sampling_frequency, prns;
     noise_estimator = GlobalMeanNoiseEstimator())   # alternative
 ```
 
@@ -175,7 +175,7 @@ end
 # ============================================================================
 
 """
-    est_signal_noise_power(power_bins, sampling_freq, chip_rate, col_sums,
+    est_signal_noise_power(power_bins, sampling_frequency, chip_rate, col_sums,
                            estimator = OppositeRowNoiseEstimator())
 
 Estimate `(signal_power, noise_power, peak_code_phase_bin, peak_doppler_bin)`
@@ -211,7 +211,7 @@ function is exposed mainly for tests and custom pipelines.
 """
 function est_signal_noise_power(
     power_bins::AbstractMatrix{T},
-    sampling_freq,
+    sampling_frequency,
     chip_rate,
     col_sums::Vector{T},
     ::OppositeRowNoiseEstimator = OppositeRowNoiseEstimator(),
@@ -229,12 +229,12 @@ end
 
 function est_signal_noise_power(
     power_bins::AbstractMatrix{T},
-    sampling_freq,
+    sampling_frequency,
     chip_rate,
     col_sums::Vector{T},
     ::GlobalMeanNoiseEstimator,
 ) where {T<:AbstractFloat}
-    samples_per_chip = floor(Int, sampling_freq / chip_rate)
+    samples_per_chip = floor(Int, sampling_frequency / chip_rate)
     num_doppler_bins = size(power_bins, 1)
     peak_power, peak_doppler_bin, peak_code_phase_bin =
         _findmax_and_colsums!(col_sums, power_bins)

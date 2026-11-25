@@ -12,7 +12,7 @@
 # Doppler bins with 6-sample blocks.
 #
 # Instead, a small divisor `B` can cover the range in `P` passes. Pass `k`
-# downconverts with `interm_freq + f_k`, which moves the band centred at `f_k`
+# downconverts with `intermediate_frequency + f_k`, which moves the band centred at `f_k`
 # to 0, and runs the unchanged FM-DBZP pipeline with `B` blocks. It keeps the
 # `K` bins nearest its centre, and the passes' kept bins tile one uniform
 # Doppler grid of `P × K` bins:

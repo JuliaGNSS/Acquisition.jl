@@ -3,12 +3,12 @@
 
 @testset "plot recipe — throws when power_bins is nothing" begin
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
+    sampling_frequency = 2.048e6Hz
     prn = 1
-    plan = plan_acquire(signal, sampling_freq, [prn]; fft_flag = FFTL.ESTIMATE)
+    plan = plan_acquire(signal, sampling_frequency, [prn]; fft_flag = FFTL.ESTIMATE)
     (; samples) = generate_test_signal(signal, prn;
-        num_samples = plan.samples_per_code, sampling_freq = sampling_freq,
-        interm_freq = 0.0Hz, cn0 = 45)
+        num_samples = plan.samples_per_code, sampling_frequency = sampling_frequency,
+        intermediate_frequency = 0.0Hz, cn0 = 45)
     result = only(acquire!(plan, ComplexF32.(samples), [prn]))  # no store_power_bins
 
     @test result.power_bins === nothing
@@ -42,13 +42,13 @@ end
 
 @testset "_fmdbzp_sort_by_chip — chip-ordered columns" begin
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
-    plan = plan_acquire(signal, sampling_freq, [1];
+    sampling_frequency = 2.048e6Hz
+    plan = plan_acquire(signal, sampling_frequency, [1];
         min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = 1,
         num_noncoherent_integrations = 1)
 
     chip_rate = Float64(ustrip(Hz, get_chip_rate(signal)))
-    fs     = Float64(ustrip(Hz, sampling_freq))
+    fs     = Float64(ustrip(Hz, sampling_frequency))
 
     # Build a dummy power_bins matrix (all ones — shape correctness test)
     num_doppler_bins = length(plan.doppler_bins)
@@ -73,19 +73,19 @@ end
 
 @testset "plot recipe — axes and data shape via RecipesBase" begin
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
+    sampling_frequency = 2.048e6Hz
     prn = 1
 
-    plan = plan_acquire(signal, sampling_freq, [prn];
+    plan = plan_acquire(signal, sampling_frequency, [prn];
         min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = 1,
         num_noncoherent_integrations = 1)
 
     (; samples) = generate_test_signal(signal, prn;
         num_samples = plan.samples_per_code,
         carrier_doppler = 1000Hz, code_phase = 100.0,
-        sampling_freq = sampling_freq, interm_freq = 0.0Hz, cn0 = 60)
+        sampling_frequency = sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 60)
 
-    results = acquire!(plan, ComplexF32.(samples), [prn]; interm_freq = 0.0Hz, store_power_bins = true)
+    results = acquire!(plan, ComplexF32.(samples), [prn]; intermediate_frequency = 0.0Hz, store_power_bins = true)
     result  = only(results)
 
     # Invoke the recipe without a plot backend

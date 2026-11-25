@@ -2,17 +2,17 @@
 
 @testset "Tier 3: acquire — GPS L1 strong signal detects at correct code phase and Doppler alias" begin
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
+    sampling_frequency = 2.048e6Hz
     prn = 1
 
-    (; samples, code_phase, interm_freq) = generate_test_signal(
+    (; samples, code_phase, intermediate_frequency) = generate_test_signal(
         signal, prn;
         num_samples = 2048,   # 1 code period at 2.048 MHz
         carrier_doppler = 1000Hz, code_phase = 200.0,
-        sampling_freq, interm_freq = 0.0Hz, cn0 = 45,
+        sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45,
     )
 
-    result = acquire(signal, samples, sampling_freq, prn; interm_freq)
+    result = acquire(signal, samples, sampling_frequency, prn; intermediate_frequency)
 
     @test result isa AcquisitionResults
     @test result.prn == prn
@@ -22,19 +22,19 @@ end
 
 @testset "Tier 4: acquire — long integration detects weak signal" begin
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
+    sampling_frequency = 2.048e6Hz
     prn = 3
 
-    (; samples, code_phase, interm_freq) = generate_test_signal(
+    (; samples, code_phase, intermediate_frequency) = generate_test_signal(
         signal, prn;
         num_samples = 40 * 2048,   # 20ms coherent × 2 noncoherent
         carrier_doppler = 500Hz, code_phase = 100.0,
-        sampling_freq, interm_freq = 0.0Hz, cn0 = 30,
+        sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 30,
         seed = 7777,
     )
 
-    result = acquire(signal, samples, sampling_freq, prn;
-        interm_freq,
+    result = acquire(signal, samples, sampling_frequency, prn;
+        intermediate_frequency,
         num_coherently_integrated_code_periods = 20,
         num_noncoherent_integrations = 2,
     )
@@ -47,20 +47,20 @@ end
 
 @testset "subsample_interpolation — triangle interpolation reduces code phase error vs grid" begin
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
+    sampling_frequency = 2.048e6Hz
     prn = 2
     true_code_phase = 300.7   # deliberately between grid points
 
-    (; samples, interm_freq) = generate_test_signal(
+    (; samples, intermediate_frequency) = generate_test_signal(
         signal, prn;
         num_samples = 2048,
         carrier_doppler = 0Hz, code_phase = true_code_phase,
-        sampling_freq, interm_freq = 0.0Hz, cn0 = 45,
+        sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45,
         seed = 5555,
     )
 
-    result_grid   = acquire(signal, samples, sampling_freq, prn; interm_freq, subsample_interpolation = false)
-    result_interp = acquire(signal, samples, sampling_freq, prn; interm_freq, subsample_interpolation = true)
+    result_grid   = acquire(signal, samples, sampling_frequency, prn; intermediate_frequency, subsample_interpolation = false)
+    result_interp = acquire(signal, samples, sampling_frequency, prn; intermediate_frequency, subsample_interpolation = true)
 
     err_grid   = abs(result_grid.code_phase  - true_code_phase)
     err_interp = abs(result_interp.code_phase - true_code_phase)
@@ -72,27 +72,27 @@ end
 
 @testset "acquire! — non-zero intermediate frequency" begin
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
+    sampling_frequency = 2.048e6Hz
     prn = 5
-    interm_freq = 1000Hz
+    intermediate_frequency = 1000Hz
 
     (; samples, code_phase) = generate_test_signal(
         signal, prn;
         num_samples = 2048,
         carrier_doppler = 500Hz, code_phase = 150.0,
-        sampling_freq, interm_freq, cn0 = 45,
+        sampling_frequency, intermediate_frequency, cn0 = 45,
         seed = 3333,
     )
 
-    plan = plan_acquire(signal, sampling_freq, [prn];
+    plan = plan_acquire(signal, sampling_frequency, [prn];
         min_doppler_coverage = 7000Hz,
         num_coherently_integrated_code_periods = 1,
         num_noncoherent_integrations = 1,
         fft_flag = FFTL.ESTIMATE,
     )
 
-    result_with_if    = only(acquire!(plan, ComplexF32.(samples), [prn]; interm_freq))
-    result_without_if = only(acquire!(plan, ComplexF32.(samples), [prn]; interm_freq = 0.0Hz))
+    result_with_if    = only(acquire!(plan, ComplexF32.(samples), [prn]; intermediate_frequency))
+    result_without_if = only(acquire!(plan, ComplexF32.(samples), [prn]; intermediate_frequency = 0.0Hz))
 
     @test result_with_if.code_phase ≈ code_phase atol = 1.5
     @test result_with_if.prn == prn
@@ -100,30 +100,30 @@ end
 
 @testset "acquire! — multiple PRNs in one call" begin
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
+    sampling_frequency = 2.048e6Hz
 
     gen1 = generate_test_signal(signal, 1;
         num_samples = 2048, carrier_doppler = 1000Hz, code_phase = 200.0,
-        sampling_freq, interm_freq = 0.0Hz, cn0 = 45, seed = 10)
+        sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45, seed = 10)
     gen2 = generate_test_signal(signal, 2;
         num_samples = 2048, carrier_doppler = -500Hz, code_phase = 500.0,
-        sampling_freq, interm_freq = 0.0Hz, cn0 = 45, seed = 10)
+        sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45, seed = 10)
 
     signal_amplitude = 10^(45 / 20)
-    noise_amplitude  = 10^(10 * log10(ustrip(Hz, sampling_freq)) / 20)
+    noise_amplitude  = 10^(10 * log10(ustrip(Hz, sampling_frequency)) / 20)
     Random.seed!(42)
     single_noise  = randn(ComplexF64, 2048) * noise_amplitude
     clean_prn1    = gen1.carrier .* gen1.code * signal_amplitude
     clean_prn2    = gen2.carrier .* gen2.code * signal_amplitude
     mixed_signal  = ComplexF32.(clean_prn1 .+ clean_prn2 .+ single_noise)
 
-    plan = plan_acquire(signal, sampling_freq, [1, 2];
+    plan = plan_acquire(signal, sampling_frequency, [1, 2];
         min_doppler_coverage = 7000Hz,
         num_coherently_integrated_code_periods = 1,
         num_noncoherent_integrations = 1,
         fft_flag = FFTL.ESTIMATE,
     )
-    results = acquire!(plan, mixed_signal, [1, 2]; interm_freq = 0.0Hz)
+    results = acquire!(plan, mixed_signal, [1, 2]; intermediate_frequency = 0.0Hz)
 
     @test length(results) == 2
     r1 = only(filter(r -> r.prn == 1, results))
@@ -141,13 +141,13 @@ end
     # both results are produced, the planted PRN is found, and every scratch
     # slot returns to the pool.
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
-    plan = plan_acquire(signal, sampling_freq, [1, 2];
+    sampling_frequency = 2.048e6Hz
+    plan = plan_acquire(signal, sampling_frequency, [1, 2];
         num_noncoherent_integrations = 2, fft_flag = FFTL.ESTIMATE)
     (; samples, code_phase) = generate_test_signal(signal, 1;
         num_samples = 2 * plan.samples_per_code, carrier_doppler = 800Hz, code_phase = 150.0,
-        sampling_freq, interm_freq = 0.0Hz, cn0 = 45, seed = 13)
-    results = acquire!(plan, ComplexF32.(samples), [1, 2]; interm_freq = 0.0Hz)
+        sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45, seed = 13)
+    results = acquire!(plan, ComplexF32.(samples), [1, 2]; intermediate_frequency = 0.0Hz)
     @test length(results) == 2
     @test is_detected(results[1])
     @test results[1].code_phase ≈ code_phase atol = 1.5
@@ -162,7 +162,7 @@ end
     # outcome must match — confirms the new sequential path is semantically
     # equivalent to the multistep path on shared work.
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
+    sampling_frequency = 2.048e6Hz
     prn = 1
     code_phase_true = 100.0
     doppler_true = 1500Hz
@@ -172,19 +172,19 @@ end
     (; samples) = generate_test_signal(signal, prn;
         num_samples = 2 * 2048,                  # two full code periods
         carrier_doppler = doppler_true, code_phase = code_phase_true,
-        sampling_freq = sampling_freq, interm_freq = 0.0Hz, cn0 = CN0_dbhz, seed = seed)
+        sampling_frequency = sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = CN0_dbhz, seed = seed)
 
-    plan_seq = plan_acquire(signal, sampling_freq, [prn];
+    plan_seq = plan_acquire(signal, sampling_frequency, [prn];
         num_coherently_integrated_code_periods = 1, num_noncoherent_integrations = 1,
         fft_flag = FFTL.ESTIMATE)
-    plan_multi = plan_acquire(signal, sampling_freq, [prn];
+    plan_multi = plan_acquire(signal, sampling_frequency, [prn];
         num_coherently_integrated_code_periods = 1, num_noncoherent_integrations = 2,
         fft_flag = FFTL.ESTIMATE)
 
     # Sequential path consumes the first segment.
-    res_seq = only(acquire!(plan_seq, ComplexF32.(samples[1:2048]), [prn]; interm_freq = 0.0Hz))
+    res_seq = only(acquire!(plan_seq, ComplexF32.(samples[1:2048]), [prn]; intermediate_frequency = 0.0Hz))
     # Multistep path consumes both segments.
-    res_multi = only(acquire!(plan_multi, ComplexF32.(samples), [prn]; interm_freq = 0.0Hz))
+    res_multi = only(acquire!(plan_multi, ComplexF32.(samples), [prn]; intermediate_frequency = 0.0Hz))
 
     @test is_detected(res_seq)
     @test is_detected(res_multi)
@@ -203,7 +203,7 @@ end
     # while code phase (the column axis) stayed correct. The pilot path shifts
     # once and is unaffected, so existing tests (all num_bits == 1) missed it.
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
+    sampling_frequency = 2.048e6Hz
     prn = 1
     doppler_true = 500Hz      # on the 25 Hz Doppler grid
     code_phase_true = 100.0
@@ -213,14 +213,14 @@ end
     (; samples) = generate_test_signal(signal, prn;
         num_samples = 40 * 2048,
         carrier_doppler = doppler_true, code_phase = code_phase_true,
-        sampling_freq, interm_freq = 0.0Hz, cn0 = 45)
+        sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45)
 
-    plan = plan_acquire(signal, sampling_freq, [prn];
+    plan = plan_acquire(signal, sampling_frequency, [prn];
         num_coherently_integrated_code_periods = 40, num_noncoherent_integrations = 1,
         fft_flag = FFTL.ESTIMATE)
     @test plan.num_bits == 2   # confirm the sign-search path is exercised
 
-    result = acquire!(plan, samples, prn; interm_freq = 0.0Hz)
+    result = acquire!(plan, samples, prn; intermediate_frequency = 0.0Hz)
 
     @test is_detected(result)
     @test result.code_phase ≈ code_phase_true atol = 1.0
@@ -231,9 +231,9 @@ end
 
 @testset "acquire! — PRN not in plan throws ArgumentError" begin
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
+    sampling_frequency = 2.048e6Hz
 
-    plan = plan_acquire(signal, sampling_freq, [1, 2];
+    plan = plan_acquire(signal, sampling_frequency, [1, 2];
         fft_flag = FFTL.ESTIMATE)
     samples = randn(ComplexF32, plan.samples_per_code)
 
@@ -243,27 +243,27 @@ end
 
 @testset "acquire! — single-PRN Integer convenience overload" begin
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
+    sampling_frequency = 2.048e6Hz
     prn = 1
 
-    plan = plan_acquire(signal, sampling_freq, [prn]; fft_flag = FFTL.ESTIMATE)
+    plan = plan_acquire(signal, sampling_frequency, [prn]; fft_flag = FFTL.ESTIMATE)
     (; samples) = generate_test_signal(signal, prn;
-        num_samples = plan.samples_per_code, sampling_freq, interm_freq = 0.0Hz, cn0 = 45)
+        num_samples = plan.samples_per_code, sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45)
 
     # Integer (not vector) argument hits the single-PRN acquire! overload
-    result = acquire!(plan, ComplexF32.(samples), prn; interm_freq = 0.0Hz)
+    result = acquire!(plan, ComplexF32.(samples), prn; intermediate_frequency = 0.0Hz)
     @test result isa AcquisitionResults
     @test result.prn == prn
 end
 
 @testset "AcquisitionResults show methods" begin
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
+    sampling_frequency = 2.048e6Hz
 
-    plan = plan_acquire(signal, sampling_freq, [1, 2]; fft_flag = FFTL.ESTIMATE)
+    plan = plan_acquire(signal, sampling_frequency, [1, 2]; fft_flag = FFTL.ESTIMATE)
     (; samples) = generate_test_signal(signal, 1;
-        num_samples = plan.samples_per_code, sampling_freq, interm_freq = 0.0Hz, cn0 = 45)
-    results = acquire!(plan, ComplexF32.(samples), [1, 2]; interm_freq = 0.0Hz)
+        num_samples = plan.samples_per_code, sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45)
+    results = acquire!(plan, ComplexF32.(samples), [1, 2]; intermediate_frequency = 0.0Hz)
 
     # Single-result show: uses the (io, MIME"text/plain", AcquisitionResults) method
     io = IOBuffer()
@@ -289,12 +289,12 @@ end
 
 @testset "acquire! — non-batched pilot path (num_doppler_bins > 320)" begin
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
+    sampling_frequency = 2.048e6Hz
     prn = 1
 
     # 40 ms coherent × min_doppler=10kHz forces num_blocks=16, num_doppler_bins=640,
     # which takes the individual-column-FFT branch in _accumulate_noncoherent_integration_step!.
-    plan = plan_acquire(signal, sampling_freq, [prn];
+    plan = plan_acquire(signal, sampling_frequency, [prn];
         min_doppler_coverage = 10_000Hz,
         num_coherently_integrated_code_periods = 40,
         bit_edge_search_steps = 1,
@@ -304,9 +304,9 @@ end
 
     (; samples) = generate_test_signal(signal, prn;
         num_samples = 40 * plan.samples_per_code,
-        sampling_freq, interm_freq = 0.0Hz, cn0 = 45)
+        sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45)
 
-    result = only(acquire!(plan, ComplexF32.(samples), [prn]; interm_freq = 0.0Hz))
+    result = only(acquire!(plan, ComplexF32.(samples), [prn]; intermediate_frequency = 0.0Hz))
     @test result isa AcquisitionResults
     @test is_detected(result)
 end
@@ -318,10 +318,10 @@ end
     # path, and a 20 kHz doppler request inflates num_blocks past 32 →
     # num_doppler_bins = 10 × num_blocks > 320.
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
+    sampling_frequency = 2.048e6Hz
     prn = 1
 
-    plan = plan_acquire(signal, sampling_freq, [prn];
+    plan = plan_acquire(signal, sampling_frequency, [prn];
         min_doppler_coverage = 20_000Hz,
         num_coherently_integrated_code_periods = 10,
         bit_edge_search_steps = 1,
@@ -333,9 +333,9 @@ end
     (; samples) = generate_test_signal(signal, prn;
         num_samples = 10 * plan.samples_per_code,
         carrier_doppler = 1500Hz, code_phase = 100.0,
-        sampling_freq, interm_freq = 0.0Hz, cn0 = 45)
+        sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45)
 
-    result = only(acquire!(plan, ComplexF32.(samples), [prn]; interm_freq = 0.0Hz))
+    result = only(acquire!(plan, ComplexF32.(samples), [prn]; intermediate_frequency = 0.0Hz))
     @test is_detected(result)
     @test abs(result.code_phase - 100.0) < 1.0
 end
@@ -344,7 +344,7 @@ end
     signal = GPSL1CA()
 
     out = generate_test_signal(signal, 1;
-        num_samples = 4096, sampling_freq = 4e6Hz,
+        num_samples = 4096, sampling_frequency = 4e6Hz,
         unit_noise_power = true, cn0 = 45)
     @test out.samples isa Vector{ComplexF64}
     @test length(out.samples) == 4096
@@ -357,17 +357,17 @@ end
     # the fly (col_sums_buf is only allocated for this estimator at N_nc=1).
     # Detection and peak location must agree with the default estimator.
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
+    sampling_frequency = 2.048e6Hz
     prn = 4
     (; samples) = generate_test_signal(signal, prn;
         num_samples = 2048, carrier_doppler = 750Hz, code_phase = 512.0,
-        sampling_freq, interm_freq = 0.0Hz, cn0 = 45, seed = 21)
+        sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45, seed = 21)
 
-    plan_gm = plan_acquire(signal, sampling_freq, [prn];
+    plan_gm = plan_acquire(signal, sampling_frequency, [prn];
         noise_estimator = GlobalMeanNoiseEstimator(), fft_flag = FFTL.ESTIMATE)
-    plan_or = plan_acquire(signal, sampling_freq, [prn]; fft_flag = FFTL.ESTIMATE)
-    res_gm = acquire!(plan_gm, ComplexF32.(samples), prn; interm_freq = 0.0Hz)
-    res_or = acquire!(plan_or, ComplexF32.(samples), prn; interm_freq = 0.0Hz)
+    plan_or = plan_acquire(signal, sampling_frequency, [prn]; fft_flag = FFTL.ESTIMATE)
+    res_gm = acquire!(plan_gm, ComplexF32.(samples), prn; intermediate_frequency = 0.0Hz)
+    res_or = acquire!(plan_or, ComplexF32.(samples), prn; intermediate_frequency = 0.0Hz)
 
     @test is_detected(res_gm)
     @test res_gm.code_phase == res_or.code_phase           # same peak cell
@@ -382,10 +382,10 @@ end
     # runs in ten. One ULP of headroom still pins the estimator; anything
     # actually wrong is orders of magnitude away.
     res_stored = acquire!(plan_gm, ComplexF32.(samples), prn;
-        interm_freq = 0.0Hz, store_power_bins = true)
+        intermediate_frequency = 0.0Hz, store_power_bins = true)
     col_sums = zeros(Float32, plan_gm.samples_per_code_eff)
     sp, np, _, _ = Acquisition.est_signal_noise_power(res_stored.power_bins,
-        ustrip(Hz, sampling_freq), ustrip(Hz, get_chip_rate(signal)),
+        ustrip(Hz, sampling_frequency), ustrip(Hz, get_chip_rate(signal)),
         col_sums, GlobalMeanNoiseEstimator())
     @test res_stored.noise_power ≈ Float32(np) rtol = 4eps(Float32)
 end
@@ -398,16 +398,16 @@ end
     # secondary-code rotation path.
     @testset "simple path" begin
         signal = GPSL1CA()
-        sampling_freq = 2.048e6Hz
+        sampling_frequency = 2.048e6Hz
         prn = 2
         (; samples) = generate_test_signal(signal, prn;
             num_samples = 2048, carrier_doppler = 250Hz, code_phase = 300.7,
-            sampling_freq, interm_freq = 0.0Hz, cn0 = 45, seed = 5)
-        plan = plan_acquire(signal, sampling_freq, [prn]; fft_flag = FFTL.ESTIMATE)
+            sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45, seed = 5)
+        plan = plan_acquire(signal, sampling_frequency, [prn]; fft_flag = FFTL.ESTIMATE)
         r_nostore = acquire!(plan, ComplexF32.(samples), prn;
-            interm_freq = 0.0Hz, subsample_interpolation = true)
+            intermediate_frequency = 0.0Hz, subsample_interpolation = true)
         r_store = acquire!(plan, ComplexF32.(samples), prn;
-            interm_freq = 0.0Hz, subsample_interpolation = true, store_power_bins = true)
+            intermediate_frequency = 0.0Hz, subsample_interpolation = true, store_power_bins = true)
         # The recompute rebuilds the peak's tile with the same transform the
         # streamed pass used (`_build_doppler_tile_t!`), so the interpolation
         # neighbours — and hence the estimates — are bit-identical.
@@ -416,18 +416,18 @@ end
     end
     @testset "rotation path (L5I NH10)" begin
         signal = GPSL5I()
-        sampling_freq = 10.24e6Hz
+        sampling_frequency = 10.24e6Hz
         prn = 1
         (; samples) = generate_test_signal(signal, prn;
             num_samples = 10 * 10240, carrier_doppler = 850Hz, code_phase = 5115.3,
-            sampling_freq, interm_freq = 0.0Hz, cn0 = 45, seed = 6)
-        plan = plan_acquire(signal, sampling_freq, [prn];
+            sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45, seed = 6)
+        plan = plan_acquire(signal, sampling_frequency, [prn];
             num_coherently_integrated_code_periods = 10, fft_flag = FFTL.ESTIMATE)
         @test plan.num_secondary_rotations == 10   # rotation search active
         r_nostore = acquire!(plan, ComplexF32.(samples), prn;
-            interm_freq = 0.0Hz, subsample_interpolation = true)
+            intermediate_frequency = 0.0Hz, subsample_interpolation = true)
         r_store = acquire!(plan, ComplexF32.(samples), prn;
-            interm_freq = 0.0Hz, subsample_interpolation = true, store_power_bins = true)
+            intermediate_frequency = 0.0Hz, subsample_interpolation = true, store_power_bins = true)
         @test is_detected(r_nostore)
         # The recompute runs the same tile kernel (`_sign_search_tile_power!`) as
         # the streamed pass, so the estimates are bit-identical here too.
@@ -441,16 +441,16 @@ end
     # Covers the N_nc>1 extraction: interpolation neighbours read from the
     # per-PRN accumulation matrix, and the stored copy of that matrix.
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
+    sampling_frequency = 2.048e6Hz
     prn = 1
     true_cp = 700.4
     (; samples) = generate_test_signal(signal, prn;
         num_samples = 4 * 2048, carrier_doppler = 500Hz, code_phase = true_cp,
-        sampling_freq, interm_freq = 0.0Hz, cn0 = 42, seed = 8)
-    plan = plan_acquire(signal, sampling_freq, [prn];
+        sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 42, seed = 8)
+    plan = plan_acquire(signal, sampling_frequency, [prn];
         num_noncoherent_integrations = 4, fft_flag = FFTL.ESTIMATE)
     result = acquire!(plan, ComplexF32.(samples), prn;
-        interm_freq = 0.0Hz, subsample_interpolation = true, store_power_bins = true)
+        intermediate_frequency = 0.0Hz, subsample_interpolation = true, store_power_bins = true)
     @test is_detected(result)
     @test result.code_phase ≈ true_cp atol = 1.0
     @test result.power_bins isa Matrix{Float32}
@@ -459,7 +459,7 @@ end
     # The stored surface is reproducible: a second identical run stores the
     # same accumulated power.
     result2 = acquire!(plan, ComplexF32.(samples), prn;
-        interm_freq = 0.0Hz, subsample_interpolation = true, store_power_bins = true)
+        intermediate_frequency = 0.0Hz, subsample_interpolation = true, store_power_bins = true)
     @test result2.power_bins == result.power_bins
     @test result2.power_bins === plan.result_buffers[1]   # cached buffer reused
 end
@@ -478,7 +478,7 @@ end
     # error inside the Doppler bin, phase noise), which is a few dB here.
     signal = GPSL1CA()
     prn = 1
-    sampling_freq = 4e6Hz
+    sampling_frequency = 4e6Hz
     true_cn0 = 45
     lengths = (1, 2, 4, 5, 10)
 
@@ -495,17 +495,17 @@ end
                 num_samples = 4000 * n + 100,
                 carrier_doppler = 1234Hz,
                 code_phase = (k - 0.5) * 1023 / 8 + 0.137,
-                sampling_freq,
-                interm_freq = 0.0Hz,
+                sampling_frequency,
+                intermediate_frequency = 0.0Hz,
                 cn0 = true_cn0,
             )
             plan = plan_acquire(
-                signal, sampling_freq, [prn];
+                signal, sampling_frequency, [prn];
                 num_coherently_integrated_code_periods = n,
                 min_doppler_coverage = 25_000Hz,
                 fft_flag = FFTL.ESTIMATE,
             )
-            res = acquire!(plan, samples, prn; interm_freq = 0.0Hz,
+            res = acquire!(plan, samples, prn; intermediate_frequency = 0.0Hz,
                            subsample_interpolation = true)
             is_detected(res) && push!(estimates, res.cn0)
         end
@@ -543,22 +543,22 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
 # spawned chunks `put!` concurrently. CI runs the suite both ways.
 @testset "acquire_stream!" begin
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
+    sampling_frequency = 2.048e6Hz
     prns = collect(1:8)
 
-    (; samples, code_phase, interm_freq) = generate_test_signal(
+    (; samples, code_phase, intermediate_frequency) = generate_test_signal(
         signal, 1;
         num_samples = 2048, carrier_doppler = 1000Hz, code_phase = 200.0,
-        sampling_freq, interm_freq = 0.0Hz, cn0 = 45, seed = 21,
+        sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45, seed = 21,
     )
-    plan = plan_acquire(signal, sampling_freq, prns; fft_flag = FFTL.ESTIMATE)
+    plan = plan_acquire(signal, sampling_frequency, prns; fft_flag = FFTL.ESTIMATE)
 
     # Reference: the same search through the batch API.
-    batch = acquire!(plan, samples, prns; interm_freq)
+    batch = acquire!(plan, samples, prns; intermediate_frequency)
     reference = [(r.prn, r.code_phase, r.cn0, r.peak_to_noise_ratio) for r in batch]
 
     @testset "streams every result, and the same ones the batch API returns" begin
-        streamed = collect(acquire_stream!(plan, samples, prns; interm_freq))
+        streamed = collect(acquire_stream!(plan, samples, prns; intermediate_frequency))
 
         @test length(streamed) == length(prns)
         # Completion order, not `prns` order — so compare as a set of PRNs. Sorting a
@@ -574,14 +574,14 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
     end
 
     @testset "the channel is concretely typed, and the call is type stable" begin
-        channel = @inferred acquire_stream!(plan, samples, prns; interm_freq)
+        channel = @inferred acquire_stream!(plan, samples, prns; intermediate_frequency)
         @test channel isa Channel{eltype(batch)}
         @test isconcretetype(eltype(channel))
         collect(channel)
     end
 
     @testset "closes itself when the search is done, and frees the plan" begin
-        channel = acquire_stream!(plan, samples, prns; interm_freq)
+        channel = acquire_stream!(plan, samples, prns; intermediate_frequency)
         # No `close` from the caller, no counting of results: the loop ends because
         # the channel does.
         count = 0
@@ -593,7 +593,7 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
         # Iteration ending means the search task is done, so the plan is free again
         # and can be handed straight to the next call.
         @test length(plan.scratch_free) == length(plan.thread_scratch)
-        @test getfield.(acquire!(plan, samples, prns; interm_freq), :prn) == prns
+        @test getfield.(acquire!(plan, samples, prns; intermediate_frequency), :prn) == prns
     end
 
     @testset "results are consumable while the search is still running" begin
@@ -602,7 +602,7 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
         # one proves incremental delivery. And with one result taken at most two can
         # have been published, so ≥5 of the 8 PRNs are still outstanding — the search
         # cannot have finished, which is what an open channel then means.
-        channel = acquire_stream!(plan, samples, prns; interm_freq, buffer_size = 1)
+        channel = acquire_stream!(plan, samples, prns; intermediate_frequency, buffer_size = 1)
         first_result = take!(channel)
         @test first_result.prn in prns
         @test isopen(channel)
@@ -611,14 +611,14 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
     end
 
     @testset "multistep path (N_nc > 1)" begin
-        plan_ms = plan_acquire(signal, sampling_freq, prns;
+        plan_ms = plan_acquire(signal, sampling_frequency, prns;
             num_noncoherent_integrations = 2, fft_flag = FFTL.ESTIMATE)
         long_signal = generate_test_signal(signal, 1;
             num_samples = 2 * 2048, carrier_doppler = 800Hz, code_phase = 150.0,
-            sampling_freq, interm_freq = 0.0Hz, cn0 = 45, seed = 13).samples
+            sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45, seed = 13).samples
 
         streamed = collect(acquire_stream!(plan_ms, ComplexF32.(long_signal), prns;
-            interm_freq = 0.0Hz))
+            intermediate_frequency = 0.0Hz))
 
         @test sort(getfield.(streamed, :prn)) == prns
         @test is_detected(only(filter(r -> r.prn == 1, streamed)))
@@ -628,8 +628,8 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
     @testset "bad arguments throw at the call site" begin
         # Checked before the search is spawned, so the caller sees them where they
         # were made instead of out of the channel.
-        @test_throws ArgumentError acquire_stream!(plan, samples, [1, 99]; interm_freq)
-        @test_throws ArgumentError acquire_stream!(plan, samples[1:100], prns; interm_freq)
+        @test_throws ArgumentError acquire_stream!(plan, samples, [1, 99]; intermediate_frequency)
+        @test_throws ArgumentError acquire_stream!(plan, samples[1:100], prns; intermediate_frequency)
     end
 
     @testset "a failed search closes the channel with its exception" begin
@@ -637,11 +637,11 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
         # going to fill. `FaultySignal` fails inside the search task, the way a bug
         # in the correlation would.
         channel = acquire_stream!(plan, FaultySignal(ComplexF32.(samples)), prns;
-            interm_freq)
+            intermediate_frequency)
         @test_throws Exception collect(channel)
         @test !isopen(channel)
         @test length(plan.scratch_free) == length(plan.thread_scratch)
-        @test getfield.(acquire!(plan, samples, prns; interm_freq), :prn) == prns
+        @test getfield.(acquire!(plan, samples, prns; intermediate_frequency), :prn) == prns
     end
 
     @testset "closing the channel early unwinds the search" begin
@@ -654,12 +654,12 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
         # the per-PRN `finally`, before the chunk publishes and long before `@sync`
         # joins, so a full pool does not mean the search is over. `in_use` is cleared
         # by the search task itself on its way out, so it does.
-        channel = acquire_stream!(plan, samples, prns; interm_freq, buffer_size = 1)
+        channel = acquire_stream!(plan, samples, prns; intermediate_frequency, buffer_size = 1)
         take!(channel)
         close(channel)
         @test timedwait(() -> !plan.in_use[], 10.0) === :ok
         @test length(plan.scratch_free) == length(plan.thread_scratch)
-        @test getfield.(acquire!(plan, samples, prns; interm_freq), :prn) == prns
+        @test getfield.(acquire!(plan, samples, prns; intermediate_frequency), :prn) == prns
     end
 
     @testset "one plan serves any number of streams, one after another" begin
@@ -679,12 +679,12 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
             segment = generate_test_signal(
                 signal, prn;
                 num_samples = 2048, carrier_doppler = doppler, code_phase = expected_code_phase,
-                sampling_freq, interm_freq = 0.0Hz, cn0 = 45, seed = 21,
+                sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45, seed = 21,
             ).samples
-            expected = acquire!(plan, segment, prns; interm_freq)
+            expected = acquire!(plan, segment, prns; intermediate_frequency)
             expected_fields = [(r.prn, r.code_phase, r.cn0) for r in expected]
 
-            streamed = collect(acquire_stream!(plan, segment, prns; interm_freq))
+            streamed = collect(acquire_stream!(plan, segment, prns; intermediate_frequency))
 
             @test sort(getfield.(streamed, :prn)) == prns
             for r in streamed
@@ -710,14 +710,14 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
         other = generate_test_signal(
             signal, 5;
             num_samples = 2048, carrier_doppler = -500Hz, code_phase = 700.0,
-            sampling_freq, interm_freq = 0.0Hz, cn0 = 45, seed = 21,
+            sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45, seed = 21,
         ).samples
 
-        first_channel = acquire_stream!(plan, samples, prns; interm_freq)
+        first_channel = acquire_stream!(plan, samples, prns; intermediate_frequency)
         # Default `buffer_size` holds every result, so the search finishes — and closes
         # the channel — without anything being taken from it.
         @test timedwait(() -> !isopen(first_channel), 10.0) === :ok
-        second = collect(acquire_stream!(plan, other, prns; interm_freq))
+        second = collect(acquire_stream!(plan, other, prns; intermediate_frequency))
         first = collect(first_channel)   # read only now, one search later
 
         @test only(filter(r -> r.prn == 1, first)).code_phase ≈ code_phase atol = 1.0
@@ -727,8 +727,8 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
     end
 
     @testset "acquire_stream plans and streams in one call" begin
-        streamed = collect(acquire_stream(signal, samples, sampling_freq, [1, 2];
-            interm_freq, fft_flag = FFTL.ESTIMATE))
+        streamed = collect(acquire_stream(signal, samples, sampling_frequency, [1, 2];
+            intermediate_frequency, fft_flag = FFTL.ESTIMATE))
         @test sort(getfield.(streamed, :prn)) == [1, 2]
         @test is_detected(only(filter(r -> r.prn == 1, streamed)))
     end
@@ -742,43 +742,43 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
     @testset "a second search on a plan still streaming throws" begin
         # Before this was enforced, the two searches wrote the same buffers and the
         # batch call returned results for the wrong PRNs — silently.
-        channel = acquire_stream!(plan, samples, prns; interm_freq, buffer_size = 1)
-        @test_throws Acquisition.PlanInUseError acquire!(plan, samples, prns; interm_freq)
-        @test_throws Acquisition.PlanInUseError acquire_stream!(plan, samples, prns; interm_freq)
+        channel = acquire_stream!(plan, samples, prns; intermediate_frequency, buffer_size = 1)
+        @test_throws Acquisition.PlanInUseError acquire!(plan, samples, prns; intermediate_frequency)
+        @test_throws Acquisition.PlanInUseError acquire_stream!(plan, samples, prns; intermediate_frequency)
         for _ in channel
         end
         @test timedwait(() -> !plan.in_use[], 10.0) === :ok
-        @test getfield.(acquire!(plan, samples, prns; interm_freq), :prn) == prns
+        @test getfield.(acquire!(plan, samples, prns; intermediate_frequency), :prn) == prns
     end
 
     @testset "an abandoned bare-channel stream is loud, not corrupting" begin
         # `break` out of `for result in acquire_stream!(...)` does NOT close the
         # channel, so the search is still running and still owns the plan. The point
         # is that the next call says so instead of interleaving with it.
-        own_plan = plan_acquire(signal, sampling_freq, prns; fft_flag = FFTL.ESTIMATE)
-        channel = acquire_stream!(own_plan, samples, prns; interm_freq, buffer_size = 1)
+        own_plan = plan_acquire(signal, sampling_frequency, prns; fft_flag = FFTL.ESTIMATE)
+        channel = acquire_stream!(own_plan, samples, prns; intermediate_frequency, buffer_size = 1)
         for _ in channel
             break
         end
-        @test_throws Acquisition.PlanInUseError acquire!(own_plan, samples, prns; interm_freq)
+        @test_throws Acquisition.PlanInUseError acquire!(own_plan, samples, prns; intermediate_frequency)
     end
 
     @testset "the do-block form frees the plan however the block is left" begin
         # `break`, an early `return`, and a throw all have to reach the same teardown:
         # cancel, drain what is in flight, join the search.
-        own_plan = plan_acquire(signal, sampling_freq, prns; fft_flag = FFTL.ESTIMATE)
+        own_plan = plan_acquire(signal, sampling_frequency, prns; fft_flag = FFTL.ESTIMATE)
 
-        acquire_stream!(own_plan, samples, prns; interm_freq, buffer_size = 1) do results
+        acquire_stream!(own_plan, samples, prns; intermediate_frequency, buffer_size = 1) do results
             for _ in results
                 break
             end
         end
         @test !own_plan.in_use[]
         @test length(own_plan.scratch_free) == length(own_plan.thread_scratch)
-        @test getfield.(acquire!(own_plan, samples, prns; interm_freq), :prn) == prns
+        @test getfield.(acquire!(own_plan, samples, prns; intermediate_frequency), :prn) == prns
 
         # Early return out of the consuming function.
-        first_detected(p) = acquire_stream!(p, samples, prns; interm_freq,
+        first_detected(p) = acquire_stream!(p, samples, prns; intermediate_frequency,
                                             buffer_size = 1) do results
             for r in results
                 is_detected(r) && return r.prn
@@ -791,65 +791,65 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
         # A consumer that throws: its exception is the one that surfaces, not anything
         # from tearing the search down behind it.
         @test_throws "consumer failed" acquire_stream!(own_plan, samples, prns;
-                                                       interm_freq, buffer_size = 1) do results
+                                                       intermediate_frequency, buffer_size = 1) do results
             for _ in results
                 error("consumer failed")
             end
         end
         @test !own_plan.in_use[]
-        @test getfield.(acquire!(own_plan, samples, prns; interm_freq), :prn) == prns
+        @test getfield.(acquire!(own_plan, samples, prns; intermediate_frequency), :prn) == prns
     end
 
     @testset "the do-block form returns the block's value and still streams fully" begin
-        own_plan = plan_acquire(signal, sampling_freq, prns; fft_flag = FFTL.ESTIMATE)
-        got = acquire_stream!(own_plan, samples, prns; interm_freq) do results
+        own_plan = plan_acquire(signal, sampling_frequency, prns; fft_flag = FFTL.ESTIMATE)
+        got = acquire_stream!(own_plan, samples, prns; intermediate_frequency) do results
             sort([r.prn for r in results])
         end
         @test got == prns
         @test !own_plan.in_use[]
 
         # And the convenience wrapper that plans for you.
-        scoped = acquire_stream(signal, samples, sampling_freq, [1, 2];
-                                interm_freq, fft_flag = FFTL.ESTIMATE) do results
+        scoped = acquire_stream(signal, samples, sampling_frequency, [1, 2];
+                                intermediate_frequency, fft_flag = FFTL.ESTIMATE) do results
             sort([r.prn for r in results])
         end
         @test scoped == [1, 2]
     end
 
     @testset "a failed search still frees the plan" begin
-        own_plan = plan_acquire(signal, sampling_freq, prns; fft_flag = FFTL.ESTIMATE)
+        own_plan = plan_acquire(signal, sampling_frequency, prns; fft_flag = FFTL.ESTIMATE)
         channel = acquire_stream!(own_plan, FaultySignal(ComplexF32.(samples)), prns;
-            interm_freq)
+            intermediate_frequency)
         @test_throws Exception collect(channel)
         @test timedwait(() -> !own_plan.in_use[], 10.0) === :ok
-        @test getfield.(acquire!(own_plan, samples, prns; interm_freq), :prn) == prns
+        @test getfield.(acquire!(own_plan, samples, prns; intermediate_frequency), :prn) == prns
     end
 
     @testset "bad arguments leave the plan free" begin
         # The claim is taken before the channel is built, so anything that throws
         # between the two has to hand it back — otherwise one bad call would brick
         # the plan for good.
-        own_plan = plan_acquire(signal, sampling_freq, prns; fft_flag = FFTL.ESTIMATE)
-        @test_throws ArgumentError acquire_stream!(own_plan, samples, [1, 99]; interm_freq)
+        own_plan = plan_acquire(signal, sampling_frequency, prns; fft_flag = FFTL.ESTIMATE)
+        @test_throws ArgumentError acquire_stream!(own_plan, samples, [1, 99]; intermediate_frequency)
         @test !own_plan.in_use[]
-        @test_throws Exception acquire_stream!(own_plan, samples, prns; interm_freq,
+        @test_throws Exception acquire_stream!(own_plan, samples, prns; intermediate_frequency,
             buffer_size = -1)
         @test !own_plan.in_use[]
-        # A unitless `interm_freq` is an easy slip; it has to throw here, not later out
+        # A unitless `intermediate_frequency` is an easy slip; it has to throw here, not later out
         # of the iteration on another task.
         @test_throws Unitful.DimensionError acquire_stream!(own_plan, samples, prns;
-            interm_freq = 5.0)
+            intermediate_frequency = 5.0)
         @test !own_plan.in_use[]
-        @test getfield.(acquire!(own_plan, samples, prns; interm_freq), :prn) == prns
+        @test getfield.(acquire!(own_plan, samples, prns; intermediate_frequency), :prn) == prns
     end
 
     @testset "cancellation stops the search at the next PRN boundary" begin
         # The flag is checked before each PRN, so a cancelled stream does not run a
         # further full PRN search per chunk on its way out. With a capacity-1 channel
         # over 8 PRNs, stopping after the first result must leave most PRNs unsearched.
-        own_plan = plan_acquire(signal, sampling_freq, prns; fft_flag = FFTL.ESTIMATE)
+        own_plan = plan_acquire(signal, sampling_frequency, prns; fft_flag = FFTL.ESTIMATE)
         published = 0
-        acquire_stream!(own_plan, samples, prns; interm_freq, buffer_size = 1) do results
+        acquire_stream!(own_plan, samples, prns; intermediate_frequency, buffer_size = 1) do results
             for _ in results
                 published += 1
                 break
@@ -859,6 +859,6 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
         @test !own_plan.in_use[]
         # Whatever was in flight was discarded by the drain, and the plan is clean.
         @test length(own_plan.scratch_free) == length(own_plan.thread_scratch)
-        @test getfield.(acquire!(own_plan, samples, prns; interm_freq), :prn) == prns
+        @test getfield.(acquire!(own_plan, samples, prns; intermediate_frequency), :prn) == prns
     end
 end

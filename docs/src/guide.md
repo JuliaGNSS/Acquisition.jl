@@ -11,21 +11,21 @@ import Unitful: Hz
 signal = GPSL1CA()
 
 # Generate synthetic GPS L1 C/A samples for PRN 1 (1 ms, 4 MHz)
-(; samples, sampling_freq, interm_freq) = Acquisition.generate_test_signal(signal, 1;
-    num_samples = 4096, sampling_freq = 4e6Hz)
+(; samples, sampling_frequency, intermediate_frequency) = Acquisition.generate_test_signal(signal, 1;
+    num_samples = 4096, sampling_frequency = 4e6Hz)
 nothing # hide
 ```
 
 Acquire multiple PRNs at once:
 
 ```@example guide
-results = acquire(signal, samples, sampling_freq, 1:3; interm_freq)
+results = acquire(signal, samples, sampling_frequency, 1:3; intermediate_frequency)
 ```
 
 Acquire a single PRN:
 
 ```@example guide
-result = acquire(signal, samples, sampling_freq, 1; interm_freq)
+result = acquire(signal, samples, sampling_frequency, 1; intermediate_frequency)
 ```
 
 Each result contains:
@@ -139,14 +139,14 @@ Pick the estimator at plan-construction time:
 
 ```julia
 # Default — robust to Doppler-conditional noise variation
-plan = plan_acquire(signal, sampling_freq, prns)
+plan = plan_acquire(signal, sampling_frequency, prns)
 
 # Explicit form
-plan = plan_acquire(signal, sampling_freq, prns;
+plan = plan_acquire(signal, sampling_frequency, prns;
     noise_estimator = OppositeRowNoiseEstimator())
 
 # AWGN test path
-plan = plan_acquire(signal, sampling_freq, prns;
+plan = plan_acquire(signal, sampling_frequency, prns;
     noise_estimator = GlobalMeanNoiseEstimator())
 ```
 
@@ -160,9 +160,9 @@ For repeated acquisitions — e.g. tracking many epochs or processing a file —
 a plan once to avoid repeated FFT planning and memory allocation:
 
 ```@example guide
-plan = plan_acquire(signal, sampling_freq, collect(1:3))
+plan = plan_acquire(signal, sampling_frequency, collect(1:3))
 
-results = acquire!(plan, samples, 1:3; interm_freq)
+results = acquire!(plan, samples, 1:3; intermediate_frequency)
 ```
 
 ### Avoiding first-call latency
@@ -200,7 +200,7 @@ make_plan() = plan_acquire(GPSL1CA(), 6.5e6Hz, collect(1:32);
         # not matter.
         n = plan.num_coherently_integrated_code_periods * plan.samples_per_code
         samples = Complex{Int16}.(rand(Int16(-100):Int16(100), n), rand(Int16(-100):Int16(100), n))
-        acquire!(plan, samples, collect(1:32); interm_freq = 0.0Hz)
+        acquire!(plan, samples, collect(1:32); intermediate_frequency = 0.0Hz)
     end
 end
 
@@ -222,7 +222,7 @@ time after all:
 - the entry points you use — call [`acquire_stream!`](@ref) in the workload if that is
   what you use, and pass `store_power_bins` / `subsample_interpolation` if you set them.
 
-The unit of `interm_freq` does not matter: it is converted to `Float64` before the
+The unit of `intermediate_frequency` does not matter: it is converted to `Float64` before the
 search, so `243Hz` and `0.243kHz` share one compilation.
 
 In a script or notebook, where there is no package to precompile, run one
@@ -305,7 +305,7 @@ each result the moment its own PRN finishes, so a consumer can start tracking th
 satellite while the rest of the search is still running:
 
 ```julia
-acquire_stream!(plan, samples, 1:32; interm_freq) do results
+acquire_stream!(plan, samples, 1:32; intermediate_frequency) do results
     for result in results
         is_detected(result) && start_tracking(result)
     end
@@ -322,7 +322,7 @@ search is shut down when the block is left, *however* it is left: a normal retur
 reason to stream in the first place:
 
 ```@example guide
-acquire_stream!(plan, samples, 1:3; interm_freq) do results
+acquire_stream!(plan, samples, 1:3; intermediate_frequency) do results
     for result in results
         is_detected(result) && return result.prn   # stop at the first hit
     end
@@ -335,7 +335,7 @@ block hands back the bare channel, which can be read after the fact like any oth
 as long as it is read to the end:
 
 ```@example guide
-channel = acquire_stream!(plan, samples, 1:3; interm_freq)
+channel = acquire_stream!(plan, samples, 1:3; intermediate_frequency)
 
 [result.prn for result in channel]   # completion order
 ```
@@ -417,13 +417,13 @@ waiting.
 At low CN0, accumulate power across multiple successive signal segments:
 
 ```@example guide
-plan_ni = plan_acquire(signal, sampling_freq, [1];
+plan_ni = plan_acquire(signal, sampling_frequency, [1];
     num_coherently_integrated_code_periods = 10,
     num_noncoherent_integrations = 8)
 
 long_samples = Acquisition.generate_test_signal(signal, 1;
     num_samples = 8 * 10 * 4096,
-    sampling_freq = sampling_freq, cn0 = 30).samples
+    sampling_frequency = sampling_frequency, cn0 = 30).samples
 
 result_ni = acquire!(plan_ni, long_samples, [1])
 nothing # hide
@@ -456,7 +456,7 @@ doppler = 1500Hz
 
 # Generate 2 ms of samples (8000 at 4 MHz) — reused across all three plots
 signal_2ms = Acquisition.generate_test_signal(signal, prn;
-    num_samples = 8000, sampling_freq = fs, carrier_doppler = doppler).samples
+    num_samples = 8000, sampling_frequency = fs, carrier_doppler = doppler).samples
 
 plan_1ms = plan_acquire(signal, fs, [prn])
 result_1ms = acquire!(plan_1ms, signal_2ms[1:4000], [prn]; store_power_bins = true)
@@ -501,7 +501,7 @@ The coherent integration time `T_coh` determines **both** the Doppler resolution
 and the Doppler bin spacing:
 
 ```
-T_coh = num_coherently_integrated_code_periods × samples_per_code / sampling_freq
+T_coh = num_coherently_integrated_code_periods × samples_per_code / sampling_frequency
 
 Doppler bin spacing = 1 / T_coh
 ```
@@ -530,7 +530,7 @@ where `num_blocks` is chosen automatically to cover at least `min_doppler_covera
 on each side (default ±7000 Hz). You can widen the search with:
 
 ```julia
-plan = plan_acquire(signal, sampling_freq, prns; min_doppler_coverage = 10_000Hz)
+plan = plan_acquire(signal, sampling_frequency, prns; min_doppler_coverage = 10_000Hz)
 ```
 
 #### What `min_doppler_coverage` actually guarantees
@@ -541,7 +541,7 @@ The Doppler grid stored in `plan.doppler_bins` is
 range(-coverage/2, step = bin_spacing, length = num_doppler_bins)
 ```
 
-where `coverage = num_blocks × (sampling_freq / samples_per_code)` and
+where `coverage = num_blocks × (sampling_frequency / samples_per_code)` and
 `num_doppler_bins = num_coherently_integrated_code_periods × num_blocks`.
 This is a half-open interval — the grid spans `[-coverage/2, +coverage/2)`,
 so the **highest searched bin is `+coverage/2 - bin_spacing`**, not `+coverage/2`.
@@ -556,7 +556,7 @@ first(plan.doppler_bins) ≤ -min_doppler_coverage
 
 Concretely, with the default `min_doppler_coverage = 7000Hz`:
 
-| `sampling_freq` | `T_coh` | `num_blocks` | `bin_spacing` | `plan.doppler_bins` |
+| `sampling_frequency` | `T_coh` | `num_blocks` | `bin_spacing` | `plan.doppler_bins` |
 |---|---|---|---|---|
 | 2.048 MHz | 1 ms | 16 | 1000 Hz | `-8000 : 1000 : +7000 Hz` |
 | 4 MHz | 1 ms | 16 | 1000 Hz | `-8000 : 1000 : +7000 Hz` |
@@ -779,7 +779,7 @@ Tuning uses a private random stream to generate reproducible `ComplexF32` noise.
 It measures the complete acquisition pipeline, including signal preparation,
 noncoherent steps, secondary/bit hypotheses, parallel PRN tasks, and result
 extraction. `tuning_prns` defaults to the full planned batch. Set
-`tuning_interm_freq` to the intermediate frequency you expect to pass to
+`tuning_intermediate_frequency` to the intermediate frequency you expect to pass to
 `acquire!` (default `0.0Hz`). Other sample types or batch sizes may favor a
 different layout.
 
@@ -804,7 +804,7 @@ without it. `bit_edge_search_steps` must divide the window length in code
 periods:
 
 ```julia
-plan = plan_acquire(signal, sampling_freq, prns;
+plan = plan_acquire(signal, sampling_frequency, prns;
     num_coherently_integrated_code_periods = 10,
     bit_edge_search_steps = 10)
 ```
@@ -833,15 +833,15 @@ planned separately; `plan_acquire` throws if they are mixed.
 
 By default, code phase and Doppler estimates are quantised to the search grid:
 
-- Code-phase step = `1 / sampling_freq` in seconds (0.25 µs at 4 MHz ≈ 0.25 chips for GPS L1 C/A).
+- Code-phase step = `1 / sampling_frequency` in seconds (0.25 µs at 4 MHz ≈ 0.25 chips for GPS L1 C/A).
 - Doppler step = `1 / T_coh` (see the [Doppler Resolution and Coverage](#Doppler-Resolution-and-Coverage) table).
 
 Pass `subsample_interpolation = true` to refine both below the grid spacing
 using a parabolic fit across the peak bin and its two neighbours:
 
 ```@example guide
-result_interp = acquire(signal, samples, sampling_freq, 1;
-    interm_freq, subsample_interpolation = true)
+result_interp = acquire(signal, samples, sampling_frequency, 1;
+    intermediate_frequency, subsample_interpolation = true)
 ```
 
 The fit is only applied when the neighbouring bins exceed `√noise_power`

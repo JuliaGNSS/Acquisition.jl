@@ -52,7 +52,7 @@ function _make_samples(plan, num_accumulations)
     ComplexF32.(randn(ComplexF64, _signal_length(plan, num_accumulations)))
 end
 
-_acquire!(plan, samples, prns) = acquire!(plan, samples, collect(prns); interm_freq = 0.0Hz)
+_acquire!(plan, samples, prns) = acquire!(plan, samples, collect(prns); intermediate_frequency = 0.0Hz)
 
 # ============================================================================
 # Acquire — varying sampling frequency, integration length, and PRN count
@@ -194,7 +194,7 @@ for (sys_ctor, fs, label) in signal_cases
         min_doppler_coverage = bench_min_doppler)
     samples = _make_samples(plan, 1)
     SUITE["AcquireSignals"][label] =
-        @benchmarkable acquire!($plan, $samples, $bench_prns; interm_freq = 0.0Hz)
+        @benchmarkable acquire!($plan, $samples, $bench_prns; intermediate_frequency = 0.0Hz)
 end
 
 # Multistep simple path — exercises the fused FFT+|x|²+code-drift+fftshift
@@ -212,7 +212,7 @@ let
         num_noncoherent_integrations = N_nc)
     samples = _make_samples(plan, N_nc)
     SUITE["AcquireSignals"][label] =
-        @benchmarkable acquire!($plan, $samples, $bench_prns; interm_freq = 0.0Hz)
+        @benchmarkable acquire!($plan, $samples, $bench_prns; intermediate_frequency = 0.0Hz)
     SUITE["PlanAcquire"][label] =
         @benchmarkable plan_acquire($sig_obj, $fs, $bench_prns;
             min_doppler_coverage = $bench_min_doppler,
@@ -236,7 +236,7 @@ let
         num_coherently_integrated_code_periods = N_coh)
     samples = _make_samples(plan, 1)
     SUITE["AcquireSignals"][label] =
-        @benchmarkable acquire!($plan, $samples, $bench_prns; interm_freq = 0.0Hz)
+        @benchmarkable acquire!($plan, $samples, $bench_prns; intermediate_frequency = 0.0Hz)
     SUITE["PlanAcquire"][label] =
         @benchmarkable plan_acquire($sig_obj, $fs, $bench_prns;
             min_doppler_coverage = $bench_min_doppler,
@@ -276,5 +276,5 @@ for num_prns in (1, 32)
         num_coherently_integrated_code_periods = 20)
     samples = _make_samples(plan, 1)
     SUITE["CodeDoppler"]["L5I_10.24MHz_20ms_15kHz_$(num_prns)prns"] =
-        @benchmarkable acquire!($plan, $samples, $prns; interm_freq = 0.0Hz)
+        @benchmarkable acquire!($plan, $samples, $prns; intermediate_frequency = 0.0Hz)
 end

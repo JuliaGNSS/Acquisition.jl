@@ -6,15 +6,15 @@ demonstrating the API. Not exported, as it is test tooling rather than part of a
 receiver: write `Acquisition.generate_test_signal`.
 
 Returns a NamedTuple with fields: `samples`, `code`, `carrier`, `num_samples`,
-`carrier_doppler`, `code_phase`, `sampling_freq`, `interm_freq`, `cn0`, `prn`.
+`carrier_doppler`, `code_phase`, `sampling_frequency`, `intermediate_frequency`, `cn0`, `prn`.
 
 # Keywords
 - `seed=2345`: Random seed for reproducibility
 - `num_samples=60000`: Number of signal samples
 - `carrier_doppler=1234Hz`: Carrier Doppler frequency
 - `code_phase=110.613261`: True code phase in chips
-- `sampling_freq=15e6Hz - 1Hz`: Sampling frequency
-- `interm_freq=243.0Hz`: Intermediate frequency
+- `sampling_frequency=15e6Hz - 1Hz`: Sampling frequency
+- `intermediate_frequency=243.0Hz`: Intermediate frequency
 - `cn0=45`: Carrier-to-noise density ratio (dB-Hz)
 - `carrier_phase=1/16`: Carrier phase in cycles, as GNSSSignals and Tracking count it
 - `unit_noise_power=false`: When true, scale so noise power ≈ 1;
@@ -25,8 +25,8 @@ Returns a NamedTuple with fields: `samples`, `code`, `carrier`, `num_samples`,
 ```julia
 using Acquisition, GNSSSignals
 
-(; samples, prn, sampling_freq, interm_freq) = Acquisition.generate_test_signal(GPSL1CA(), 1)
-result = acquire(GPSL1CA(), samples, sampling_freq, prn; interm_freq)
+(; samples, prn, sampling_frequency, intermediate_frequency) = Acquisition.generate_test_signal(GPSL1CA(), 1)
+result = acquire(GPSL1CA(), samples, sampling_frequency, prn; intermediate_frequency)
 is_detected(result)  # true
 ```
 """
@@ -37,8 +37,8 @@ function generate_test_signal(
     num_samples = 120000,
     carrier_doppler = 1234Hz,
     code_phase = 110.613261,
-    sampling_freq = 15e6Hz - 1Hz,
-    interm_freq = 243.0Hz,
+    sampling_frequency = 15e6Hz - 1Hz,
+    intermediate_frequency = 243.0Hz,
     cn0 = 45,
     carrier_phase = 1 / 16,
     unit_noise_power = false,
@@ -51,20 +51,20 @@ function generate_test_signal(
         num_samples,
         signal,
         prn,
-        sampling_freq,
+        sampling_frequency,
         code_frequency,
         code_phase,
     )
 
     carrier =
-        cis.(2π * ((0:(num_samples-1)) * (interm_freq + carrier_doppler) / sampling_freq .+
+        cis.(2π * ((0:(num_samples-1)) * (intermediate_frequency + carrier_doppler) / sampling_frequency .+
             carrier_phase))
 
     if unit_noise_power
         noise_power = 1
-        signal_power = cn0 - 10 * log10(sampling_freq / 1.0Hz)
+        signal_power = cn0 - 10 * log10(sampling_frequency / 1.0Hz)
     else
-        noise_power = 10 * log10(sampling_freq / 1.0Hz)
+        noise_power = 10 * log10(sampling_frequency / 1.0Hz)
         signal_power = cn0
     end
 
@@ -78,8 +78,8 @@ function generate_test_signal(
         num_samples,
         carrier_doppler,
         code_phase,
-        sampling_freq,
-        interm_freq,
+        sampling_frequency,
+        intermediate_frequency,
         cn0,
         prn,
     )

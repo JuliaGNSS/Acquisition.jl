@@ -37,10 +37,10 @@ import Unitful: Hz
 signal = GPSL1CA()
 
 # Generate a synthetic GPS L1 C/A signal for PRN 1
-(; samples, sampling_freq, interm_freq) = Acquisition.generate_test_signal(signal, 1)
+(; samples, sampling_frequency, intermediate_frequency) = Acquisition.generate_test_signal(signal, 1)
 
 # Acquire PRNs 1–32
-results = acquire(signal, samples, sampling_freq, 1:32; interm_freq)
+results = acquire(signal, samples, sampling_frequency, 1:32; intermediate_frequency)
 
 # Filter to detected satellites (CFAR, 1% false alarm probability)
 detected = filter(is_detected, results)
@@ -51,8 +51,8 @@ detected = filter(is_detected, results)
 For repeated acquisitions (e.g. processing a recorded file), pre-compute a plan once to avoid repeated FFT planning and memory allocation:
 
 ```julia
-plan = plan_acquire(signal, sampling_freq, collect(1:32))
-results = acquire!(plan, samples, 1:32; interm_freq)
+plan = plan_acquire(signal, sampling_frequency, collect(1:32))
+results = acquire!(plan, samples, 1:32; intermediate_frequency)
 ```
 
 ### Streaming Results
@@ -63,7 +63,7 @@ each result on it as soon as its own PRN finishes, so a satellite can be handed 
 tracking while the rest of the search is still running:
 
 ```julia
-acquire_stream!(plan, samples, 1:32; interm_freq) do results
+acquire_stream!(plan, samples, 1:32; intermediate_frequency) do results
     for result in results
         is_detected(result) && start_tracking(result)
     end
@@ -92,13 +92,13 @@ throughput.
 At low CN0, accumulate power across multiple successive signal segments:
 
 ```julia
-plan = plan_acquire(signal, sampling_freq, [1];
+plan = plan_acquire(signal, sampling_frequency, [1];
     num_coherently_integrated_code_periods = 10,
     num_noncoherent_integrations = 8)
 
 # 8 × 10 ms of samples at the default 15 MHz
 long_samples = Acquisition.generate_test_signal(signal, 1;
-    num_samples = 8 * 10 * 15_000, sampling_freq, cn0 = 30).samples
+    num_samples = 8 * 10 * 15_000, sampling_frequency, cn0 = 30).samples
 
 results = acquire!(plan, long_samples, [1])
 ```
@@ -108,8 +108,8 @@ results = acquire!(plan, long_samples, [1])
 ```julia
 using Plots
 
-result = acquire(signal, samples, sampling_freq, 1;
-    interm_freq, store_power_bins = true)
+result = acquire(signal, samples, sampling_frequency, 1;
+    intermediate_frequency, store_power_bins = true)
 plot(result)
 ```
 

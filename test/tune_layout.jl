@@ -43,7 +43,7 @@ end
     expected_random = rand()
     Random.seed!(4321)
     plan = plan_acquire(signal, 2.048e6Hz, [1, 2]; kwargs..., tune = true,
-        tuning_prns = [1], tuning_interm_freq = 243Hz)
+        tuning_prns = [1], tuning_intermediate_frequency = 243Hz)
     @test rand() == expected_random
     @test plan.avail_prns == [1, 2]
     @test !plan.in_use[]
@@ -52,23 +52,23 @@ end
     @test all(iszero, plan.sig_buf)
     @test first(plan.doppler_bins) <= -10000Hz
     @test last(plan.doppler_bins) >= 10000Hz
-    (; samples) = generate_test_signal(signal, 2; sampling_freq = 2.048e6Hz,
+    (; samples) = generate_test_signal(signal, 2; sampling_frequency = 2.048e6Hz,
         num_samples = 20 * plan.samples_per_code, carrier_doppler = 3000Hz,
-        interm_freq = 243Hz, cn0 = 60)
-    result = acquire!(plan, samples, 2; interm_freq = 243Hz)
+        intermediate_frequency = 243Hz, cn0 = 60)
+    result = acquire!(plan, samples, 2; intermediate_frequency = 243Hz)
     @test is_detected(result)
     @test abs(result.carrier_doppler - 3000Hz) <= step(plan.doppler_bins)
     @test !plan.in_use[]
-    @test acquire!(plan, samples, 2; interm_freq = 243Hz).carrier_doppler == result.carrier_doppler
+    @test acquire!(plan, samples, 2; intermediate_frequency = 243Hz).carrier_doppler == result.carrier_doppler
     # Also exercise the full multistep pipeline while tuning, with the
     # caller's cooperative-preemption setting enabled on every candidate.
     multistep = plan_acquire(signal, 1.542e6Hz, [1]; tune = true,
         num_noncoherent_integrations = 2, max_blocking_time = 1u"ms")
     @test multistep.preempt_block_stride[] >= 1
     @test all(iszero, multistep.signal_block_ffts)
-    (; samples) = generate_test_signal(signal, 1; sampling_freq = 1.542e6Hz,
+    (; samples) = generate_test_signal(signal, 1; sampling_frequency = 1.542e6Hz,
         num_samples = 2 * multistep.samples_per_code, carrier_doppler = 3000Hz,
-        interm_freq = 0Hz, cn0 = 70)
+        intermediate_frequency = 0Hz, cn0 = 70)
     multistep_result = acquire!(multistep, samples, 1)
     @test is_detected(multistep_result)
     @test multistep_result.num_noncoherent_integrations == 2
@@ -82,5 +82,5 @@ end
     @test_throws ArgumentError plan_acquire(signal, 2.048e6Hz, [1];
         tune = true, tuning_prns = [2])
     @test_throws ArgumentError plan_acquire(signal, 2.048e6Hz, [1];
-        tune = true, tuning_interm_freq = NaN * Hz)
+        tune = true, tuning_intermediate_frequency = NaN * Hz)
 end

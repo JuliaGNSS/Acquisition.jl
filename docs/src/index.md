@@ -18,14 +18,14 @@ using Acquisition, GNSSSignals
 import Unitful: Hz
 
 signal = GPSL1CA()
-(; samples, sampling_freq, interm_freq) = Acquisition.generate_test_signal(signal, 1)
+(; samples, sampling_frequency, intermediate_frequency) = Acquisition.generate_test_signal(signal, 1)
 
 # Acquire GPS L1 C/A signals for PRNs 1–32
-results = acquire(signal, samples, sampling_freq, 1:32; interm_freq)
+results = acquire(signal, samples, sampling_frequency, 1:32; intermediate_frequency)
 
 # Reuse a pre-computed plan for repeated acquisitions
-plan = plan_acquire(signal, sampling_freq, 1:32)
-results = acquire!(plan, samples, 1:32; interm_freq)
+plan = plan_acquire(signal, sampling_frequency, 1:32)
+results = acquire!(plan, samples, 1:32; intermediate_frequency)
 ```
 
 !!! tip "Pick a fast sampling frequency"

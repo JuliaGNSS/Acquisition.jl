@@ -98,7 +98,7 @@ See [`plan_acquire`](@ref) and [`acquire`](@ref).
 """
 struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEstimator}
     signal::S
-    sampling_freq::typeof(1.0Hz)
+    sampling_frequency::typeof(1.0Hz)
     samples_per_code::Int       # paper N_τ  — samples per code period
     # Effective columns in the noncoherent buffer / result matrix. Equal to
     # `samples_per_code * num_secondary_rotations` when the rotation search is
@@ -355,7 +355,7 @@ end
 end
 
 """
-    _precompute_prn_ffts!(prn_ffts, signal, prn, sampling_freq, samples_per_code, num_blocks, block_size, fft_size, fft_plan)
+    _precompute_prn_ffts!(prn_ffts, signal, prn, sampling_frequency, samples_per_code, num_blocks, block_size, fft_size, fft_plan)
 
 Populate `prn_ffts[prn]` with a `(fft_size, num_blocks)` matrix.
 Column `k+1` (1-indexed) holds `FFT([code[k*block_size+1:(k+1)*block_size] ; zeros(fft_size-block_size)])`,
@@ -375,14 +375,14 @@ function _precompute_prn_ffts!(
     prn_conj_ffts::Dict{Int,Matrix{ComplexF32}},
     signal,
     prn::Int,
-    sampling_freq,
+    sampling_frequency,
     samples_per_code::Int,
     num_blocks::Int,
     block_size::Int,
     fft_size::Int,
     fft_plan,
 )
-    prn_code = gen_code(samples_per_code, signal, prn, sampling_freq, get_chip_rate(signal), 0.0)
+    prn_code = gen_code(samples_per_code, signal, prn, sampling_frequency, get_chip_rate(signal), 0.0)
     conj_fft_matrix = zeros(ComplexF32, fft_size, num_blocks)
     fft_buf = zeros(ComplexF32, fft_size)
     for block_idx in 0:num_blocks-1
@@ -426,7 +426,7 @@ function _num_bits(signal, code_periods_per_bit, num_coherently_integrated_code_
 end
 
 """
-    plan_acquire(signal, sampling_freq, prns; kwargs...) -> AcquisitionPlan
+    plan_acquire(signal, sampling_frequency, prns; kwargs...) -> AcquisitionPlan
 
 Pre-compute an acquisition plan for FM-DBZP acquisition.
 
@@ -447,7 +447,7 @@ multi-threaded acquisition. Scratch buffers are tile-sized (nothing scales with
 # Arguments
 
 - `signal`: GNSS signal (e.g. `GPSL1CA()`)
-- `sampling_freq`: Sampling frequency
+- `sampling_frequency`: Sampling frequency
 - `prns`: PRN numbers to pre-compute (e.g. `1:32`). On BeiDou B1I and B3I, a
   coherent window longer than two code periods spans a different number of bits
   on a GEO satellite (D2, 500 bit/s) than on the others (D1, 50 bit/s), so
@@ -524,7 +524,7 @@ multi-threaded acquisition. Scratch buffers are tile-sized (nothing scales with
 - `tuning_prns`: PRN batch used for measurements (default: `prns`). Must be a
   nonempty subset of the planned PRNs. For a plan reused for single-PRN searches,
   pass e.g. `tune = true, tuning_prns = [1]` while planning all required PRNs.
-- `tuning_interm_freq`: Intermediate frequency used in measurements (default:
+- `tuning_intermediate_frequency`: Intermediate frequency used in measurements (default:
   `0.0Hz`). Tuning uses reproducible synthetic `ComplexF32` noise and the plan's
   actual search settings. Match this frequency and `tuning_prns` to the intended
   workload; a different sample type or workload can have a different optimum.
@@ -568,11 +568,11 @@ multi-threaded acquisition. Scratch buffers are tile-sized (nothing scales with
 """
 function plan_acquire(
     signal::AbstractGNSSSignal,
-    sampling_freq,
+    sampling_frequency,
     prns::AbstractVector{<:Integer};
     tune::Bool = false,
     tuning_prns::AbstractVector{<:Integer} = prns,
-    tuning_interm_freq = 0.0Hz,
+    tuning_intermediate_frequency = 0.0Hz,
     max_blocking_time = nothing,
     kwargs...,
 )
@@ -580,15 +580,15 @@ function plan_acquire(
         isempty(tuning_prns) && throw(ArgumentError("tuning_prns must not be empty"))
         all(prn -> prn in prns, tuning_prns) || throw(ArgumentError(
             "tuning_prns must be a subset of the planned PRNs"))
-        isfinite(ustrip(Hz, tuning_interm_freq)) || throw(ArgumentError(
-            "tuning_interm_freq must be finite"))
+        isfinite(ustrip(Hz, tuning_intermediate_frequency)) || throw(ArgumentError(
+            "tuning_intermediate_frequency must be finite"))
     end
-    plan = _plan_acquire(signal, sampling_freq, prns;
+    plan = _plan_acquire(signal, sampling_frequency, prns;
         max_blocking_time = max_blocking_time, kwargs...)
     if tune
-        build(layout) = _plan_acquire(signal, sampling_freq, prns;
+        build(layout) = _plan_acquire(signal, sampling_frequency, prns;
             max_blocking_time = max_blocking_time, _doppler_layout = layout, kwargs...)
-        plan = _tune_acquisition_plan(plan, tuning_prns, tuning_interm_freq, build;
+        plan = _tune_acquisition_plan(plan, tuning_prns, tuning_intermediate_frequency, build;
             min_doppler_coverage = get(kwargs, :min_doppler_coverage, 7000Hz),
             max_doppler_passes = get(kwargs, :max_doppler_passes, nothing))
     end
@@ -597,7 +597,7 @@ end
 
 function _plan_acquire(
     signal::AbstractGNSSSignal,
-    sampling_freq,
+    sampling_frequency,
     prns::AbstractVector{<:Integer};
     min_doppler_coverage = 7000Hz,
     num_coherently_integrated_code_periods::Int = 1,
@@ -672,7 +672,7 @@ function _plan_acquire(
     end
 
     # Samples per code period
-    samples_per_code = ceil(Int, get_code_length(signal) / get_chip_rate(signal) * sampling_freq)
+    samples_per_code = ceil(Int, get_code_length(signal) / get_chip_rate(signal) * sampling_frequency)
 
     # Blocks per code period and Doppler passes (src/doppler_passes.jl).
     #
@@ -693,8 +693,8 @@ function _plan_acquire(
     # When samples_per_code's divisors are sparse, that divisor can be far
     # larger than the coverage needs; a smaller one covering the range in several
     # narrow passes is then cheaper (`_doppler_search_layout`).
-    sampling_freq_hz = ustrip(Hz, sampling_freq)
-    bin_width = sampling_freq_hz / samples_per_code
+    sampling_frequency_hz = ustrip(Hz, sampling_frequency)
+    bin_width = sampling_frequency_hz / samples_per_code
     min_doppler_coverage_hz = ustrip(Hz, min_doppler_coverage)
     (max_doppler_passes === nothing || max_doppler_passes >= 1) || throw(ArgumentError("max_doppler_passes must be nothing or >= 1, got $max_doppler_passes"))
     layout = _doppler_layout === nothing ?
@@ -763,7 +763,7 @@ function _plan_acquire(
     # Precompute conjugated PRN FFTs
     prn_conj_ffts = Dict{Int,Matrix{ComplexF32}}()
     for prn in prns
-        _precompute_prn_ffts!(prn_conj_ffts, signal, prn, sampling_freq,
+        _precompute_prn_ffts!(prn_conj_ffts, signal, prn, sampling_frequency,
             samples_per_code, num_blocks, block_size, fft_size, double_block_fft_plan)
     end
 
@@ -914,7 +914,7 @@ function _plan_acquire(
 
     # Pre-allocate concrete-typed results buffer to avoid boxing allocations in acquire!
     dummy_result = AcquisitionResults(
-        signal, 0, convert(typeof(1.0Hz), sampling_freq), 0.0Hz, 0.0, nothing, 0.0,
+        signal, 0, convert(typeof(1.0Hz), sampling_frequency), 0.0Hz, 0.0, nothing, 0.0,
         0f0, 0f0, 0, nothing, doppler_bins, num_blocks, block_size, num_secondary_rotations,
         nothing)
     acq_results_buf = Vector{typeof(dummy_result)}(undef, length(prns))
@@ -956,7 +956,7 @@ function _plan_acquire(
     end
 
     plan = AcquisitionPlan(
-        signal, convert(typeof(1.0Hz), sampling_freq),
+        signal, convert(typeof(1.0Hz), sampling_frequency),
         samples_per_code, samples_per_code_eff, num_blocks, block_size, num_coherently_integrated_code_periods, num_bits, bit_edge_search_steps, num_noncoherent_integrations,
         prn_conj_ffts,
         double_block_fft_plan,

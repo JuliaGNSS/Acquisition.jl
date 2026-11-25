@@ -62,36 +62,36 @@ end
 # One code period at four samples per chip: the shortest signal `acquire`
 # accepts for the signal, with the same kernel shapes as any longer one.
 function _precompile_signal(signal)
-    sampling_freq = _precompile_sampling_frequency(signal)
+    sampling_frequency = _precompile_sampling_frequency(signal)
     num_samples =
-        round(Int, get_code_length(signal) * sampling_freq / get_chip_rate(signal))
+        round(Int, get_code_length(signal) * sampling_frequency / get_chip_rate(signal))
     (; samples) = generate_test_signal(
         signal,
         1;
         num_samples,
-        sampling_freq,
-        interm_freq = 0.0Hz,
+        sampling_frequency,
+        intermediate_frequency = 0.0Hz,
         cn0 = 45,
         unit_noise_power = true,
     )
-    ComplexF32.(samples), Complex{Int16}.(round.(samples .* 64)), sampling_freq
+    ComplexF32.(samples), Complex{Int16}.(round.(samples .* 64)), sampling_frequency
 end
 
 @setup_workload begin
     signals = map(_precompile_signal, _PRECOMPILE_SIGNALS)
     @compile_workload begin
-        for (signal, (signal_f32, signal_i16, sampling_freq)) in
+        for (signal, (signal_f32, signal_i16, sampling_frequency)) in
             zip(_PRECOMPILE_SIGNALS, signals)
-            acquire(signal, signal_i16, sampling_freq, [1, 2]; fft_flag = FFTL.ESTIMATE)
-            acquire(signal, signal_f32, sampling_freq, 1; fft_flag = FFTL.ESTIMATE)
+            acquire(signal, signal_i16, sampling_frequency, [1, 2]; fft_flag = FFTL.ESTIMATE)
+            acquire(signal, signal_f32, sampling_frequency, 1; fft_flag = FFTL.ESTIMATE)
         end
         # A receiver builds its plan once and drives `acquire!` with it; a
         # multi-period coherent plan is the common shape for that.
         signal = GPSL1CA()
-        signal_f32, signal_i16, sampling_freq = signals[1]
+        signal_f32, signal_i16, sampling_frequency = signals[1]
         plan = plan_acquire(
             signal,
-            sampling_freq,
+            sampling_frequency,
             [1, 2];
             num_coherently_integrated_code_periods = 2,
             fft_flag = FFTL.ESTIMATE,

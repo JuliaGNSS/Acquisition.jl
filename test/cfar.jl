@@ -33,10 +33,10 @@ end
     prn = 1
 
     # Generate signal with known satellite
-    (; samples, sampling_freq, interm_freq) = generate_test_signal(signal, prn)
+    (; samples, sampling_frequency, intermediate_frequency) = generate_test_signal(signal, prn)
 
     # Acquire all PRNs
-    results = acquire(signal, samples, sampling_freq, collect(1:32); interm_freq)
+    results = acquire(signal, samples, sampling_frequency, collect(1:32); intermediate_frequency)
 
     threshold = cfar_threshold(0.01, get_num_cells(results[1]))
 
@@ -59,7 +59,7 @@ end
     # `cfar_threshold` assumes per-cell χ²(2M) distribution, and we want the
     # end-to-end `acquire!` pipeline to reproduce that on synthetic AWGN.
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
+    sampling_frequency = 2.048e6Hz
     samples_per_code = 2048
     pfa = 0.01
     n_trials = 50
@@ -69,14 +69,14 @@ end
         seg_len = num_code_cycles * samples_per_code * M
         false_alarms = 0
         Random.seed!(0xC0FFEE + M * 1000)
-        plan = plan_acquire(signal, float(sampling_freq), collect(1:32);
+        plan = plan_acquire(signal, float(sampling_frequency), collect(1:32);
             num_coherently_integrated_code_periods = num_code_cycles,
             num_noncoherent_integrations = M)
         num_cells = length(plan.doppler_bins) * plan.num_blocks * plan.block_size
         threshold = cfar_threshold(pfa, num_cells; num_noncoherent_integrations = M)
         for _ in 1:n_trials
             noise = randn(ComplexF64, seg_len)
-            results = acquire!(plan, noise, collect(1:32); interm_freq = 0.0Hz)
+            results = acquire!(plan, noise, collect(1:32); intermediate_frequency = 0.0Hz)
             false_alarms += count(r -> r.peak_to_noise_ratio > threshold, results)
         end
         # Across n_trials × 32 PRNs we expect ≈ n_trials * 32 * pfa false alarms.
@@ -94,22 +94,22 @@ end
     # threshold that's so loose it admits false alarms but also against one
     # that's so tight it rejects real signals.
     signal = GPSL1CA()
-    sampling_freq = 2.048e6Hz
+    sampling_frequency = 2.048e6Hz
     samples_per_code = 2048
     pfa = 0.01
 
     for (M, num_code_cycles, cn0) in [(2, 4, 40), (4, 4, 38), (8, 1, 42)]
         seg_len = num_code_cycles * samples_per_code * M
         prn = 7
-        (; samples, interm_freq) = generate_test_signal(signal, prn;
+        (; samples, intermediate_frequency) = generate_test_signal(signal, prn;
             num_samples = seg_len,
-            sampling_freq, interm_freq = 0.0Hz,
+            sampling_frequency, intermediate_frequency = 0.0Hz,
             cn0, carrier_doppler = 500Hz, code_phase = 100.0,
             seed = 9999 + M)
-        plan = plan_acquire(signal, float(sampling_freq), collect(1:32);
+        plan = plan_acquire(signal, float(sampling_frequency), collect(1:32);
             num_coherently_integrated_code_periods = num_code_cycles,
             num_noncoherent_integrations = M)
-        result = only(acquire!(plan, samples, [prn]; interm_freq))
+        result = only(acquire!(plan, samples, [prn]; intermediate_frequency))
         @test is_detected(result; pfa)
     end
 end
@@ -118,14 +118,14 @@ end
     signal = GPSL1CA()
 
     # Strong signal
-    (; samples, prn, sampling_freq, interm_freq) =
+    (; samples, prn, sampling_frequency, intermediate_frequency) =
         generate_test_signal(signal, 1; cn0 = 55)
-    strong = acquire(signal, samples, sampling_freq, prn; interm_freq)
+    strong = acquire(signal, samples, sampling_frequency, prn; intermediate_frequency)
 
     # Weak signal
-    (; samples, prn, sampling_freq, interm_freq) =
+    (; samples, prn, sampling_frequency, intermediate_frequency) =
         generate_test_signal(signal, 1; cn0 = 35)
-    weak = acquire(signal, samples, sampling_freq, prn; interm_freq)
+    weak = acquire(signal, samples, sampling_frequency, prn; intermediate_frequency)
 
     # Strong signal should have higher peak_to_noise_ratio
     @test strong.peak_to_noise_ratio > weak.peak_to_noise_ratio
@@ -190,7 +190,7 @@ end
         num_samples = ncoh * plan.num_noncoherent_integrations * plan.samples_per_code
         alarms = count(1:trials) do _
             noise = randn(rng, ComplexF32, num_samples)
-            is_detected(only(acquire!(plan, noise, [1]; interm_freq = 0.0Hz)); pfa = 0.1)
+            is_detected(only(acquire!(plan, noise, [1]; intermediate_frequency = 0.0Hz)); pfa = 0.1)
         end
         σ = sqrt(trials * 0.1 * 0.9)
         @test trials * 0.1 - 3σ <= alarms <= trials * 0.1 + 3σ
@@ -200,7 +200,7 @@ end
         plan = false_alarms(GPSL1CA(), 2.048e6Hz, 400; ncoh = 20, edges = 5,
             min_doppler_coverage = 5000Hz)
         r = only(acquire!(plan, randn(Xoshiro(1), ComplexF32, 20 * plan.samples_per_code), [1];
-            interm_freq = 0.0Hz))
+            intermediate_frequency = 0.0Hz))
         @test cfar_threshold(r; pfa = 0.01) < cfar_threshold(0.01, get_num_cells(r))
     end
     @testset "two bits, 4 alignments (partial bits)" false_alarms(GPSL1CA(), 2.048e6Hz, 300;

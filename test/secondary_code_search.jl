@@ -35,16 +35,16 @@ end
         # = true, the rotation search must find the matching rotation and the resulting
         # peak must clear the opt-out baseline by a wide margin at every starting phase.
         signal        = GPSL5I()
-        sampling_freq = 10.24e6Hz
+        sampling_frequency = 10.24e6Hz
         prn           = 1
         chip_rate     = get_chip_rate(signal)
-        samples_per_code = ceil(Int, get_code_length(signal) / chip_rate * sampling_freq)
+        samples_per_code = ceil(Int, get_code_length(signal) / chip_rate * sampling_frequency)
         N = 10
         L = 10
         sec = get_secondary_code(signal)
-        primary = ComplexF32.(gen_code(samples_per_code, signal, prn, sampling_freq, chip_rate, 0.0))
+        primary = ComplexF32.(gen_code(samples_per_code, signal, prn, sampling_frequency, chip_rate, 0.0))
 
-        plan = plan_acquire(signal, sampling_freq, [prn];
+        plan = plan_acquire(signal, sampling_frequency, [prn];
             min_doppler_coverage = 1_000Hz, num_coherently_integrated_code_periods = N,
             num_noncoherent_integrations = 1)
         # Run an opt-out reference once so we have a baseline peak to compare against.
@@ -52,7 +52,7 @@ end
         for k in 0:N-1
             append!(ref_signal, Float32(GNSSSignals.secondary_value(sec, prn, k)) .* primary)
         end
-        plan_off = plan_acquire(signal, sampling_freq, [prn];
+        plan_off = plan_acquire(signal, sampling_frequency, [prn];
             min_doppler_coverage = 1_000Hz, num_coherently_integrated_code_periods = N,
             num_noncoherent_integrations = 1, use_secondary_code = false)
         results_off = acquire!(plan_off, ref_signal, [prn]; store_power_bins = true)
@@ -96,21 +96,21 @@ end
         # "no behavioural drift in the opt-out path", not platform-exact bits. `size` and
         # `argmax` are integer-valued and stay exact.
         signal        = GPSL5I()
-        sampling_freq = 10.24e6Hz
+        sampling_frequency = 10.24e6Hz
         prn           = 1
         chip_rate     = get_chip_rate(signal)
-        samples_per_code = ceil(Int, get_code_length(signal) / chip_rate * sampling_freq)
+        samples_per_code = ceil(Int, get_code_length(signal) / chip_rate * sampling_frequency)
         N = 10
         sec = get_secondary_code(signal)
 
-        primary = ComplexF32.(gen_code(samples_per_code, signal, prn, sampling_freq, chip_rate, 0.0))
+        primary = ComplexF32.(gen_code(samples_per_code, signal, prn, sampling_frequency, chip_rate, 0.0))
         samples = ComplexF32[]
         for k in 0:N-1
             nh10_chip = Float32(GNSSSignals.secondary_value(sec, prn, k))
             append!(samples, nh10_chip .* primary)
         end
 
-        plan = plan_acquire(signal, sampling_freq, [prn];
+        plan = plan_acquire(signal, sampling_frequency, [prn];
             min_doppler_coverage = 1_000Hz, num_coherently_integrated_code_periods = N,
             num_noncoherent_integrations = 1, use_secondary_code = false)
         results = acquire!(plan, samples, [prn]; store_power_bins = true)
@@ -142,14 +142,14 @@ end
         # ratio > 8 so a real regression of the rotation kernel — which would collapse the
         # ratio toward 1× — is caught, without flapping on FFT shape/windowing noise.
         signal        = GPSL5I()
-        sampling_freq = 10.24e6Hz
+        sampling_frequency = 10.24e6Hz
         prn           = 1
         chip_rate     = get_chip_rate(signal)
-        samples_per_code = ceil(Int, get_code_length(signal) / chip_rate * sampling_freq)
+        samples_per_code = ceil(Int, get_code_length(signal) / chip_rate * sampling_frequency)
         N = 10
         sec = get_secondary_code(signal)
 
-        primary = ComplexF32.(gen_code(samples_per_code, signal, prn, sampling_freq, chip_rate, 0.0))
+        primary = ComplexF32.(gen_code(samples_per_code, signal, prn, sampling_frequency, chip_rate, 0.0))
         samples = ComplexF32[]
         for k in 0:N-1
             nh10_chip = Float32(GNSSSignals.secondary_value(sec, prn, k))
@@ -157,10 +157,10 @@ end
         end
 
         # Acquire with use_secondary_code = true (default) and with use_secondary_code = false.
-        plan_on = plan_acquire(signal, sampling_freq, [prn];
+        plan_on = plan_acquire(signal, sampling_frequency, [prn];
             min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = N,
             num_noncoherent_integrations = 1)
-        plan_off = plan_acquire(signal, sampling_freq, [prn];
+        plan_off = plan_acquire(signal, sampling_frequency, [prn];
             min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = N,
             num_noncoherent_integrations = 1, use_secondary_code = false)
 
@@ -184,7 +184,7 @@ end
         # tests above pass either way (they don't pin the Doppler), so this asserts
         # the absolute Doppler value, which the bug got wrong.
         signal        = GPSL5I()
-        sampling_freq = 12e6Hz
+        sampling_frequency = 12e6Hz
         prn           = 1
         true_doppler  = 1000Hz        # on the 100 Hz Doppler grid at N_coh=10
         true_cp       = 1234.5
@@ -192,13 +192,13 @@ end
         (; samples) = generate_test_signal(signal, prn;
             num_samples = 10 * 12000,
             carrier_doppler = true_doppler, code_phase = true_cp,
-            sampling_freq, interm_freq = 0.0Hz, cn0 = 45)
+            sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45)
 
-        plan = plan_acquire(signal, sampling_freq, [prn];
+        plan = plan_acquire(signal, sampling_frequency, [prn];
             num_coherently_integrated_code_periods = 10, num_noncoherent_integrations = 1)
         @test plan.num_secondary_rotations > 1   # confirm the rotation search is active
 
-        result = acquire!(plan, samples, prn; interm_freq = 0.0Hz)
+        result = acquire!(plan, samples, prn; intermediate_frequency = 0.0Hz)
 
         @test is_detected(result)
         @test result.code_phase ≈ true_cp atol = 1.0
@@ -222,16 +222,16 @@ end
         # it). This test plants a genuine bit sign flip between the two 10 ms
         # bits so the data-combo max must pick the correct polarity to detect.
         signal        = GPSL5I()
-        sampling_freq = 12e6Hz
+        sampling_frequency = 12e6Hz
         prn           = 1
         true_doppler  = 1000Hz        # on the 50 Hz grid at N = 20
         true_cp       = 1234.5
         N = 20; L = 10
 
         chip_rate = get_chip_rate(signal)
-        spc = ceil(Int, get_code_length(signal) / chip_rate * sampling_freq)
+        spc = ceil(Int, get_code_length(signal) / chip_rate * sampling_frequency)
         sec = get_secondary_code(signal)
-        primary = ComplexF32.(gen_code(spc, signal, prn, sampling_freq, chip_rate, true_cp))
+        primary = ComplexF32.(gen_code(spc, signal, prn, sampling_frequency, chip_rate, true_cp))
 
         samples = ComplexF32[]
         for k in 0:N-1
@@ -239,15 +239,15 @@ end
             bit_sign = k < L ? 1.0f0 : -1.0f0   # sign flip between the two bits
             append!(samples, (nh10 * bit_sign) .* primary)
         end
-        ω = 2π * ustrip(Hz, true_doppler) / ustrip(Hz, sampling_freq)
+        ω = 2π * ustrip(Hz, true_doppler) / ustrip(Hz, sampling_frequency)
         samples .*= ComplexF32.(cis.(ω .* (0:length(samples)-1)))
 
-        plan = plan_acquire(signal, sampling_freq, [prn];
+        plan = plan_acquire(signal, sampling_frequency, [prn];
             num_coherently_integrated_code_periods = N, num_noncoherent_integrations = 1)
         @test plan.num_secondary_rotations == L   # rotation search active
         @test plan.num_bits == N ÷ L         # bit search active (= 2)
 
-        result = acquire!(plan, samples, prn; interm_freq = 0.0Hz)   # must not segfault
+        result = acquire!(plan, samples, prn; intermediate_frequency = 0.0Hz)   # must not segfault
 
         @test is_detected(result)
         @test result.code_phase ≈ true_cp atol = 1.0
@@ -265,28 +265,28 @@ end
         # that fix: a non-zero code phase like 5115 (the documented worst case) and a
         # mid-grid Doppler used to mis-report the secondary phase by one chip.
         signal        = GPSL5I()
-        sampling_freq = 12e6Hz
+        sampling_frequency = 12e6Hz
         prn           = 1
         N = 10; L = 10
         chip_rate = get_chip_rate(signal)
-        spc = ceil(Int, get_code_length(signal) / chip_rate * sampling_freq)
+        spc = ceil(Int, get_code_length(signal) / chip_rate * sampling_frequency)
         sec = get_secondary_code(signal)
-        plan = plan_acquire(signal, sampling_freq, [prn];
+        plan = plan_acquire(signal, sampling_frequency, [prn];
             num_coherently_integrated_code_periods = N, num_noncoherent_integrations = 1)
 
         @testset "r0=$r0, cp=$cp, dop=$dop" for r0 in (0, 3, 7, 9),
                                                  cp in (0.0, 2000.0, 5115.0, 9000.0),
                                                  dop in (0.0, 1300.0)
-            primary = ComplexF32.(gen_code(spc, signal, prn, sampling_freq, chip_rate, cp))
+            primary = ComplexF32.(gen_code(spc, signal, prn, sampling_frequency, chip_rate, cp))
             samples = ComplexF32[]
             for k in 0:N-1
                 append!(samples, Float32(GNSSSignals.secondary_value(sec, prn, mod(k + r0, L))) .* primary)
             end
             if dop != 0.0
-                ω = 2π * dop / ustrip(Hz, sampling_freq)
+                ω = 2π * dop / ustrip(Hz, sampling_frequency)
                 samples .*= ComplexF32.(cis.(ω .* (0:length(samples)-1)))
             end
-            result = acquire!(plan, samples, prn; interm_freq = 0.0Hz)
+            result = acquire!(plan, samples, prn; intermediate_frequency = 0.0Hz)
             @test result.secondary_code_phase == r0
         end
     end
@@ -303,7 +303,7 @@ end
         # fs=12 MHz, f_d=5000 Hz, the step-1 drift is ≈0.51 samples → rounds to 1;
         # step-3 ≈1.53 → 2. So the drift path is genuinely exercised.
         signal        = GPSL5I()
-        sampling_freq = 12e6Hz
+        sampling_frequency = 12e6Hz
         prn           = 1
         true_doppler  = 5000Hz
         true_cp       = 1234.5
@@ -312,15 +312,15 @@ end
         (; samples) = generate_test_signal(signal, prn;
             num_samples = Nnc * Ncoh * 12000,
             carrier_doppler = true_doppler, code_phase = true_cp,
-            sampling_freq, interm_freq = 0.0Hz, cn0 = 45)
+            sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45)
 
-        plan = plan_acquire(signal, sampling_freq, [prn];
+        plan = plan_acquire(signal, sampling_frequency, [prn];
             num_coherently_integrated_code_periods = Ncoh,
             num_noncoherent_integrations = Nnc)
         @test plan.num_secondary_rotations > 1
         @test plan.num_noncoherent_integrations > 1   # multistep path → drift active
 
-        result = acquire!(plan, samples, prn; interm_freq = 0.0Hz)
+        result = acquire!(plan, samples, prn; intermediate_frequency = 0.0Hz)
 
         @test is_detected(result)
         @test result.code_phase ≈ true_cp atol = 1.5
@@ -364,7 +364,7 @@ end
         # lands on the 100 Hz Doppler grid so the assertion has no half-bin
         # slop.
         signal        = GPSL5I()
-        sampling_freq = 12e6Hz
+        sampling_frequency = 12e6Hz
         prn           = 1
         true_doppler  = 1000Hz
         true_cp = 5115.0
@@ -372,13 +372,13 @@ end
         (; samples) = generate_test_signal(signal, prn;
             num_samples = 10 * 12000,
             carrier_doppler = true_doppler, code_phase = true_cp,
-            sampling_freq, interm_freq = 0.0Hz, cn0 = 45)
+            sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45)
 
-        plan = plan_acquire(signal, sampling_freq, [prn];
+        plan = plan_acquire(signal, sampling_frequency, [prn];
             num_coherently_integrated_code_periods = 10, num_noncoherent_integrations = 1)
         @test plan.num_secondary_rotations > 1   # confirm the rotation search is active
 
-        result = acquire!(plan, samples, prn; interm_freq = 0.0Hz)
+        result = acquire!(plan, samples, prn; intermediate_frequency = 0.0Hz)
 
         @test is_detected(result)
         @test result.code_phase ≈ true_cp atol = 1.0
@@ -415,7 +415,7 @@ end
         # so the gap is purely structural (no statistical jitter on the ratio).
         signal        = GPSL5I()
         long_system   = _LongL5I()
-        sampling_freq = 12e6Hz
+        sampling_frequency = 12e6Hz
         prn           = 1
         true_cp       = 0.0       # isolates off-grid Doppler loss from any chip-boundary residual
         N_coh         = 10
@@ -425,7 +425,7 @@ end
         # Build a noiseless NH10·primary signal at amplitude 1.0 at the test Doppler.
         sec = get_secondary_code(signal)
         chip_rate = get_chip_rate(signal)
-        code_full = ComplexF32.(gen_code(N_total, signal, prn, sampling_freq,
+        code_full = ComplexF32.(gen_code(N_total, signal, prn, sampling_frequency,
                                          chip_rate, true_cp))
         # The L5I sample-level code generation already bakes NH10 across primary
         # periods (same property `_LongL5I` exploits), so `code_full` *is* the
@@ -433,10 +433,10 @@ end
 
         # This algebraic comparison uses a signal without code Doppler and
         # needs the same uncompensated carrier grid for both representations.
-        plan_rot = plan_acquire(signal, sampling_freq, [prn];
+        plan_rot = plan_acquire(signal, sampling_frequency, [prn];
             num_coherently_integrated_code_periods = N_coh,
             num_noncoherent_integrations = 1, max_doppler_passes = 1)
-        plan_long = plan_acquire(long_system, sampling_freq, [prn];
+        plan_long = plan_acquire(long_system, sampling_frequency, [prn];
             num_coherently_integrated_code_periods = 1,
             num_noncoherent_integrations = 1, max_doppler_passes = 1)
 
@@ -444,11 +444,11 @@ end
         # and return (peak_rot_power, peak_long_power). Both plans share the
         # same Doppler grid (100 Hz spacing, 150 bins covering ±7.5 kHz).
         function peaks_at(doppler_hz)
-            ω = 2π * doppler_hz / ustrip(Hz, sampling_freq)
+            ω = 2π * doppler_hz / ustrip(Hz, sampling_frequency)
             carrier = cis.(ω .* (0:N_total-1))
             samples  = ComplexF32.(carrier .* code_full)
-            res_rot  = acquire!(plan_rot,  samples, prn; interm_freq = 0.0Hz, store_power_bins = true)
-            res_long = acquire!(plan_long, samples, prn; interm_freq = 0.0Hz, store_power_bins = true)
+            res_rot  = acquire!(plan_rot,  samples, prn; intermediate_frequency = 0.0Hz, store_power_bins = true)
+            res_long = acquire!(plan_long, samples, prn; intermediate_frequency = 0.0Hz, store_power_bins = true)
             (maximum(res_rot.power_bins), maximum(res_long.power_bins))
         end
 
@@ -485,17 +485,17 @@ end
         # "detected". The fix carries `num_secondary_rotations` on the result and folds
         # it into `get_num_cells`.
         signal        = GPSL5I()
-        sampling_freq = 12e6Hz
+        sampling_frequency = 12e6Hz
         prn           = 1
 
-        plan = plan_acquire(signal, sampling_freq, [prn];
+        plan = plan_acquire(signal, sampling_frequency, [prn];
             num_coherently_integrated_code_periods = 10, num_noncoherent_integrations = 1)
         @test plan.num_secondary_rotations == 10   # rotation search active
 
         (; samples) = generate_test_signal(signal, prn;
             num_samples = 10 * 12000, carrier_doppler = 1000Hz, code_phase = 1234.5,
-            sampling_freq, interm_freq = 0.0Hz, cn0 = 45)
-        result = acquire!(plan, samples, prn; interm_freq = 0.0Hz, store_power_bins = true)
+            sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45)
+        result = acquire!(plan, samples, prn; intermediate_frequency = 0.0Hz, store_power_bins = true)
 
         # The expansion factor is carried on the result …
         @test result.num_secondary_rotations == plan.num_secondary_rotations
@@ -527,8 +527,8 @@ end
         # on L1 C/A and the pilot/sign-search paths.
         signal        = GPSL1CA()
         prn           = 1
-        (; samples, sampling_freq, interm_freq) = generate_test_signal(signal, prn)
-        result = only(acquire(signal, samples, sampling_freq, [prn]; interm_freq))
+        (; samples, sampling_frequency, intermediate_frequency) = generate_test_signal(signal, prn)
+        result = only(acquire(signal, samples, sampling_frequency, [prn]; intermediate_frequency))
 
         @test result.num_secondary_rotations == 1
         @test get_num_cells(result) ==
