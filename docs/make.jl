@@ -16,6 +16,7 @@ makedocs(
         "Home" => "index.md",
         "Usage Guide" => "guide.md",
         "API Reference" => "api.md",
+        "Glossary" => "glossary.md",
     ],
 )
 
