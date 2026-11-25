@@ -6,17 +6,17 @@ demonstrating the API. Not exported, as it is test tooling rather than part of a
 receiver: write `Acquisition.generate_test_signal`.
 
 Returns a NamedTuple with fields: `samples`, `code`, `carrier`, `num_samples`,
-`doppler`, `code_phase`, `sampling_freq`, `interm_freq`, `CN0`, `prn`.
+`carrier_doppler`, `code_phase`, `sampling_freq`, `interm_freq`, `CN0`, `prn`.
 
 # Keywords
 - `seed=2345`: Random seed for reproducibility
 - `num_samples=60000`: Number of signal samples
-- `doppler=1234Hz`: Carrier Doppler frequency
+- `carrier_doppler=1234Hz`: Carrier Doppler frequency
 - `code_phase=110.613261`: True code phase in chips
 - `sampling_freq=15e6Hz - 1Hz`: Sampling frequency
 - `interm_freq=243.0Hz`: Intermediate frequency
 - `CN0=45`: Carrier-to-noise density ratio (dB-Hz)
-- `phase_offset=π/8`: Carrier phase offset
+- `carrier_phase=1/16`: Carrier phase in cycles, as GNSSSignals and Tracking count it
 - `unit_noise_power=false`: When true, scale so noise power ≈ 1;
   when false, scale so signal power corresponds directly to CN0
 
@@ -35,17 +35,18 @@ function generate_test_signal(
     prn;
     seed = 2345,
     num_samples = 120000,
-    doppler = 1234Hz,
+    carrier_doppler = 1234Hz,
     code_phase = 110.613261,
     sampling_freq = 15e6Hz - 1Hz,
     interm_freq = 243.0Hz,
     CN0 = 45,
-    phase_offset = π / 8,
+    carrier_phase = 1 / 16,
     unit_noise_power = false,
 )
     Random.seed!(seed)
 
-    code_frequency = get_chip_rate(signal) + doppler * get_chip_rate_to_center_frequency_ratio(signal)
+    code_frequency = get_chip_rate(signal) +
+        carrier_doppler * get_chip_rate_to_center_frequency_ratio(signal)
     code = gen_code(
         num_samples,
         signal,
@@ -56,7 +57,8 @@ function generate_test_signal(
     )
 
     carrier =
-        cis.(2π * (0:(num_samples-1)) * (interm_freq + doppler) / sampling_freq .+ phase_offset)
+        cis.(2π * ((0:(num_samples-1)) * (interm_freq + carrier_doppler) / sampling_freq .+
+            carrier_phase))
 
     if unit_noise_power
         noise_power = 1
@@ -74,7 +76,7 @@ function generate_test_signal(
         code,
         carrier,
         num_samples,
-        doppler,
+        carrier_doppler,
         code_phase,
         sampling_freq,
         interm_freq,

@@ -281,7 +281,7 @@ end
 
     (; samples) = generate_test_signal(signal, prn;
         num_samples = 20 * plan.samples_per_code,
-        doppler = true_doppler, code_phase = code_phase,
+        carrier_doppler = true_doppler, code_phase = code_phase,
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
 
     signal_f32 = ComplexF32.(samples)
@@ -345,7 +345,7 @@ end
 
     (; samples) = generate_test_signal(signal, prn;
         num_samples = plan.num_coherently_integrated_code_periods * plan.samples_per_code,
-        doppler = true_doppler, code_phase = code_phase,
+        carrier_doppler = true_doppler, code_phase = code_phase,
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 60)
 
     signal_f32 = ComplexF32.(samples)
@@ -401,7 +401,7 @@ end
     # search with pattern (+1,−1) recombines both halves coherently.
     (; samples) = generate_test_signal(signal, prn;
         num_samples = plan.num_coherently_integrated_code_periods * plan.samples_per_code,
-        doppler = true_doppler, code_phase = 100.0,
+        carrier_doppler = true_doppler, code_phase = 100.0,
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 60)
     signal_flipped = ComplexF32.(samples)
     half = (plan.num_coherently_integrated_code_periods ÷ plan.num_bits) * plan.samples_per_code  # = 20 * 2048 = 40960
@@ -451,7 +451,7 @@ end
 
     (; samples) = generate_test_signal(signal, prn;
         num_samples = 40 * 2048,
-        doppler = true_doppler, code_phase = 100.0,
+        carrier_doppler = true_doppler, code_phase = 100.0,
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 60)
     signal_f32 = ComplexF32.(samples)
 
@@ -544,12 +544,12 @@ end
     for seed in 1:num_trials
         (; signal_ni1) = (; signal_ni1 = generate_test_signal(signal, prn;
             num_samples = 1 * num_coherent_periods * samples_per_code,
-            doppler = 1500Hz, code_phase = 100.0,
+            carrier_doppler = 1500Hz, code_phase = 100.0,
             sampling_freq = sampling_freq, interm_freq = 0.0Hz,
             CN0 = CN0, seed = seed).samples)
         (; signal_ni8) = (; signal_ni8 = generate_test_signal(signal, prn;
             num_samples = 8 * num_coherent_periods * samples_per_code,
-            doppler = 1500Hz, code_phase = 100.0,
+            carrier_doppler = 1500Hz, code_phase = 100.0,
             sampling_freq = sampling_freq, interm_freq = 0.0Hz,
             CN0 = CN0, seed = seed).samples)
 
@@ -587,7 +587,7 @@ end
     prn    = 1
 
     signal_no_transition = generate_test_signal(signal, prn;
-        num_samples = 40 * 2048, doppler = 0Hz, code_phase = 0.0,
+        num_samples = 40 * 2048, carrier_doppler = 0Hz, code_phase = 0.0,
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 60, seed = 42).samples
 
     signal_with_transition = copy(signal_no_transition)
@@ -635,7 +635,7 @@ end
     prn    = 1
 
     signal_no_transition = generate_test_signal(signal, prn;
-        num_samples = 60 * 2048, doppler = 0Hz, code_phase = 0.0,
+        num_samples = 60 * 2048, carrier_doppler = 0Hz, code_phase = 0.0,
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 60, seed = 42).samples
 
     signal_with_transition = copy(signal_no_transition)
@@ -723,7 +723,7 @@ end
             ndop = length(plan.doppler_freqs)
             (; samples) = generate_test_signal(plan.signal, prn;
                 num_samples = plan.num_coherently_integrated_code_periods * plan.samples_per_code,
-                doppler = 1300Hz, code_phase = 210.7,
+                carrier_doppler = 1300Hz, code_phase = 210.7,
                 sampling_freq = plan.sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 11)
             plan.sig_buf .= ComplexF32.(samples)
             # One segment's slice of the plan's all-segment signal-FFT cache.
@@ -790,7 +790,7 @@ end
             ndop = length(plan.doppler_freqs)
             (; samples) = generate_test_signal(signal, prn;
                 num_samples = ncoh * plan.samples_per_code,
-                doppler = 1270Hz, code_phase = 321.4,
+                carrier_doppler = 1270Hz, code_phase = 321.4,
                 sampling_freq = fs, interm_freq = 0.0Hz, CN0 = 45, seed = 3)
             plan.sig_buf .= ComplexF32.(samples)
             plan.sig_buf[end ÷ 3:end] .*= -1   # a bit transition
@@ -858,7 +858,7 @@ end
             ndop = length(plan.doppler_freqs)
             (; samples) = generate_test_signal(GPSL1CA(), prn;
                 num_samples = ncoh * plan.samples_per_code,
-                doppler = 1270Hz, code_phase = 321.4,
+                carrier_doppler = 1270Hz, code_phase = 321.4,
                 sampling_freq = 2.048e6Hz, interm_freq = 0.0Hz, CN0 = 45, seed = 3)
             plan.sig_buf .= ComplexF32.(samples)
             Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, plan.sig_buf,
@@ -905,7 +905,7 @@ end
     plan_plain = plan_acquire(signal, fs, [prn]; common...)
     plan_search = plan_acquire(signal, fs, [prn]; common..., bit_edge_search_steps = 10)
     (; samples) = generate_test_signal(signal, prn; num_samples = 20 * spc,
-        doppler = true_doppler, code_phase, sampling_freq = fs, interm_freq = 0.0Hz,
+        carrier_doppler = true_doppler, code_phase, sampling_freq = fs, interm_freq = 0.0Hz,
         CN0 = 42, seed = 7)
     first_boundary = round(Int, (1023 - code_phase) / 1023 * spc) + 1
 
@@ -978,7 +978,7 @@ end
         num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4,
         fft_flag = FFTL.ESTIMATE)
     (; samples) = generate_test_signal(signal, prn; num_samples = 40 * spc,
-        doppler = true_doppler, code_phase, sampling_freq = fs, interm_freq = 0.0Hz,
+        carrier_doppler = true_doppler, code_phase, sampling_freq = fs, interm_freq = 0.0Hz,
         CN0 = 50, seed = 9)
     first_boundary = round(Int, (1023 - code_phase) / 1023 * spc) + 1
     peak_power(r) = r.peak_to_noise_ratio * r.noise_power

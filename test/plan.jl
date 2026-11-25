@@ -265,7 +265,7 @@ end
 
             (; samples) = generate_test_signal(signal, prn;
                 num_samples   = num_periods * samples_per_code,
-                doppler       = doppler_hz,
+                carrier_doppler       = doppler_hz,
                 code_phase    = code_phase,
                 sampling_freq = sampling_freq,
                 interm_freq   = 0.0Hz,
@@ -528,15 +528,15 @@ end
     end
 
     # Acquiring produces correct results and returns every slot to the pool.
-    (; samples, doppler, code_phase) = generate_test_signal(signal, prns[1];
+    (; samples, carrier_doppler, code_phase) = generate_test_signal(signal, prns[1];
         num_samples = plan.samples_per_code,
-        doppler = 1234Hz, code_phase = 100.0,
+        carrier_doppler = 1234Hz, code_phase = 100.0,
         sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
     results = acquire!(plan, samples, prns; interm_freq = 0.0Hz)
     @test length(results) == length(prns)
     # PRN 1 is the planted signal; it should acquire to the right cell.
     @test results[1].code_phase ≈ code_phase atol = 2.0
-    @test abs(results[1].carrier_doppler / 1Hz - ustrip(Hz, doppler)) <
+    @test abs(results[1].carrier_doppler / 1Hz - ustrip(Hz, carrier_doppler)) <
         ustrip(Hz, step(plan.doppler_freqs))
     @test length(plan.scratch_free) == cap   # all slots released, none leaked
 

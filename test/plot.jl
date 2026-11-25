@@ -82,7 +82,7 @@ end
 
     (; samples) = generate_test_signal(signal, prn;
         num_samples = plan.samples_per_code,
-        doppler = 1000Hz, code_phase = 100.0,
+        carrier_doppler = 1000Hz, code_phase = 100.0,
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 60)
 
     results = acquire!(plan, ComplexF32.(samples), [prn]; interm_freq = 0.0Hz, store_power_bins = true)

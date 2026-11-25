@@ -5,10 +5,10 @@
     sampling_freq = 2.048e6Hz
     prn = 1
 
-    (; samples, doppler, code_phase, interm_freq) = generate_test_signal(
+    (; samples, code_phase, interm_freq) = generate_test_signal(
         signal, prn;
         num_samples = 2048,   # 1 code period at 2.048 MHz
-        doppler = 1000Hz, code_phase = 200.0,
+        carrier_doppler = 1000Hz, code_phase = 200.0,
         sampling_freq, interm_freq = 0.0Hz, CN0 = 45,
     )
 
@@ -25,10 +25,10 @@ end
     sampling_freq = 2.048e6Hz
     prn = 3
 
-    (; samples, doppler, code_phase, interm_freq) = generate_test_signal(
+    (; samples, code_phase, interm_freq) = generate_test_signal(
         signal, prn;
         num_samples = 40 * 2048,   # 20ms coherent × 2 noncoherent
-        doppler = 500Hz, code_phase = 100.0,
+        carrier_doppler = 500Hz, code_phase = 100.0,
         sampling_freq, interm_freq = 0.0Hz, CN0 = 30,
         seed = 7777,
     )
@@ -54,7 +54,7 @@ end
     (; samples, interm_freq) = generate_test_signal(
         signal, prn;
         num_samples = 2048,
-        doppler = 0Hz, code_phase = true_code_phase,
+        carrier_doppler = 0Hz, code_phase = true_code_phase,
         sampling_freq, interm_freq = 0.0Hz, CN0 = 45,
         seed = 5555,
     )
@@ -79,7 +79,7 @@ end
     (; samples, code_phase) = generate_test_signal(
         signal, prn;
         num_samples = 2048,
-        doppler = 500Hz, code_phase = 150.0,
+        carrier_doppler = 500Hz, code_phase = 150.0,
         sampling_freq, interm_freq, CN0 = 45,
         seed = 3333,
     )
@@ -103,10 +103,10 @@ end
     sampling_freq = 2.048e6Hz
 
     gen1 = generate_test_signal(signal, 1;
-        num_samples = 2048, doppler = 1000Hz, code_phase = 200.0,
+        num_samples = 2048, carrier_doppler = 1000Hz, code_phase = 200.0,
         sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 10)
     gen2 = generate_test_signal(signal, 2;
-        num_samples = 2048, doppler = -500Hz, code_phase = 500.0,
+        num_samples = 2048, carrier_doppler = -500Hz, code_phase = 500.0,
         sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 10)
 
     signal_amplitude = 10^(45 / 20)
@@ -145,7 +145,7 @@ end
     plan = plan_acquire(signal, sampling_freq, [1, 2];
         num_noncoherent_accumulations = 2, fft_flag = FFTL.ESTIMATE)
     (; samples, code_phase) = generate_test_signal(signal, 1;
-        num_samples = 2 * plan.samples_per_code, doppler = 800Hz, code_phase = 150.0,
+        num_samples = 2 * plan.samples_per_code, carrier_doppler = 800Hz, code_phase = 150.0,
         sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 13)
     results = acquire!(plan, ComplexF32.(samples), [1, 2]; interm_freq = 0.0Hz)
     @test length(results) == 2
@@ -171,7 +171,7 @@ end
 
     (; samples) = generate_test_signal(signal, prn;
         num_samples = 2 * 2048,                  # two full code periods
-        doppler = doppler_true, code_phase = code_phase_true,
+        carrier_doppler = doppler_true, code_phase = code_phase_true,
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = CN0_dbhz, seed = seed)
 
     plan_seq = plan_acquire(signal, sampling_freq, [prn];
@@ -212,7 +212,7 @@ end
     # which routes through the sign-search kernel rather than the simple pilot path.
     (; samples) = generate_test_signal(signal, prn;
         num_samples = 40 * 2048,
-        doppler = doppler_true, code_phase = code_phase_true,
+        carrier_doppler = doppler_true, code_phase = code_phase_true,
         sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
 
     plan = plan_acquire(signal, sampling_freq, [prn];
@@ -332,7 +332,7 @@ end
 
     (; samples) = generate_test_signal(signal, prn;
         num_samples = 10 * plan.samples_per_code,
-        doppler = 1500Hz, code_phase = 100.0,
+        carrier_doppler = 1500Hz, code_phase = 100.0,
         sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
 
     result = only(acquire!(plan, ComplexF32.(samples), [prn]; interm_freq = 0.0Hz))
@@ -360,7 +360,7 @@ end
     sampling_freq = 2.048e6Hz
     prn = 4
     (; samples) = generate_test_signal(signal, prn;
-        num_samples = 2048, doppler = 750Hz, code_phase = 512.0,
+        num_samples = 2048, carrier_doppler = 750Hz, code_phase = 512.0,
         sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 21)
 
     plan_gm = plan_acquire(signal, sampling_freq, [prn];
@@ -401,7 +401,7 @@ end
         sampling_freq = 2.048e6Hz
         prn = 2
         (; samples) = generate_test_signal(signal, prn;
-            num_samples = 2048, doppler = 250Hz, code_phase = 300.7,
+            num_samples = 2048, carrier_doppler = 250Hz, code_phase = 300.7,
             sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 5)
         plan = plan_acquire(signal, sampling_freq, [prn]; fft_flag = FFTL.ESTIMATE)
         r_nostore = acquire!(plan, ComplexF32.(samples), prn;
@@ -419,7 +419,7 @@ end
         sampling_freq = 10.24e6Hz
         prn = 1
         (; samples) = generate_test_signal(signal, prn;
-            num_samples = 10 * 10240, doppler = 850Hz, code_phase = 5115.3,
+            num_samples = 10 * 10240, carrier_doppler = 850Hz, code_phase = 5115.3,
             sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 6)
         plan = plan_acquire(signal, sampling_freq, [prn];
             num_coherently_integrated_code_periods = 10, fft_flag = FFTL.ESTIMATE)
@@ -445,7 +445,7 @@ end
     prn = 1
     true_cp = 700.4
     (; samples) = generate_test_signal(signal, prn;
-        num_samples = 4 * 2048, doppler = 500Hz, code_phase = true_cp,
+        num_samples = 4 * 2048, carrier_doppler = 500Hz, code_phase = true_cp,
         sampling_freq, interm_freq = 0.0Hz, CN0 = 42, seed = 8)
     plan = plan_acquire(signal, sampling_freq, [prn];
         num_noncoherent_accumulations = 4, fft_flag = FFTL.ESTIMATE)
@@ -493,7 +493,7 @@ end
                 signal, prn;
                 seed = 700 + k,
                 num_samples = 4000 * n + 100,
-                doppler = 1234Hz,
+                carrier_doppler = 1234Hz,
                 code_phase = (k - 0.5) * 1023 / 8 + 0.137,
                 sampling_freq,
                 interm_freq = 0.0Hz,
@@ -548,7 +548,7 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
 
     (; samples, code_phase, interm_freq) = generate_test_signal(
         signal, 1;
-        num_samples = 2048, doppler = 1000Hz, code_phase = 200.0,
+        num_samples = 2048, carrier_doppler = 1000Hz, code_phase = 200.0,
         sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 21,
     )
     plan = plan_acquire(signal, sampling_freq, prns; fft_flag = FFTL.ESTIMATE)
@@ -614,7 +614,7 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
         plan_ms = plan_acquire(signal, sampling_freq, prns;
             num_noncoherent_accumulations = 2, fft_flag = FFTL.ESTIMATE)
         long_signal = generate_test_signal(signal, 1;
-            num_samples = 2 * 2048, doppler = 800Hz, code_phase = 150.0,
+            num_samples = 2 * 2048, carrier_doppler = 800Hz, code_phase = 150.0,
             sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 13).samples
 
         streamed = collect(acquire_stream!(plan_ms, ComplexF32.(long_signal), prns;
@@ -678,7 +678,7 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
         for (prn, expected_code_phase, doppler) in segments
             segment = generate_test_signal(
                 signal, prn;
-                num_samples = 2048, doppler, code_phase = expected_code_phase,
+                num_samples = 2048, carrier_doppler = doppler, code_phase = expected_code_phase,
                 sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 21,
             ).samples
             expected = acquire!(plan, segment, prns; interm_freq)
@@ -709,7 +709,7 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
         # the next search start before the previous results have been looked at.
         other = generate_test_signal(
             signal, 5;
-            num_samples = 2048, doppler = -500Hz, code_phase = 700.0,
+            num_samples = 2048, carrier_doppler = -500Hz, code_phase = 700.0,
             sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 21,
         ).samples
 

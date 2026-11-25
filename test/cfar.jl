@@ -104,7 +104,7 @@ end
         (; samples, interm_freq) = generate_test_signal(signal, prn;
             num_samples = seg_len,
             sampling_freq, interm_freq = 0.0Hz,
-            CN0, doppler = 500Hz, code_phase = 100.0,
+            CN0, carrier_doppler = 500Hz, code_phase = 100.0,
             seed = 9999 + M)
         plan = plan_acquire(signal, float(sampling_freq), collect(1:32);
             num_coherently_integrated_code_periods = num_code_cycles,

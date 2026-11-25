@@ -23,7 +23,7 @@
     # Strong signal, zero doppler, zero interm_freq for clean coherent integration matrix test
     (; samples) = generate_test_signal(signal, prn;
         num_samples = plan.samples_per_code,
-        doppler = 0Hz, code_phase = code_phase_1,
+        carrier_doppler = 0Hz, code_phase = code_phase_1,
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 100)
 
     signal_f32 = ComplexF32.(samples)
@@ -54,7 +54,7 @@
     tau_samples_2 = round(Int, (get_code_length(signal) - code_phase_2) * plan.samples_per_code / get_code_length(signal))
     result_2 = generate_test_signal(signal, prn;
         num_samples = plan.samples_per_code,
-        doppler = 0Hz, code_phase = code_phase_2,
+        carrier_doppler = 0Hz, code_phase = code_phase_2,
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 100)
     signal_f32_2 = ComplexF32.(result_2.samples)
     Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, signal_f32_2,

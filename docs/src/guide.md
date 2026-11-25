@@ -456,7 +456,7 @@ doppler = 1500Hz
 
 # Generate 2 ms of samples (8000 at 4 MHz) — reused across all three plots
 signal_2ms = Acquisition.generate_test_signal(signal, prn;
-    num_samples = 8000, sampling_freq = fs, doppler = doppler).samples
+    num_samples = 8000, sampling_freq = fs, carrier_doppler = doppler).samples
 
 plan_1ms = plan_acquire(signal, fs, [prn])
 result_1ms = acquire!(plan_1ms, signal_2ms[1:4000], [prn]; store_power_bins = true)

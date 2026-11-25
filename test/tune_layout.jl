@@ -53,7 +53,7 @@ end
     @test first(plan.doppler_freqs) <= -10000Hz
     @test last(plan.doppler_freqs) >= 10000Hz
     (; samples) = generate_test_signal(signal, 2; sampling_freq = 2.048e6Hz,
-        num_samples = 20 * plan.samples_per_code, doppler = 3000Hz,
+        num_samples = 20 * plan.samples_per_code, carrier_doppler = 3000Hz,
         interm_freq = 243Hz, CN0 = 60)
     result = acquire!(plan, samples, 2; interm_freq = 243Hz)
     @test is_detected(result)
@@ -67,7 +67,7 @@ end
     @test multistep.preempt_block_stride[] >= 1
     @test all(iszero, multistep.signal_block_ffts)
     (; samples) = generate_test_signal(signal, 1; sampling_freq = 1.542e6Hz,
-        num_samples = 2 * multistep.samples_per_code, doppler = 3000Hz,
+        num_samples = 2 * multistep.samples_per_code, carrier_doppler = 3000Hz,
         interm_freq = 0Hz, CN0 = 70)
     multistep_result = acquire!(multistep, samples, 1)
     @test is_detected(multistep_result)

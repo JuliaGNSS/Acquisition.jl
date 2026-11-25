@@ -191,7 +191,7 @@ end
 
         (; samples) = generate_test_signal(signal, prn;
             num_samples = 10 * 12000,
-            doppler = true_doppler, code_phase = true_cp,
+            carrier_doppler = true_doppler, code_phase = true_cp,
             sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
 
         plan = plan_acquire(signal, sampling_freq, [prn];
@@ -311,7 +311,7 @@ end
 
         (; samples) = generate_test_signal(signal, prn;
             num_samples = Nnc * Ncoh * 12000,
-            doppler = true_doppler, code_phase = true_cp,
+            carrier_doppler = true_doppler, code_phase = true_cp,
             sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
 
         plan = plan_acquire(signal, sampling_freq, [prn];
@@ -371,7 +371,7 @@ end
 
         (; samples) = generate_test_signal(signal, prn;
             num_samples = 10 * 12000,
-            doppler = true_doppler, code_phase = true_cp,
+            carrier_doppler = true_doppler, code_phase = true_cp,
             sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
 
         plan = plan_acquire(signal, sampling_freq, [prn];
@@ -493,7 +493,7 @@ end
         @test plan.num_secondary_rotations == 10   # rotation search active
 
         (; samples) = generate_test_signal(signal, prn;
-            num_samples = 10 * 12000, doppler = 1000Hz, code_phase = 1234.5,
+            num_samples = 10 * 12000, carrier_doppler = 1000Hz, code_phase = 1234.5,
             sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
         result = acquire!(plan, samples, prn; interm_freq = 0.0Hz, store_power_bins = true)
 
