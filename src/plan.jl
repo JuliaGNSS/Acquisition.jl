@@ -393,6 +393,37 @@ function _precompute_prn_ffts!(
     prn_conj_ffts[prn] = conj_fft_matrix
 end
 
+# Number of full bit periods in the coherent window, validating its length and
+# `bit_edge_search_steps` against `code_periods_per_bit` (0 for a pilot, which
+# broadcasts no bits and so has no bit edge to search). A window of at most one bit
+# holds one bit (num_bits = 1) with at most one transition, which the bit-edge
+# search places at `bit_edge_search_steps` evenly spaced code-period boundaries
+# (see `_edge_alignment`), so the step count must divide the window. A longer
+# window must span a whole number of bit periods so the FM-DBZP sub-block
+# structure is consistent, and the step count must divide the bit period.
+function _num_bits(system, code_periods_per_bit, num_coherently_integrated_code_periods,
+                   bit_edge_search_steps)
+    if code_periods_per_bit == 0
+        bit_edge_search_steps == 1 || throw(ArgumentError(
+            "bit_edge_search_steps must be 1 for $(typeof(system).name.name), a pilot, which broadcasts no bits, " *
+            "got $bit_edge_search_steps."))
+        return 1
+    end
+    if num_coherently_integrated_code_periods < code_periods_per_bit
+        num_coherently_integrated_code_periods % bit_edge_search_steps == 0 || throw(ArgumentError(
+            "bit_edge_search_steps=$bit_edge_search_steps must divide " *
+            "num_coherently_integrated_code_periods=$num_coherently_integrated_code_periods " *
+            "when the window is shorter than a bit (code_periods_per_bit=$code_periods_per_bit)."))
+        return 1
+    end
+    num_coherently_integrated_code_periods % code_periods_per_bit == 0 || throw(ArgumentError(
+        "num_coherently_integrated_code_periods=$num_coherently_integrated_code_periods must be divisible by " *
+        "code_periods_per_bit=$code_periods_per_bit (code periods per bit)."))
+    code_periods_per_bit % bit_edge_search_steps == 0 || throw(ArgumentError(
+        "bit_edge_search_steps=$bit_edge_search_steps must divide code_periods_per_bit=$code_periods_per_bit."))
+    num_coherently_integrated_code_periods ÷ code_periods_per_bit
+end
+
 """
     plan_acquire(system, sampling_freq, prns; kwargs...) -> AcquisitionPlan
 
@@ -416,7 +447,10 @@ multi-threaded acquisition. Scratch buffers are tile-sized (nothing scales with
 
 - `system`: GNSS system (e.g. `GPSL1CA()`)
 - `sampling_freq`: Sampling frequency
-- `prns`: PRN numbers to pre-compute (e.g. `1:32`)
+- `prns`: PRN numbers to pre-compute (e.g. `1:32`). On BeiDou B1I and B3I, a
+  coherent window longer than two code periods spans a different number of bits
+  on a GEO satellite (D2, 500 bit/s) than on the others (D1, 50 bit/s), so
+  plan the GEO PRNs separately there.
 
 # Keyword Arguments
 
@@ -639,11 +673,6 @@ function _plan_acquire(
     # Samples per code period
     samples_per_code = ceil(Int, get_code_length(system) / get_chip_rate(system) * sampling_freq)
 
-    # Bit period in code periods (code_periods_per_bit); 0 for a pilot, which
-    # broadcasts no bits and so imposes no constraint.
-    code_periods_per_bit = get_code_periods_per_bit(system)
-    has_data = code_periods_per_bit > 0
-
     # Blocks per code period and Doppler passes (src/doppler_passes.jl).
     #
     # Single grid: the smallest divisor of samples_per_code such that the grid
@@ -681,34 +710,34 @@ function _plan_acquire(
     num_doppler_passes = layout.num_passes
     doppler_bins_per_pass = layout.bins_per_pass
 
-    # Validate data-channel coherent integration length.
-    # Sub-bit integration (num_coherently_integrated_code_periods < code_periods_per_bit) is always valid — a bit
-    # boundary may still fall within the window (bit edge search handles this), but there
-    # can be at most one transition so num_bits=1 and no bit combination search is needed.
-    # Multi-bit integration (num_coherently_integrated_code_periods >= code_periods_per_bit) requires the window to span
-    # a whole number of bit periods so the FM-DBZP sub-block structure is consistent.
-    if has_data && num_coherently_integrated_code_periods >= code_periods_per_bit
-        num_coherently_integrated_code_periods % code_periods_per_bit == 0 || throw(ArgumentError(
-            "num_coherently_integrated_code_periods=$num_coherently_integrated_code_periods must be divisible by " *
-            "code_periods_per_bit=$code_periods_per_bit (code periods per bit)."))
-        code_periods_per_bit % bit_edge_search_steps == 0 || throw(ArgumentError(
-            "bit_edge_search_steps=$bit_edge_search_steps must divide code_periods_per_bit=$code_periods_per_bit."))
-    end
-    # Sub-bit windows search a single transition at `bit_edge_search_steps`
-    # evenly spaced code-period boundaries (see `_edge_alignment`), so the step
-    # count must divide the window.
-    if has_data && num_coherently_integrated_code_periods < code_periods_per_bit
-        num_coherently_integrated_code_periods % bit_edge_search_steps == 0 || throw(ArgumentError(
-            "bit_edge_search_steps=$bit_edge_search_steps must divide " *
+    # num_bits (paper: N_db): number of full bit periods within the coherent window,
+    # validated for each satellite's bit period. The period is a signal's on every
+    # signal but BeiDou B1I and B3I, whose GEO satellites broadcast D2 bits ten times
+    # shorter than the other satellites' D1; one plan holds one num_bits, so the
+    # satellites it is built for must agree on it. Agreement is checked first, so a
+    # window that only some of the bit periods reject names the mix of PRNs.
+    code_periods_per_bit_by_prn = isempty(prns) ? [get_code_periods_per_bit(system)] :
+                                     sort!(unique(get_code_periods_per_bit(system, prn) for prn in prns))
+    if length(code_periods_per_bit_by_prn) > 1
+        num_bits_by_period = map(code_periods_per_bit_by_prn) do code_periods_per_bit
+            try
+                _num_bits(system, code_periods_per_bit, num_coherently_integrated_code_periods,
+                          bit_edge_search_steps)
+            catch e
+                e isa ArgumentError || rethrow()
+                nothing
+            end
+        end
+        allequal(num_bits_by_period) || throw(ArgumentError(
+            "The PRNs span $(join(code_periods_per_bit_by_prn, " and ")) code periods per bit " *
+            "(get_code_periods_per_bit(system, prn); BeiDou GEO satellites broadcast D2 " *
+            "bits ten times shorter than D1), so " *
             "num_coherently_integrated_code_periods=$num_coherently_integrated_code_periods " *
-            "when the window is shorter than a bit (code_periods_per_bit=$code_periods_per_bit)."))
+            "does not span the same whole number of bits on each. Plan the GEO PRNs separately, or set " *
+            "num_coherently_integrated_code_periods <= $(minimum(code_periods_per_bit_by_prn))."))
     end
-    # A pilot broadcasts no bits, so it has no bit edge to search.
-    if !has_data && bit_edge_search_steps > 1
-        throw(ArgumentError(
-            "bit_edge_search_steps must be 1 for $(typeof(system).name.name), a pilot, which broadcasts no bits, " *
-            "got $bit_edge_search_steps."))
-    end
+    num_bits = _num_bits(system, first(code_periods_per_bit_by_prn),
+        num_coherently_integrated_code_periods, bit_edge_search_steps)
 
     block_size = samples_per_code ÷ num_blocks
     double_block_size = 2 * block_size
@@ -718,10 +747,6 @@ function _plan_acquire(
     # normalised by the actual length (see `_build_coherent_tile!`), so the
     # padding changes neither num_blocks, the Doppler grid, nor the result.
     fft_size = _inner_fft_size(double_block_size)
-    # num_bits (paper: N_db): number of full bit periods within the coherent window.
-    # 1 for pilot channels and sub-bit integration (< one bit period); bit combination search
-    # is only needed when num_bits > 1 (multiple bits → unknown polarity transitions).
-    num_bits = (has_data && num_coherently_integrated_code_periods >= code_periods_per_bit) ? num_coherently_integrated_code_periods ÷ code_periods_per_bit : 1
     # One pass's FM-DBZP Doppler FFT length (paper C_fd), and the stitched grid.
     pass_fft_bins = num_coherently_integrated_code_periods * num_blocks
     num_doppler_bins = num_doppler_passes * doppler_bins_per_pass

@@ -811,8 +811,8 @@ plan = plan_acquire(system, sampling_freq, prns;
 
 **Multi-bit integration** (`num_coherently_integrated_code_periods ≥ 20`):
 The window spans whole bit periods. Two constraints apply:
-1. `num_coherently_integrated_code_periods` must be divisible by `code_periods_per_bit` (= 20 for GPS L1)
-2. `code_periods_per_bit` must be divisible by `bit_edge_search_steps`
+1. `num_coherently_integrated_code_periods` must be divisible by `get_code_periods_per_bit(system)` (= 20 for GPS L1 C/A)
+2. `get_code_periods_per_bit(system)` must be divisible by `bit_edge_search_steps`
 
 The algorithm searches all `2^(num_bits - 1)` sign-flip combinations across
 the bits in the window. With `bit_edge_search_steps > 1` the first bit edge
@@ -820,6 +820,11 @@ is also placed at `bit_edge_search_steps` evenly spaced positions within a bit
 period; away from the window start the window then holds a partial bit at each
 end, and all `2^num_bits` sign combinations of the partial and whole bits
 are searched.
+
+A BeiDou B1I or B3I GEO satellite broadcasts D2 bits every 2 ms, where the
+other satellites broadcast D1 every 20 ms (`get_code_periods_per_bit(system, prn)`).
+A plan whose window spans more than one D2 bit therefore needs the GEO PRNs
+planned separately; `plan_acquire` throws if they are mixed.
 
 **Pilot channels** (e.g. GPS L5-Q, Galileo E1-C): no bit constraint; set
 `num_coherently_integrated_code_periods` freely.
