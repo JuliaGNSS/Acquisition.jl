@@ -46,7 +46,7 @@ end
 
         plan = plan_acquire(signal, sampling_freq, [prn];
             min_doppler_coverage = 1_000Hz, num_coherently_integrated_code_periods = N,
-            num_noncoherent_accumulations = 1)
+            num_noncoherent_integrations = 1)
         # Run an opt-out reference once so we have a baseline peak to compare against.
         ref_signal = ComplexF32[]
         for k in 0:N-1
@@ -54,7 +54,7 @@ end
         end
         plan_off = plan_acquire(signal, sampling_freq, [prn];
             min_doppler_coverage = 1_000Hz, num_coherently_integrated_code_periods = N,
-            num_noncoherent_accumulations = 1, use_secondary_code = false)
+            num_noncoherent_integrations = 1, use_secondary_code = false)
         results_off = acquire!(plan_off, ref_signal, [prn]; store_power_bins = true)
         peak_off = maximum(results_off[1].power_bins)
 
@@ -112,7 +112,7 @@ end
 
         plan = plan_acquire(signal, sampling_freq, [prn];
             min_doppler_coverage = 1_000Hz, num_coherently_integrated_code_periods = N,
-            num_noncoherent_accumulations = 1, use_secondary_code = false)
+            num_noncoherent_integrations = 1, use_secondary_code = false)
         results = acquire!(plan, samples, [prn]; store_power_bins = true)
         nim = results[1].power_bins
 
@@ -159,10 +159,10 @@ end
         # Acquire with use_secondary_code = true (default) and with use_secondary_code = false.
         plan_on = plan_acquire(signal, sampling_freq, [prn];
             min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = N,
-            num_noncoherent_accumulations = 1)
+            num_noncoherent_integrations = 1)
         plan_off = plan_acquire(signal, sampling_freq, [prn];
             min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = N,
-            num_noncoherent_accumulations = 1, use_secondary_code = false)
+            num_noncoherent_integrations = 1, use_secondary_code = false)
 
         results_on  = acquire!(plan_on,  samples, [prn]; store_power_bins = true)
         results_off = acquire!(plan_off, samples, [prn]; store_power_bins = true)
@@ -195,7 +195,7 @@ end
             sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
 
         plan = plan_acquire(signal, sampling_freq, [prn];
-            num_coherently_integrated_code_periods = 10, num_noncoherent_accumulations = 1)
+            num_coherently_integrated_code_periods = 10, num_noncoherent_integrations = 1)
         @test plan.num_secondary_rotations > 1   # confirm the rotation search is active
 
         result = acquire!(plan, samples, prn; interm_freq = 0.0Hz)
@@ -243,7 +243,7 @@ end
         samples .*= ComplexF32.(cis.(ω .* (0:length(samples)-1)))
 
         plan = plan_acquire(signal, sampling_freq, [prn];
-            num_coherently_integrated_code_periods = N, num_noncoherent_accumulations = 1)
+            num_coherently_integrated_code_periods = N, num_noncoherent_integrations = 1)
         @test plan.num_secondary_rotations == L   # rotation search active
         @test plan.num_bits == N ÷ L         # bit search active (= 2)
 
@@ -272,7 +272,7 @@ end
         spc = ceil(Int, get_code_length(signal) / chip_rate * sampling_freq)
         sec = get_secondary_code(signal)
         plan = plan_acquire(signal, sampling_freq, [prn];
-            num_coherently_integrated_code_periods = N, num_noncoherent_accumulations = 1)
+            num_coherently_integrated_code_periods = N, num_noncoherent_integrations = 1)
 
         @testset "r0=$r0, cp=$cp, dop=$dop" for r0 in (0, 3, 7, 9),
                                                  cp in (0.0, 2000.0, 5115.0, 9000.0),
@@ -316,9 +316,9 @@ end
 
         plan = plan_acquire(signal, sampling_freq, [prn];
             num_coherently_integrated_code_periods = Ncoh,
-            num_noncoherent_accumulations = Nnc)
+            num_noncoherent_integrations = Nnc)
         @test plan.num_secondary_rotations > 1
-        @test plan.num_noncoherent_accumulations > 1   # multistep path → drift active
+        @test plan.num_noncoherent_integrations > 1   # multistep path → drift active
 
         result = acquire!(plan, samples, prn; interm_freq = 0.0Hz)
 
@@ -375,7 +375,7 @@ end
             sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
 
         plan = plan_acquire(signal, sampling_freq, [prn];
-            num_coherently_integrated_code_periods = 10, num_noncoherent_accumulations = 1)
+            num_coherently_integrated_code_periods = 10, num_noncoherent_integrations = 1)
         @test plan.num_secondary_rotations > 1   # confirm the rotation search is active
 
         result = acquire!(plan, samples, prn; interm_freq = 0.0Hz)
@@ -435,10 +435,10 @@ end
         # needs the same uncompensated carrier grid for both representations.
         plan_rot = plan_acquire(signal, sampling_freq, [prn];
             num_coherently_integrated_code_periods = N_coh,
-            num_noncoherent_accumulations = 1, max_doppler_passes = 1)
+            num_noncoherent_integrations = 1, max_doppler_passes = 1)
         plan_long = plan_acquire(long_system, sampling_freq, [prn];
             num_coherently_integrated_code_periods = 1,
-            num_noncoherent_accumulations = 1, max_doppler_passes = 1)
+            num_noncoherent_integrations = 1, max_doppler_passes = 1)
 
         # Helper: run both plans on the same noiseless signal at `doppler_hz`
         # and return (peak_rot_power, peak_long_power). Both plans share the
@@ -489,7 +489,7 @@ end
         prn           = 1
 
         plan = plan_acquire(signal, sampling_freq, [prn];
-            num_coherently_integrated_code_periods = 10, num_noncoherent_accumulations = 1)
+            num_coherently_integrated_code_periods = 10, num_noncoherent_integrations = 1)
         @test plan.num_secondary_rotations == 10   # rotation search active
 
         (; samples) = generate_test_signal(signal, prn;

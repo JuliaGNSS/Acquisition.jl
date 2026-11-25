@@ -9,7 +9,7 @@
 # (`_build_coherent_tile!`) and reduced immediately. The full
 # `(num_doppler_bins, samples_per_code_eff)` power surface is materialised only
 # where it is genuinely needed: one `noncoherent_accumulator` per scratch slot
-# at `num_noncoherent_accumulations > 1` (accumulation across signal segments
+# at `num_noncoherent_integrations > 1` (accumulation across signal segments
 # requires the surface; the PRN-outer loop bounds the count by the concurrency,
 # not the PRN count) and the per-PRN `result_buffers` when the caller opts in
 # via `store_power_bins = true`.
@@ -49,7 +49,7 @@ struct AcquisitionScratch{P2,P3,P4}
     # 8 threads holds 8 surfaces instead of 32). 0×0 at N_nc == 1, where the
     # streamed reduction needs no surface at all.
     noncoherent_accumulator::Matrix{Float32}
-    # Streaming-reduction state at num_noncoherent_accumulations == 1: running
+    # Streaming-reduction state at num_noncoherent_integrations == 1: running
     # per-row (sorted-Doppler order) power sums feeding the OppositeRow noise
     # estimate. length num_doppler_bins; 0 on the multistep path, which reduces
     # from the materialised per-PRN accumulator instead.
@@ -112,7 +112,7 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     num_coherently_integrated_code_periods::Int       # paper N     — total code periods per coherent integration
     num_bits::Int          # paper N_db  — bit periods per coherent block (1 for pilot/sub-bit)
     bit_edge_search_steps::Int          # paper N_be  — bit edge search positions (1 = disabled)
-    num_noncoherent_accumulations::Int  # incoherent integration steps
+    num_noncoherent_integrations::Int  # incoherent integration steps
     # Conjugated PRN FFTs: prn_conj_ffts[prn] is (fft_size, num_blocks);
     # column k+1 = conj(FFT(PRN sub-block k zero-padded to fft_size)), precomputed
     # to avoid conjugation in the inner loop of _build_coherent_integration_matrix!
@@ -473,9 +473,9 @@ multi-threaded acquisition. Scratch buffers are tile-sized (nothing scales with
   spaced positions within a bit period, must divide `get_code_periods_per_bit(signal)`, and
   searches every sign of the partial bits at both ends and the whole bits in
   between.
-- `num_noncoherent_accumulations`: Number of successive incoherent integration
+- `num_noncoherent_integrations`: Number of successive non-coherent integration
   steps (default: `1`). The samples passed to `acquire!` must contain at least
-  `num_noncoherent_accumulations` full segments.
+  `num_noncoherent_integrations` full segments.
 - `use_secondary_code`: enable the secondary-code rotation search (default: `true`).
   When the signal has a secondary code of length `L > 1` and
   `num_coherently_integrated_code_periods > 1`, the search jointly estimates the
@@ -602,7 +602,7 @@ function _plan_acquire(
     min_doppler_coverage = 7000Hz,
     num_coherently_integrated_code_periods::Int = 1,
     bit_edge_search_steps::Int = 1,
-    num_noncoherent_accumulations::Int = 1,
+    num_noncoherent_integrations::Int = 1,
     noise_estimator::AbstractNoiseEstimator = OppositeRowNoiseEstimator(),
     use_secondary_code::Bool = true,
     max_secondary_code_rotations::Int = 32,
@@ -611,7 +611,7 @@ function _plan_acquire(
     max_doppler_passes::Union{Int,Nothing} = nothing,
     _doppler_layout = nothing,
 )
-    num_noncoherent_accumulations >= 1 || throw(ArgumentError("num_noncoherent_accumulations must be >= 1, got $num_noncoherent_accumulations"))
+    num_noncoherent_integrations >= 1 || throw(ArgumentError("num_noncoherent_integrations must be >= 1, got $num_noncoherent_integrations"))
     num_coherently_integrated_code_periods >= 1 || throw(ArgumentError("num_coherently_integrated_code_periods must be >= 1"))
     bit_edge_search_steps >= 1 || throw(ArgumentError("bit_edge_search_steps must be >= 1, got $bit_edge_search_steps"))
     if num_coherently_integrated_code_periods == 1 && bit_edge_search_steps > 1
@@ -666,7 +666,7 @@ function _plan_acquire(
                 "(1) set num_coherently_integrated_code_periods to a multiple of $L " *
                 "(e.g. $L for one full secondary-code period); " *
                 "(2) set num_coherently_integrated_code_periods = 1 and raise " *
-                "num_noncoherent_accumulations for a robust sign at coarser Doppler resolution; or " *
+                "num_noncoherent_integrations for a robust sign at coarser Doppler resolution; or " *
                 "(3) set use_secondary_code = false to opt out of the rotation search."))
         end
     end
@@ -791,7 +791,7 @@ function _plan_acquire(
     # shared across all PRNs — see the field docstring for why all N_nc
     # segments are cached.
     signal_block_ffts = zeros(ComplexF32, fft_size,
-        num_coherently_integrated_code_periods * num_blocks * num_noncoherent_accumulations *
+        num_coherently_integrated_code_periods * num_blocks * num_noncoherent_integrations *
         num_doppler_passes)
     # At N_nc == 1 each cell of the power surface is produced exactly once, so
     # the result statistics (peak, noise row/column sums) are reduced on the fly
@@ -816,7 +816,7 @@ function _plan_acquire(
     samples_per_code_eff = rotation_search_active ?
         samples_per_code * num_secondary_rotations : samples_per_code
 
-    sequential_prn_mode = num_noncoherent_accumulations == 1
+    sequential_prn_mode = num_noncoherent_integrations == 1
     fftshift_perm = [mod(r - 1 + pass_fft_bins ÷ 2, pass_fft_bins) + 1 for r in 1:pass_fft_bins]
     result_buffers = Union{Nothing,Matrix{Float32}}[nothing for _ in prns]
 
@@ -950,14 +950,14 @@ function _plan_acquire(
     # depends on — is the same for every rotation and PRN.
     sign_search_null = if hypotheses_per_rotation > 1 && sign_search_path_active
         _sign_search_null(sign_patterns_by_prn[first(prns)], sign_layout,
-            num_noncoherent_accumulations)
+            num_noncoherent_integrations)
     else
         nothing
     end
 
     plan = AcquisitionPlan(
         signal, convert(typeof(1.0Hz), sampling_freq),
-        samples_per_code, samples_per_code_eff, num_blocks, block_size, num_coherently_integrated_code_periods, num_bits, bit_edge_search_steps, num_noncoherent_accumulations,
+        samples_per_code, samples_per_code_eff, num_blocks, block_size, num_coherently_integrated_code_periods, num_bits, bit_edge_search_steps, num_noncoherent_integrations,
         prn_conj_ffts,
         double_block_fft_plan,
         doppler_freqs,
@@ -1030,7 +1030,7 @@ function _precompile_search(plan::AcquisitionPlan)
     step_ffts = typeof(_signal_block_ffts_for_step(plan, 1, 1))
     ok = true
     # Both search paths, whichever this plan takes: `_acquire!` branches on
-    # `num_noncoherent_accumulations` at run time, so its first call compiles
+    # `num_noncoherent_integrations` at run time, so its first call compiles
     # the streamed (N_nc == 1) and the multistep (N_nc > 1) kernels alike.
     for ffts in (typeof(plan.signal_block_ffts), step_ffts)
         for phasors in (Nothing, Matrix{ComplexF32})
@@ -1079,7 +1079,7 @@ function _calibrate_preempt_stride!(plan::AcquisitionPlan, max_blocking_time)
 
     # The streamed pass runs every Doppler pass; the multistep timing runs one
     # step of one pass (see `_time_prn_pass_ns`).
-    blocks_timed = plan.num_noncoherent_accumulations == 1 ?
+    blocks_timed = plan.num_noncoherent_integrations == 1 ?
         plan.num_blocks * plan.num_doppler_passes : plan.num_blocks
     block_ns = _time_prn_pass_ns(plan) / blocks_timed
     # Clamp before narrowing to Int so neither a sub-nanosecond block time nor an
@@ -1100,7 +1100,7 @@ function _time_prn_pass_ns(plan::AcquisitionPlan)
     scratch = _default_scratch(plan)
     prn = first(plan.avail_prns)
     run_one() =
-        if plan.num_noncoherent_accumulations == 1
+        if plan.num_noncoherent_integrations == 1
             _acquire_prn_streamed!(plan, scratch, prn, nothing)
         else
             accumulator = scratch.noncoherent_accumulator

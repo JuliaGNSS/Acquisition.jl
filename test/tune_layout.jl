@@ -63,7 +63,7 @@ end
     # Also exercise the full multistep pipeline while tuning, with the
     # caller's cooperative-preemption setting enabled on every candidate.
     multistep = plan_acquire(signal, 1.542e6Hz, [1]; tune = true,
-        num_noncoherent_accumulations = 2, max_blocking_time = 1u"ms")
+        num_noncoherent_integrations = 2, max_blocking_time = 1u"ms")
     @test multistep.preempt_block_stride[] >= 1
     @test all(iszero, multistep.signal_block_ffts)
     (; samples) = generate_test_signal(signal, 1; sampling_freq = 1.542e6Hz,

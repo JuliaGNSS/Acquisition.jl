@@ -76,7 +76,7 @@ function _tune_acquisition_plan(plan::AcquisitionPlan, prns, interm_freq, build;
         max_doppler_passes)
     isempty(candidates) && return plan
     n = plan.num_coherently_integrated_code_periods * plan.samples_per_code *
-        plan.num_noncoherent_accumulations
+        plan.num_noncoherent_integrations
     # A private RNG keeps planning from changing the caller's random stream.
     samples = randn(Xoshiro(0x107), ComplexF32, n)
     measure_pair(a, b) = _measure_plan_pair(a, b, samples, prns, interm_freq)

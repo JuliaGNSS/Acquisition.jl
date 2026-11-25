@@ -151,7 +151,7 @@ end
     samples = ComplexF32.(samples)
     @testset "simple path" check_stitching(GPSL1CA(), fs, 3, samples)
     @testset "multistep" check_stitching(GPSL1CA(), fs, 3, samples;
-        num_noncoherent_accumulations = 3)
+        num_noncoherent_integrations = 3)
     @testset "bit + bit-edge search" check_stitching(GPSL1CA(), fs, 3, samples;
         num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4)
     @testset "bit transition (one-bit window)" check_stitching(GPSL1CA(), fs, 3, samples;
@@ -189,7 +189,7 @@ end
     # `round(f_r · m · T_coh · fs / f_carrier)` samples, wrapping within each
     # rotation's `samples_per_code`-wide slice.
     function check_multistep_drift(signal, fs, prn, samples; N_nc, kwargs...)
-        plan = plan_acquire(signal, fs, [prn]; num_noncoherent_accumulations = N_nc,
+        plan = plan_acquire(signal, fs, [prn]; num_noncoherent_integrations = N_nc,
             kwargs...)
         @test plan.num_doppler_passes > 1
         stitched = acquire!(plan, samples, prn; store_power_bins = true).power_bins
@@ -270,7 +270,7 @@ end
         interm_freq = 120Hz, seed = 7)
     samples = ComplexF32.(samples)
     for N_nc in (1, 3)
-        plan = plan_acquire(GPSL1CA(), fs, prns; num_noncoherent_accumulations = N_nc)
+        plan = plan_acquire(GPSL1CA(), fs, prns; num_noncoherent_integrations = N_nc)
         @test plan.num_doppler_passes > 1
         results = acquire!(plan, samples, prns; interm_freq = 120Hz)
         r7 = results[findfirst(==(7), prns)]

@@ -63,7 +63,7 @@ peak_to_noise_ratio = peak_power / noise_power
 Under the null hypothesis (noise only), the peak across
 `num_cells = num_doppler_bins × num_code_phases` search cells follows a scaled
 chi-squared distribution with `2M` degrees of freedom, where `M` is the number
-of non-coherent accumulations stored in the result. [`cfar_threshold`](@ref)
+of non-coherent integrations stored in the result. [`cfar_threshold`](@ref)
 returns the quantile of that distribution at the requested per-grid false alarm
 probability, using a Bonferroni-like correction across `num_cells`:
 
@@ -215,7 +215,7 @@ Make the workload match production exactly, or the part that differs compiles at
 time after all:
 
 - the same plan keywords (sampling frequency, `num_coherently_integrated_code_periods`,
-  `num_noncoherent_accumulations`, `min_doppler_coverage`, `bit_edge_search_steps`, …);
+  `num_noncoherent_integrations`, `min_doppler_coverage`, `bit_edge_search_steps`, …);
 - the same sample container: element type (`ComplexF32`, `Complex{Int16}`, …) *and*
   container (`Vector`, or the `view` of your ring buffer you actually pass);
 - the same PRN collection type (`Vector{Int}` or `UnitRange`);
@@ -245,10 +245,10 @@ run with more threads, restart Julia with the desired thread count before callin
 
 The per-thread scratch is small: the acquisition pipeline is *tiled*, producing and
 reducing the correlation surface one `num_doppler_bins × block_size` column block at a
-time, so at `num_noncoherent_accumulations = 1` no per-thread buffer scales with
+time, so at `num_noncoherent_integrations = 1` no per-thread buffer scales with
 `samples_per_code` at all. The full Doppler × code-phase power surface is only
 materialised when you ask for it (`store_power_bins = true`, one cached buffer per
-PRN) or when `num_noncoherent_accumulations > 1` — and even then the PRN loop runs
+PRN) or when `num_noncoherent_integrations > 1` — and even then the PRN loop runs
 PRN-outer, so only `min(threads, cores, #PRNs)` accumulation surfaces exist, never
 one per PRN. The multistep path additionally caches the signal-block FFTs of all
 segments (16 bytes per signal sample) so no work is recomputed across PRNs.
@@ -419,7 +419,7 @@ At low CN0, accumulate power across multiple successive signal segments:
 ```@example guide
 plan_ni = plan_acquire(signal, sampling_freq, [1];
     num_coherently_integrated_code_periods = 10,
-    num_noncoherent_accumulations = 8)
+    num_noncoherent_integrations = 8)
 
 long_samples = Acquisition.generate_test_signal(signal, 1;
     num_samples = 8 * 10 * 4096,
@@ -430,7 +430,7 @@ nothing # hide
 ```
 
 The signal must contain at least
-`num_noncoherent_accumulations × num_coherently_integrated_code_periods × samples_per_code`
+`num_noncoherent_integrations × num_coherently_integrated_code_periods × samples_per_code`
 samples.
 
 ## Plotting Results
@@ -475,14 +475,14 @@ result_2ms = acquire!(plan_2ms, signal_2ms, [prn]; store_power_bins = true)
 plot(result_2ms[1])
 ```
 
-### 1 ms coherent + 2 non-coherent accumulations
+### 1 ms coherent + 2 non-coherent integrations
 
 Non-coherent integration adds power from 2 successive 1 ms segments,
 improving sensitivity without requiring longer phase-coherent integration.
 The Doppler resolution stays at ~1000 Hz but the peak-to-noise ratio improves:
 
 ```@example guide
-plan_ni = plan_acquire(signal, fs, [prn]; num_noncoherent_accumulations = 2)
+plan_ni = plan_acquire(signal, fs, [prn]; num_noncoherent_integrations = 2)
 result_ni = acquire!(plan_ni, signal_2ms, [prn]; store_power_bins = true)
 plot(result_ni[1])
 ```
@@ -857,7 +857,7 @@ Pass `store_power_bins = true` to keep the full Doppler × code-phase
 correlation matrix in the returned result. It's required for plotting
 (see [Plotting Results](#Plotting-Results)) and useful for post-hoc analysis.
 Without it the `power_bins` field is `nothing` — and at
-`num_noncoherent_accumulations = 1` the surface is never even computed: the
+`num_noncoherent_integrations = 1` the surface is never even computed: the
 peak and noise statistics are reduced on the fly while the pipeline streams
 through the search grid one column block at a time. Opting in allocates one
 cached buffer per PRN on first use, which subsequent calls reuse in place, so

@@ -54,7 +54,7 @@ end
 @testset "CFAR detection with non-coherent integration (M > 1)" begin
     # End-to-end check that the CFAR threshold's nominal false-alarm rate is
     # honoured by the actual `peak_to_noise_ratio` distribution when
-    # num_noncoherent_accumulations > 1. This covers the gap left by the
+    # num_noncoherent_integrations > 1. This covers the gap left by the
     # single-dwell synthetic test above: the analytic derivation in
     # `cfar_threshold` assumes per-cell χ²(2M) distribution, and we want the
     # end-to-end `acquire!` pipeline to reproduce that on synthetic AWGN.
@@ -71,7 +71,7 @@ end
         Random.seed!(0xC0FFEE + M * 1000)
         plan = plan_acquire(signal, float(sampling_freq), collect(1:32);
             num_coherently_integrated_code_periods = num_code_cycles,
-            num_noncoherent_accumulations = M)
+            num_noncoherent_integrations = M)
         num_cells = length(plan.doppler_freqs) * plan.num_blocks * plan.block_size
         threshold = cfar_threshold(pfa, num_cells; num_noncoherent_integrations = M)
         for _ in 1:n_trials
@@ -90,7 +90,7 @@ end
 
 @testset "CFAR detection with non-coherent integration: signal still passes threshold" begin
     # Counterpart to the FP-rate test above: verify a real signal is still
-    # detected when num_noncoherent_accumulations > 1. This guards against a
+    # detected when num_noncoherent_integrations > 1. This guards against a
     # threshold that's so loose it admits false alarms but also against one
     # that's so tight it rejects real signals.
     signal = GPSL1CA()
@@ -108,7 +108,7 @@ end
             seed = 9999 + M)
         plan = plan_acquire(signal, float(sampling_freq), collect(1:32);
             num_coherently_integrated_code_periods = num_code_cycles,
-            num_noncoherent_accumulations = M)
+            num_noncoherent_integrations = M)
         result = only(acquire!(plan, samples, [prn]; interm_freq))
         @test is_detected(result; pfa)
     end
@@ -187,7 +187,7 @@ end
             bit_edge_search_steps = edges, fft_flag = FFTL.ESTIMATE, kwargs...)
         @test plan.sign_search_null !== nothing
         rng = Xoshiro(42)
-        num_samples = ncoh * plan.num_noncoherent_accumulations * plan.samples_per_code
+        num_samples = ncoh * plan.num_noncoherent_integrations * plan.samples_per_code
         alarms = count(1:trials) do _
             noise = randn(rng, ComplexF32, num_samples)
             is_detected(only(acquire!(plan, noise, [1]; interm_freq = 0.0Hz)); pfa = 0.1)
@@ -208,7 +208,7 @@ end
     # The Lugannani–Rice sum over steps, on a two-pass Doppler grid.
     @testset "N_nc = 3, two Doppler passes" begin
         plan = false_alarms(GPSL1CA(), 1.023e6Hz, 300; ncoh = 40, edges = 4,
-            num_noncoherent_accumulations = 3, min_doppler_coverage = 2000Hz)
+            num_noncoherent_integrations = 3, min_doppler_coverage = 2000Hz)
         @test plan.num_doppler_passes > 1
     end
     # Secondary-code rotations × bits × bit edges.

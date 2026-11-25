@@ -45,7 +45,7 @@ end
     sampling_freq = 2.048e6Hz
     plan = plan_acquire(signal, sampling_freq, [1];
         min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = 1,
-        num_noncoherent_accumulations = 1)
+        num_noncoherent_integrations = 1)
 
     chip_rate = Float64(ustrip(Hz, get_chip_rate(signal)))
     fs     = Float64(ustrip(Hz, sampling_freq))
@@ -78,7 +78,7 @@ end
 
     plan = plan_acquire(signal, sampling_freq, [prn];
         min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = 1,
-        num_noncoherent_accumulations = 1)
+        num_noncoherent_integrations = 1)
 
     (; samples) = generate_test_signal(signal, prn;
         num_samples = plan.samples_per_code,

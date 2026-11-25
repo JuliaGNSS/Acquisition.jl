@@ -28,15 +28,15 @@ const l1ca = GNSSSignals.GPSL1CA()
 # ============================================================================
 
 """
-    _make_plan(fs, num_coh_ms; prns, num_noncoherent_accumulations)
+    _make_plan(fs, num_coh_ms; prns, num_noncoherent_integrations)
 
 Create a GPS L1 C/A acquisition plan.
 """
-function _make_plan(fs, num_coh_ms; prns = 1:32, num_noncoherent_accumulations = 1)
+function _make_plan(fs, num_coh_ms; prns = 1:32, num_noncoherent_integrations = 1)
     plan_acquire(l1ca, fs, collect(prns);
         min_doppler_coverage = 10_000Hz,
         num_coherently_integrated_code_periods = num_coh_ms,
-        num_noncoherent_accumulations = num_noncoherent_accumulations)
+        num_noncoherent_integrations = num_noncoherent_integrations)
 end
 
 """
@@ -68,7 +68,7 @@ for (fs, fs_label) in [(2.048e6Hz, "2.048MHz"), (5.0e6Hz, "5MHz")]
 
         for num_prns in [1, 32]
             prns   = collect(1:num_prns)
-            plan   = _make_plan(fs, N_ms; prns = 1:32, num_noncoherent_accumulations = 1)
+            plan   = _make_plan(fs, N_ms; prns = 1:32, num_noncoherent_integrations = 1)
             samples = _make_samples(plan, 1)
             if fs == 2.048e6Hz && N_ms == 20 && num_prns == 1
                 # Keep this subset-search workload intact and expose the
@@ -89,7 +89,7 @@ end
 SUITE["NonCoherent"] = BenchmarkGroup()
 
 for M in [1, 5, 10]
-    plan   = _make_plan(2.048e6Hz, 1; prns = [1], num_noncoherent_accumulations = M)
+    plan   = _make_plan(2.048e6Hz, 1; prns = [1], num_noncoherent_integrations = M)
     samples = _make_samples(plan, M)
 
     SUITE["NonCoherent"]["M=$(M)"] =
@@ -103,7 +103,7 @@ end
 SUITE["LongCoherent"] = BenchmarkGroup()
 
 for N_ms in [1, 5, 10, 20, 40]
-    plan   = _make_plan(2.048e6Hz, N_ms; prns = [1], num_noncoherent_accumulations = 1)
+    plan   = _make_plan(2.048e6Hz, N_ms; prns = [1], num_noncoherent_integrations = 1)
     samples = _make_samples(plan, 1)
 
     SUITE["LongCoherent"]["$(N_ms)ms"] =
@@ -126,7 +126,7 @@ for N_be in [1, 2, 5, 10]
         min_doppler_coverage = 10_000Hz,
         num_coherently_integrated_code_periods = 20,
         bit_edge_search_steps = N_be,
-        num_noncoherent_accumulations = 1)
+        num_noncoherent_integrations = 1)
     samples = _make_samples(plan, 1)
 
     SUITE["BitEdgeSearch"]["N_be=$(N_be)"] =
@@ -209,14 +209,14 @@ let
     sig_obj = GNSSSignals.GPSL1CA()
     plan = plan_acquire(sig_obj, fs, bench_prns;
         min_doppler_coverage = bench_min_doppler,
-        num_noncoherent_accumulations = N_nc)
+        num_noncoherent_integrations = N_nc)
     samples = _make_samples(plan, N_nc)
     SUITE["AcquireSignals"][label] =
         @benchmarkable acquire!($plan, $samples, $bench_prns; interm_freq = 0.0Hz)
     SUITE["PlanAcquire"][label] =
         @benchmarkable plan_acquire($sig_obj, $fs, $bench_prns;
             min_doppler_coverage = $bench_min_doppler,
-            num_noncoherent_accumulations = $N_nc)
+            num_noncoherent_integrations = $N_nc)
 end
 
 # Secondary-code rotation search path — exercises

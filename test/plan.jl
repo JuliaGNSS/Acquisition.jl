@@ -5,7 +5,7 @@
     signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
     plan = plan_acquire(signal, sampling_freq, [1];
-        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 1, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
+        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 1, bit_edge_search_steps = 1, num_noncoherent_integrations = 1)
 
     @test plan.samples_per_code == 2048      # ceil(1023/1.023e6 * 2.048e6)
     @test plan.num_blocks == 32              # smallest divisor of 2048 >= ceil(20000/1000 + 2/1)=22 → 32
@@ -13,7 +13,7 @@
     @test plan.num_coherently_integrated_code_periods == 1
     @test plan.num_bits == 1            # pilot/short: no bit search
     @test plan.bit_edge_search_steps == 1
-    @test plan.num_noncoherent_accumulations == 1
+    @test plan.num_noncoherent_integrations == 1
     @test length(plan.doppler_freqs) == 32   # num_doppler_bins = 1*32
     @test step(plan.doppler_freqs) ≈ 1000Hz  # doppler_bin_spacing_hz = 32000/32
     @test first(plan.doppler_freqs) ≈ -16000Hz  # -doppler_coverage_hz/2
@@ -27,7 +27,7 @@ end
     sampling_freq = 2.048e6Hz
     # num_coherently_integrated_code_periods=40 → num_bits = 40÷20 = 2 bits
     plan = plan_acquire(signal, sampling_freq, [1];
-        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4, num_noncoherent_accumulations = 5)
+        min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4, num_noncoherent_integrations = 5)
 
     @test plan.samples_per_code == 2048
     # This window drifts by >0.1 chip, so even L1 benefits from narrow passes.
@@ -36,7 +36,7 @@ end
     @test plan.num_coherently_integrated_code_periods == 40
     @test plan.num_bits == 2            # 40 code periods / 20 code periods per GPS bit
     @test plan.bit_edge_search_steps == 4
-    @test plan.num_noncoherent_accumulations == 5
+    @test plan.num_noncoherent_integrations == 5
     @test length(plan.doppler_freqs) == plan.num_doppler_passes * plan.doppler_bins_per_pass
     @test first(plan.doppler_freqs) <= -10_000Hz
     @test last(plan.doppler_freqs) >= 10_000Hz
@@ -144,7 +144,7 @@ end
     @test occursin("68", msg)                       # references the issue
     # All three documented remedies are present in the message.
     @test occursin("num_coherently_integrated_code_periods", msg)
-    @test occursin("num_noncoherent_accumulations", msg)
+    @test occursin("num_noncoherent_integrations", msg)
     @test occursin("use_secondary_code", msg)
 
     # Full secondary period (N = L) is accepted, and opting out at the partial period is
@@ -200,7 +200,7 @@ end
         num_coherently_integrated_code_periods = 20, bit_edge_search_steps = 2)
     # Other basic guard checks
     @test_throws ArgumentError plan_acquire(signal, sampling_freq, [1];
-        num_noncoherent_accumulations = 0)
+        num_noncoherent_integrations = 0)
     @test_throws ArgumentError plan_acquire(signal, sampling_freq, [1];
         num_coherently_integrated_code_periods = 0)
     @test_throws ArgumentError plan_acquire(signal, sampling_freq, [1];
@@ -256,7 +256,7 @@ end
         @testset "sampling_freq=$(ustrip(Hz, sampling_freq) / 1e6) MHz" begin
             samples_per_code = ceil(Int, get_code_length(signal) / ustrip(Hz, get_chip_rate(signal)) * ustrip(Hz, sampling_freq))
             plan = plan_acquire(signal, sampling_freq, [prn];
-                min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = num_periods, num_noncoherent_accumulations = 1,
+                min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = num_periods, num_noncoherent_integrations = 1,
                 max_doppler_passes = 1)
 
             @test plan.num_blocks * plan.block_size == samples_per_code
@@ -274,7 +274,7 @@ end
 
             results = acquire(signal, ComplexF32.(samples), sampling_freq, [prn];
                 interm_freq = 0.0Hz, min_doppler_coverage = 5_000Hz,
-                num_coherently_integrated_code_periods = num_periods, num_noncoherent_accumulations = 1)
+                num_coherently_integrated_code_periods = num_periods, num_noncoherent_integrations = 1)
 
             @test is_detected(only(results))
             @test abs(only(results).code_phase - code_phase) < 1.0
@@ -335,7 +335,7 @@ end
         # simple/pilot, N_nc = 1 (dominant wide-search config)
         plan_acquire(GPSL1CA(), 5e6Hz, [1]),
         # multistep simple
-        plan_acquire(GPSL1CA(), 5e6Hz, [1]; num_noncoherent_accumulations = 4),
+        plan_acquire(GPSL1CA(), 5e6Hz, [1]; num_noncoherent_integrations = 4),
         # bit + bit-edge search
         plan_acquire(GPSL1CA(), 2.048e6Hz, [1];
             min_doppler_coverage = 10_000Hz,
@@ -365,7 +365,7 @@ end
             # Row sums span the stitched grid of all Doppler passes.
             @test length(scratch.row_sums_buf) <= length(plan.doppler_freqs)
             @test length(scratch.col_power_buf) <= ndop
-            if plan.num_noncoherent_accumulations == 1
+            if plan.num_noncoherent_integrations == 1
                 @test size(scratch.noncoherent_accumulator) == (0, 0)
             end
         end
@@ -379,7 +379,7 @@ end
         noise_estimator = GlobalMeanNoiseEstimator())
     @test length(Acquisition._default_scratch(seq_gm_plan).col_sums_buf) ==
         seq_gm_plan.samples_per_code_eff
-    multi_plan = plan_acquire(GPSL1CA(), 5e6Hz, [1]; num_noncoherent_accumulations = 2)
+    multi_plan = plan_acquire(GPSL1CA(), 5e6Hz, [1]; num_noncoherent_integrations = 2)
     @test length(Acquisition._default_scratch(multi_plan).col_sums_buf) ==
         multi_plan.samples_per_code_eff
 end
@@ -464,7 +464,7 @@ end
 end
 
 @testset "N_nc=1 streams with no surface; N_nc>1 holds one surface per slot" begin
-    # At num_noncoherent_accumulations == 1 every power cell is produced
+    # At num_noncoherent_integrations == 1 every power cell is produced
     # exactly once, so the result statistics are streamed per tile and NO
     # noncoherent power matrix exists anywhere — neither per PRN (that plan
     # field is gone) nor per thread.
@@ -473,7 +473,7 @@ end
     prns = collect(1:4)
 
     seq_plan = plan_acquire(signal, sampling_freq, prns;
-        num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 1)
+        num_coherently_integrated_code_periods = 1, num_noncoherent_integrations = 1)
     seq_scratch = Acquisition._default_scratch(seq_plan)
     @test !hasfield(typeof(seq_plan), :noncoherent_integration_matrices)
     @test !hasfield(Acquisition.AcquisitionScratch, :noncoherent_integration_buf)
@@ -486,7 +486,7 @@ end
     # PRN-outer loop bounds it at ONE per scratch slot — min(threads, cores,
     # num_prns) surfaces total, never one per PRN — and no streaming row sums.
     multi_plan = plan_acquire(signal, sampling_freq, prns;
-        num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 2)
+        num_coherently_integrated_code_periods = 1, num_noncoherent_integrations = 2)
     multi_scratch = Acquisition._default_scratch(multi_plan)
     @test length(multi_plan.thread_scratch) <= length(prns)
     for t_scratch in multi_plan.thread_scratch
@@ -497,7 +497,7 @@ end
     # The all-segment signal-FFT cache is the multistep trade: 16 bytes per
     # signal sample (2x the ComplexF32 signal), read-only shared across PRNs.
     @test size(multi_plan.signal_block_ffts, 2) ==
-        multi_plan.num_noncoherent_accumulations *
+        multi_plan.num_noncoherent_integrations *
         multi_plan.num_coherently_integrated_code_periods * multi_plan.num_blocks
 end
 
@@ -512,7 +512,7 @@ end
     prns = collect(1:4)
 
     plan = plan_acquire(signal, sampling_freq, prns;
-        num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 1)
+        num_coherently_integrated_code_periods = 1, num_noncoherent_integrations = 1)
     cap = min(Threads.nthreads(), max(1, Int(Acquisition.num_cores())), length(prns))
 
     # Pool is sized to the cap; all slots are free initially.
@@ -604,7 +604,7 @@ end
     # Both per-PRN kernels: streamed (N_nc == 1) and multistep (N_nc > 1).
     for n_nc in (1, 3)
         base = (min_doppler_coverage = 10_000Hz, use_secondary_code = false,
-                num_noncoherent_accumulations = n_nc, fft_flag = FFTL.ESTIMATE)
+                num_noncoherent_integrations = n_nc, fft_flag = FFTL.ESTIMATE)
         plain = plan_acquire(signal, sampling_freq, prns; base...)
         # Stride 1 — a yield after every single code block, the most disruptive
         # setting the knob can produce.
@@ -654,11 +654,11 @@ end
         # returns false instead of throwing when one drifts, which would silently
         # bring the first-call compilation back. One plan per search path.
         for plan in (plan_acquire(GPSL1CA(), 5e6Hz, [1, 2]),
-                     plan_acquire(GPSL1CA(), 5e6Hz, [1, 2]; num_noncoherent_accumulations = 3),
+                     plan_acquire(GPSL1CA(), 5e6Hz, [1, 2]; num_noncoherent_integrations = 3),
                      plan_acquire(GPSL5I(), 10.24e6Hz, [1]; num_coherently_integrated_code_periods = 10),
                      # Doppler passes (issue #101), streamed and multistep.
                      plan_acquire(GPSL1CA(), 1.542e6Hz, [1, 2]),
-                     plan_acquire(GPSL1CA(), 1.542e6Hz, [1, 2]; num_noncoherent_accumulations = 3))
+                     plan_acquire(GPSL1CA(), 1.542e6Hz, [1, 2]; num_noncoherent_integrations = 3))
             @test Acquisition._precompile_search(plan) === true
         end
     finally

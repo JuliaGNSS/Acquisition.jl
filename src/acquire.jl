@@ -18,7 +18,7 @@ end
 @inline function _signal_block_ffts_for_step(plan::AcquisitionPlan, step_idx::Int,
                                              pass_idx::Int)
     cols_per_segment = plan.num_coherently_integrated_code_periods * plan.num_blocks
-    first_col = ((pass_idx - 1) * plan.num_noncoherent_accumulations + step_idx - 1) *
+    first_col = ((pass_idx - 1) * plan.num_noncoherent_integrations + step_idx - 1) *
                 cols_per_segment
     view(plan.signal_block_ffts, :, first_col + 1 : first_col + cols_per_segment)
 end
@@ -34,7 +34,7 @@ function _fill_signal_block_ffts!(plan::AcquisitionPlan, samples, segment_length
     sig_buf = plan.sig_buf
     for pass_idx in 1:plan.num_doppler_passes
         pass_freq_hz = interm_freq_hz + plan.doppler_pass_offsets_hz[pass_idx]
-        for step_idx in 1:plan.num_noncoherent_accumulations
+        for step_idx in 1:plan.num_noncoherent_integrations
             seg_start = (step_idx - 1) * segment_length + 1
             _downconvert!(sig_buf, samples, seg_start, segment_length, pass_freq_hz,
                 sampling_freq_hz)
@@ -122,10 +122,10 @@ function _validate_acquire_inputs(plan::AcquisitionPlan, samples, prns)
     segment_length = plan.num_coherently_integrated_code_periods * plan.samples_per_code
     num_segments = length(samples) ÷ segment_length
 
-    num_segments >= plan.num_noncoherent_accumulations ||
+    num_segments >= plan.num_noncoherent_integrations ||
         throw(ArgumentError(
             "Got $(length(samples)) samples → $num_segments full segments of $segment_length, " *
-            "but plan.num_noncoherent_accumulations=$(plan.num_noncoherent_accumulations). " *
+            "but plan.num_noncoherent_integrations=$(plan.num_noncoherent_integrations). " *
             "Provide more samples."))
     return segment_length
 end
@@ -143,7 +143,7 @@ function _acquire!(plan::AcquisitionPlan, samples, prns, segment_length, interm_
     # (unless the caller opts in via store_power_bins). The multistep path
     # (N_nc>1) keeps per-PRN accumulation matrices because the surface carries
     # state across signal segments.
-    if plan.num_noncoherent_accumulations == 1
+    if plan.num_noncoherent_integrations == 1
         _acquire_sequential!(plan, samples, prns, segment_length, interm_freq_hz,
             sampling_freq_hz, subsample_interpolation, store_power_bins, results_channel)
     else
@@ -615,7 +615,7 @@ function _acquire_one_multistep!(plan, results, prns, result_idx, samples,
         accumulator = scratch.noncoherent_accumulator
         fill!(accumulator, 0f0)
         for pass_idx in 1:plan.num_doppler_passes,
-            step_idx in 1:plan.num_noncoherent_accumulations
+            step_idx in 1:plan.num_noncoherent_integrations
             _accumulate_prn_step_tiled!(accumulator,
                 _signal_block_ffts_for_step(plan, step_idx, pass_idx),
                 plan, scratch, prn, step_idx - 1, pass_idx)
@@ -630,7 +630,7 @@ function _acquire_one_multistep!(plan, results, prns, result_idx, samples,
     return nothing
 end
 
-# Sequential path used when num_noncoherent_accumulations == 1: per PRN, the
+# Sequential path used when num_noncoherent_integrations == 1: per PRN, the
 # tiled build+reduce streams the power cells straight into the result
 # statistics (global peak, per-row sums for the noise estimate) — the
 # (num_doppler_bins × samples_per_code_eff) power surface is only materialised
@@ -980,7 +980,7 @@ end
 # the same way until issue #70.
 function _passes_secondary_phase_gate(plan, num_doppler_bins, peak_to_noise)
     num_cells = num_doppler_bins * plan.samples_per_code * plan.num_secondary_rotations
-    threshold = _cfar_threshold(0.01, num_cells, plan.num_noncoherent_accumulations,
+    threshold = _cfar_threshold(0.01, num_cells, plan.num_noncoherent_integrations,
         plan.sign_search_null)
     return peak_to_noise > threshold
 end
@@ -1101,7 +1101,7 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins, samples, inte
         CN0,
         Float32(noise_power),
         Float32(peak_to_noise),
-        plan.num_noncoherent_accumulations,
+        plan.num_noncoherent_integrations,
         result_buf,
         plan.doppler_freqs,
         plan.num_blocks,
@@ -1224,7 +1224,7 @@ function _extract_result_streamed!(plan, scratch, prn,
         CN0,
         Float32(noise_power),
         Float32(peak_to_noise),
-        plan.num_noncoherent_accumulations,
+        plan.num_noncoherent_integrations,
         store_buf,
         plan.doppler_freqs,
         plan.num_blocks,
@@ -1268,7 +1268,7 @@ Convenience wrapper: calls [`plan_acquire`](@ref) then [`acquire!`](@ref).
   - `min_doppler_coverage`: Minimum one-sided Doppler coverage (default: `7000Hz`)
   - `num_coherently_integrated_code_periods`: Code periods per coherent block (default: `1`)
   - `bit_edge_search_steps`: Bit edge search positions (default: `1`)
-  - `num_noncoherent_accumulations`: Non-coherent integration steps (default: `1`)
+  - `num_noncoherent_integrations`: Non-coherent integration steps (default: `1`)
   - `use_secondary_code`: enable the secondary-code rotation search (default: `true`).
     Requires `num_coherently_integrated_code_periods` to be a whole multiple of the
     secondary-code length `L`; a partial period is rejected to avoid the ±Doppler sign
@@ -1305,7 +1305,7 @@ function acquire(
     min_doppler_coverage = 7000Hz,
     num_coherently_integrated_code_periods::Int = 1,
     bit_edge_search_steps::Int = 1,
-    num_noncoherent_accumulations::Int = 1,
+    num_noncoherent_integrations::Int = 1,
     use_secondary_code::Bool = true,
     max_secondary_code_rotations::Int = 32,
     fft_flag = FFTL.MEASURE,
@@ -1320,7 +1320,7 @@ function acquire(
         min_doppler_coverage,
         num_coherently_integrated_code_periods,
         bit_edge_search_steps,
-        num_noncoherent_accumulations,
+        num_noncoherent_integrations,
         use_secondary_code,
         max_secondary_code_rotations,
         fft_flag,
@@ -1363,7 +1363,7 @@ function acquire_stream(
     min_doppler_coverage = 7000Hz,
     num_coherently_integrated_code_periods::Int = 1,
     bit_edge_search_steps::Int = 1,
-    num_noncoherent_accumulations::Int = 1,
+    num_noncoherent_integrations::Int = 1,
     use_secondary_code::Bool = true,
     max_secondary_code_rotations::Int = 32,
     fft_flag = FFTL.MEASURE,
@@ -1379,7 +1379,7 @@ function acquire_stream(
         min_doppler_coverage,
         num_coherently_integrated_code_periods,
         bit_edge_search_steps,
-        num_noncoherent_accumulations,
+        num_noncoherent_integrations,
         use_secondary_code,
         max_secondary_code_rotations,
         fft_flag,
@@ -1420,7 +1420,7 @@ function acquire_stream(
     min_doppler_coverage = 7000Hz,
     num_coherently_integrated_code_periods::Int = 1,
     bit_edge_search_steps::Int = 1,
-    num_noncoherent_accumulations::Int = 1,
+    num_noncoherent_integrations::Int = 1,
     use_secondary_code::Bool = true,
     max_secondary_code_rotations::Int = 32,
     fft_flag = FFTL.MEASURE,
@@ -1436,7 +1436,7 @@ function acquire_stream(
         min_doppler_coverage,
         num_coherently_integrated_code_periods,
         bit_edge_search_steps,
-        num_noncoherent_accumulations,
+        num_noncoherent_integrations,
         use_secondary_code,
         max_secondary_code_rotations,
         fft_flag,

@@ -94,7 +94,7 @@ At low CN0, accumulate power across multiple successive signal segments:
 ```julia
 plan = plan_acquire(signal, sampling_freq, [1];
     num_coherently_integrated_code_periods = 10,
-    num_noncoherent_accumulations = 8)
+    num_noncoherent_integrations = 8)
 
 # 8 × 10 ms of samples at the default 15 MHz
 long_samples = Acquisition.generate_test_signal(signal, 1;

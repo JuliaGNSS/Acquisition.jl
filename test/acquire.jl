@@ -36,7 +36,7 @@ end
     result = acquire(signal, samples, sampling_freq, prn;
         interm_freq,
         num_coherently_integrated_code_periods = 20,
-        num_noncoherent_accumulations = 2,
+        num_noncoherent_integrations = 2,
     )
 
     @test result isa AcquisitionResults
@@ -87,7 +87,7 @@ end
     plan = plan_acquire(signal, sampling_freq, [prn];
         min_doppler_coverage = 7000Hz,
         num_coherently_integrated_code_periods = 1,
-        num_noncoherent_accumulations = 1,
+        num_noncoherent_integrations = 1,
         fft_flag = FFTL.ESTIMATE,
     )
 
@@ -120,7 +120,7 @@ end
     plan = plan_acquire(signal, sampling_freq, [1, 2];
         min_doppler_coverage = 7000Hz,
         num_coherently_integrated_code_periods = 1,
-        num_noncoherent_accumulations = 1,
+        num_noncoherent_integrations = 1,
         fft_flag = FFTL.ESTIMATE,
     )
     results = acquire!(plan, mixed_signal, [1, 2]; interm_freq = 0.0Hz)
@@ -143,7 +143,7 @@ end
     signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
     plan = plan_acquire(signal, sampling_freq, [1, 2];
-        num_noncoherent_accumulations = 2, fft_flag = FFTL.ESTIMATE)
+        num_noncoherent_integrations = 2, fft_flag = FFTL.ESTIMATE)
     (; samples, code_phase) = generate_test_signal(signal, 1;
         num_samples = 2 * plan.samples_per_code, carrier_doppler = 800Hz, code_phase = 150.0,
         sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 13)
@@ -175,10 +175,10 @@ end
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = CN0_dbhz, seed = seed)
 
     plan_seq = plan_acquire(signal, sampling_freq, [prn];
-        num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 1,
+        num_coherently_integrated_code_periods = 1, num_noncoherent_integrations = 1,
         fft_flag = FFTL.ESTIMATE)
     plan_multi = plan_acquire(signal, sampling_freq, [prn];
-        num_coherently_integrated_code_periods = 1, num_noncoherent_accumulations = 2,
+        num_coherently_integrated_code_periods = 1, num_noncoherent_integrations = 2,
         fft_flag = FFTL.ESTIMATE)
 
     # Sequential path consumes the first segment.
@@ -216,7 +216,7 @@ end
         sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
 
     plan = plan_acquire(signal, sampling_freq, [prn];
-        num_coherently_integrated_code_periods = 40, num_noncoherent_accumulations = 1,
+        num_coherently_integrated_code_periods = 40, num_noncoherent_integrations = 1,
         fft_flag = FFTL.ESTIMATE)
     @test plan.num_bits == 2   # confirm the sign-search path is exercised
 
@@ -448,7 +448,7 @@ end
         num_samples = 4 * 2048, carrier_doppler = 500Hz, code_phase = true_cp,
         sampling_freq, interm_freq = 0.0Hz, CN0 = 42, seed = 8)
     plan = plan_acquire(signal, sampling_freq, [prn];
-        num_noncoherent_accumulations = 4, fft_flag = FFTL.ESTIMATE)
+        num_noncoherent_integrations = 4, fft_flag = FFTL.ESTIMATE)
     result = acquire!(plan, ComplexF32.(samples), prn;
         interm_freq = 0.0Hz, subsample_interpolation = true, store_power_bins = true)
     @test is_detected(result)
@@ -612,7 +612,7 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
 
     @testset "multistep path (N_nc > 1)" begin
         plan_ms = plan_acquire(signal, sampling_freq, prns;
-            num_noncoherent_accumulations = 2, fft_flag = FFTL.ESTIMATE)
+            num_noncoherent_integrations = 2, fft_flag = FFTL.ESTIMATE)
         long_signal = generate_test_signal(signal, 1;
             num_samples = 2 * 2048, carrier_doppler = 800Hz, code_phase = 150.0,
             sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 13).samples
