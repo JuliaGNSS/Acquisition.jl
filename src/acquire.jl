@@ -1271,7 +1271,8 @@ Convenience wrapper: calls [`plan_acquire`](@ref) then [`acquire!`](@ref).
   - `num_noncoherent_integrations`: Non-coherent integration steps (default: `1`)
   - `use_secondary_code`: enable the secondary-code rotation search (default: `true`).
     Requires `num_coherently_integrated_code_periods` to be a whole multiple of the
-    secondary-code length `L`; a partial period is rejected to avoid the ±Doppler sign
+    PRNs' secondary-code length `L = get_secondary_code_length(signal, prn)`, which
+    must be the same for all `prns`; a partial period is rejected to avoid the ±Doppler sign
     ambiguity (issue #68). See [`plan_acquire`](@ref).
   - `fft_flag`: FFT planning flag, accepted for compatibility and ignored
     (default: `FFTL.MEASURE`)

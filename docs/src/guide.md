@@ -822,9 +822,11 @@ end, and all `2^num_bits` sign combinations of the partial and whole bits
 are searched.
 
 A BeiDou B1I or B3I GEO satellite broadcasts D2 bits every 2 ms, where the
-other satellites broadcast D1 every 20 ms (`get_code_periods_per_bit(signal, prn)`).
-A plan whose window spans more than one D2 bit therefore needs the GEO PRNs
-planned separately; `plan_acquire` throws if they are mixed.
+other satellites broadcast D1 every 20 ms (`get_code_periods_per_bit(signal, prn)`),
+and carries no NH20 secondary code (`get_secondary_code_length(signal, prn) == 1`).
+A plan whose window spans more than one code period therefore needs the GEO PRNs
+planned separately — unless `use_secondary_code = false` and the window fits in one
+D2 bit; `plan_acquire` throws if they are mixed.
 
 **Pilot channels** (e.g. GPS L5-Q, Galileo E1-C): no bit constraint; set
 `num_coherently_integrated_code_periods` freely.

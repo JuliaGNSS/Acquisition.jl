@@ -76,6 +76,32 @@ end
         num_coherently_integrated_code_periods = 3, use_secondary_code = false)
 end
 
+@testset "plan_acquire searches a BeiDou GEO satellite without NH20" begin
+    signal = BeiDouB1I()
+    sampling_frequency = 4.092e6Hz
+    # A GEO satellite carries no NH20 code, so its plan runs no rotation search,
+    # while the other satellites' plan searches all 20 NH20 rotations.
+    plan_geo_nh = plan_acquire(signal, sampling_frequency, [1, 2];
+        num_coherently_integrated_code_periods = 4)
+    @test plan_geo_nh.num_secondary_rotations == 1
+    @test plan_geo_nh.num_code_phase_bins == plan_geo_nh.samples_per_code
+    plan_meo_nh = plan_acquire(signal, sampling_frequency, [6, 7];
+        num_coherently_integrated_code_periods = 20)
+    @test plan_meo_nh.num_secondary_rotations == 20
+    # One rotation search cannot cover both, in any PRN order …
+    for prns in ([1, 6], [6, 1])
+        err = try
+            plan_acquire(signal, sampling_frequency, prns;
+                num_coherently_integrated_code_periods = 20)
+        catch e
+            e
+        end
+        @test err isa ArgumentError && occursin("Plan the GEO PRNs separately", err.msg)
+    end
+    # … but without a rotation search they mix.
+    @test plan_acquire(signal, sampling_frequency, [1, 6]).num_secondary_rotations == 1
+end
+
 @testset "plan_acquire stores secondary-code search configuration" begin
     # L1 C/A has no secondary code (L = 1) → rotation axis is a no-op.
     plan_l1 = plan_acquire(GPSL1CA(), 2.048e6Hz, [1];

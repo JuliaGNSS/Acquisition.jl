@@ -216,7 +216,7 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     use_secondary_code::Bool
     max_secondary_code_rotations::Int
     # Derived: number of secondary-code rotation phases to enumerate. Equals
-    # get_secondary_code_length(signal) when the search is active, else 1.
+    # get_secondary_code_length(signal, prn) when the search is active, else 1.
     num_secondary_rotations::Int
     # Pre-computed ±1 secondary-code pattern per rotation, (num_coh_periods,
     # num_secondary_rotations) per PRN — a single all-+1 column without a
@@ -477,17 +477,21 @@ multi-threaded acquisition. Scratch buffers are tile-sized (nothing scales with
   steps (default: `1`). The samples passed to `acquire!` must contain at least
   `num_noncoherent_integrations` full segments.
 - `use_secondary_code`: enable the secondary-code rotation search (default: `true`).
-  When the signal has a secondary code of length `L > 1` and
+  When the PRNs carry a secondary code of length
+  `L = get_secondary_code_length(signal, prn) > 1` and
   `num_coherently_integrated_code_periods > 1`, the search jointly estimates the
   unknown secondary-code start phase, recovering the full coherent gain.
   **`num_coherently_integrated_code_periods` must then be a whole multiple of `L`**
   (e.g. `10` for GPS L5I's NH10). A partial secondary period introduces a ±Doppler
   sign ambiguity (a near-equal mirror peak at `-f`; issue #68) and is rejected with
-  an `ArgumentError`. Set `false` to opt out of the search (no constraint, coarser
-  effective gain when a secondary code is present).
+  an `ArgumentError`. `L` is per PRN: a BeiDou B1I/B3I GEO satellite carries no NH20
+  code (`L = 1`), so the constraint does not apply to it, and PRNs of different `L`
+  cannot share one rotation search — plan the GEO PRNs separately. Set `false` to opt
+  out of the search (no constraint, coarser effective gain when a secondary code is
+  present).
 - `max_secondary_code_rotations`: cap on the secondary-code rotation-search size
-  (default: `32`). `plan_acquire` errors if `L` exceeds this, before allocating
-  buffers, so large-`L` signals (e.g. GPS L1C-P, `L = 1800`) fail fast.
+  (default: `32`). `plan_acquire` errors if the PRNs' `L` exceeds this, before
+  allocating buffers, so large-`L` signals (e.g. GPS L1C-P, `L = 1800`) fail fast.
 - `noise_estimator`: how `acquire!` estimates noise power for the CFAR
   test statistic. Defaults to [`OppositeRowNoiseEstimator`](@ref) (averages
   one Doppler row, robust to Doppler-conditional banding from DC offset/IF
@@ -618,15 +622,33 @@ function _plan_acquire(
         throw(ArgumentError("bit_edge_search_steps must be 1 when num_coherently_integrated_code_periods == 1 (sub-bit mode; no bit boundary search applies), got $bit_edge_search_steps"))
     end
 
+    # Secondary-code length, per satellite like the bit period below: it is a
+    # signal's on every signal but BeiDou B1I and B3I, whose GEO satellites carry
+    # no NH20 overlay (length 1). One plan searches one set of rotations, so the
+    # satellites it is built for must agree on it whenever the rotation search runs.
+    secondary_code_lengths = isempty(prns) ? [get_secondary_code_length(signal)] :
+                             sort!(unique(get_secondary_code_length(signal, prn) for prn in prns))
+    if use_secondary_code && num_coherently_integrated_code_periods > 1 &&
+       length(secondary_code_lengths) > 1
+        throw(ArgumentError(
+            "The PRNs have secondary codes of $(join(secondary_code_lengths, " and ")) chips " *
+            "(get_secondary_code_length(signal, prn); BeiDou GEO satellites carry no NH20 " *
+            "overlay), so one secondary-code rotation search cannot cover them. Plan the GEO " *
+            "PRNs separately, set num_coherently_integrated_code_periods = 1, or set " *
+            "use_secondary_code = false."))
+    end
+    # Agreed on whenever it matters: with mixed lengths the rotation search is off.
+    secondary_code_length = first(secondary_code_lengths)
+
     # Secondary-code rotation search cap. Fires before any heavy allocation so a
     # user who hits the cap on a large-L signal (e.g. GPS L1C-P, L=1800) is not
     # paying the cost of the plan's buffers just to learn that the search is too big.
-    let L = get_secondary_code_length(signal)
+    let L = secondary_code_length
         if use_secondary_code && L > 1 && num_coherently_integrated_code_periods > 1 && L > max_secondary_code_rotations
             throw(ArgumentError(
                 "Secondary-code rotation search size exceeds the per-plan cap for " *
                 "$(typeof(signal).name.name): " *
-                "get_secondary_code_length(signal)=$L > max_secondary_code_rotations=$max_secondary_code_rotations " *
+                "get_secondary_code_length(signal, prn)=$L > max_secondary_code_rotations=$max_secondary_code_rotations " *
                 "at num_coherently_integrated_code_periods=$num_coherently_integrated_code_periods. " *
                 "Remedies (in order): " *
                 "(1) reduce num_coherently_integrated_code_periods; " *
@@ -798,9 +820,8 @@ function _plan_acquire(
     # per tile and NO noncoherent power matrix exists at all — see
     # `_acquire_prn_streamed!`. The multistep path (N_nc > 1) accumulates across
     # signal segments into one per-claimed-scratch surface (PRN-outer loop).
-    # Derive the secondary-code rotation search size. No-op for signals without a
-    # secondary code (L = 1) or when the user opts out.
-    secondary_code_length = get_secondary_code_length(signal)
+    # Derive the secondary-code rotation search size. No-op for signals or
+    # satellites without a secondary code (L = 1) or when the user opts out.
     rotation_search_active = use_secondary_code &&
                              secondary_code_length > 1 &&
                              num_coherently_integrated_code_periods > 1

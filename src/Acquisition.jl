@@ -37,10 +37,11 @@ Results from GNSS signal acquisition for a single PRN.
   - `code_phase::Float64`: Estimated code phase in chips
   - `secondary_code_phase::Union{Int,Nothing}`: Secondary-code phase index — the
     secondary-code chip the start of the coherent window aligned to, in
-    `0:get_secondary_code_length(signal)-1`. Estimated exactly by despreading the
+    `0:get_secondary_code_length(signal, prn)-1`. Estimated exactly by despreading the
     per-period prompt correlations at the recovered `(carrier_doppler, code_phase)`.
-    `nothing` when no rotation search ran (no secondary code, `use_secondary_code = false`,
-    or `num_coherently_integrated_code_periods == 1`) or when the peak does not clear the
+    `nothing` when no rotation search ran (no secondary code for the PRN, as for a BeiDou
+    GEO satellite; `use_secondary_code = false`; or
+    `num_coherently_integrated_code_periods == 1`) or when the peak does not clear the
     CFAR detection threshold (a non-detected peak has no meaningful secondary phase).
     Useful for seeding a tracking loop's secondary-code alignment.
   - `cn0::Float64`: Carrier-to-noise density ratio in dB-Hz
@@ -85,10 +86,10 @@ struct AcquisitionResults{S<:AbstractGNSSSignal,T,D<:AbstractRange}
     code_phase::Float64
     # Secondary-code phase index (which secondary-code chip the start of the
     # coherent integration window aligned to) recovered by the secondary-code
-    # rotation search. `nothing` when no rotation search ran — i.e. the signal
+    # rotation search. `nothing` when no rotation search ran — i.e. the PRN
     # has no secondary code, `use_secondary_code = false`, or
     # `num_coherently_integrated_code_periods == 1`. When populated it is an
-    # integer in `0:get_secondary_code_length(signal)-1`, suitable for seeding a
+    # integer in `0:get_secondary_code_length(signal, prn)-1`, suitable for seeding a
     # tracking loop's secondary-code alignment.
     secondary_code_phase::Union{Int, Nothing}
     cn0::Float64
@@ -100,7 +101,7 @@ struct AcquisitionResults{S<:AbstractGNSSSignal,T,D<:AbstractRange}
     num_blocks::Int
     block_size::Int
     # Number of secondary-code rotation hypotheses searched per (Doppler, code
-    # phase) cell. `1` on every non-rotation path; `get_secondary_code_length(signal)`
+    # phase) cell. `1` on every non-rotation path; `get_secondary_code_length(signal, prn)`
     # when the secondary-code rotation search is active. The peak is taken over the
     # expanded `num_doppler_bins × (samples_per_code × num_secondary_rotations)`
     # surface, so this factor is part of the CFAR cell count (see `get_num_cells`).
