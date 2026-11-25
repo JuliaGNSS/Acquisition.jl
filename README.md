@@ -37,7 +37,7 @@ import Unitful: Hz
 signal = GPSL1CA()
 
 # Generate a synthetic GPS L1 C/A signal for PRN 1
-(; samples, sampling_freq, interm_freq) = generate_test_signal(signal, 1)
+(; samples, sampling_freq, interm_freq) = Acquisition.generate_test_signal(signal, 1)
 
 # Acquire PRNs 1–32
 results = acquire(signal, samples, sampling_freq, 1:32; interm_freq)
@@ -81,7 +81,7 @@ block returns, `break`s or throws. `acquire_stream!` without a block hands back 
 bare channel instead, which is fine when the consumer runs to completion — but a
 `break` out of `for result in acquire_stream!(...)` does *not* close the channel, and
 leaves the search running and still holding the plan. (It cannot corrupt anything: the
-next search on that plan raises `PlanInUseError`.)
+next search on that plan raises `Acquisition.PlanInUseError`.)
 
 On a 32-PRN GPS L1 C/A search at 2.048 MHz with 4 threads, the first result arrives
 after 0.09 ms instead of the 0.72 ms the whole call takes, at no measurable cost to
@@ -97,7 +97,7 @@ plan = plan_acquire(signal, sampling_freq, [1];
     num_noncoherent_accumulations = 8)
 
 # 8 × 10 ms of samples at the default 15 MHz
-long_samples = generate_test_signal(signal, 1;
+long_samples = Acquisition.generate_test_signal(signal, 1;
     num_samples = 8 * 10 * 15_000, sampling_freq, CN0 = 30).samples
 
 results = acquire!(plan, long_samples, [1])

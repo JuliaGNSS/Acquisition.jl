@@ -32,7 +32,7 @@ Threshold value to compare against `result.peak_to_noise_ratio`.
 using Acquisition, GNSSSignals
 
 signal = GPSL1CA()
-(; samples, sampling_freq, interm_freq) = generate_test_signal(signal, 1)
+(; samples, sampling_freq, interm_freq) = Acquisition.generate_test_signal(signal, 1)
 results = acquire(signal, samples, sampling_freq, 1:32; interm_freq)
 detected = filter(is_detected, results)
 ```

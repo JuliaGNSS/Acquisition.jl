@@ -11,7 +11,7 @@ plan_acquire
 cfar_threshold
 is_detected
 get_num_cells
-generate_test_signal
+Acquisition.generate_test_signal
 ```
 
 ## Types
@@ -19,16 +19,16 @@ generate_test_signal
 ```@docs
 AcquisitionResults
 AcquisitionPlan
-PlanInUseError
+Acquisition.PlanInUseError
 Acquisition.SignSearchNull
 ```
 
 ## Noise Estimators
 
 ```@docs
-AbstractNoiseEstimator
 OppositeRowNoiseEstimator
 GlobalMeanNoiseEstimator
+Acquisition.AbstractNoiseEstimator
 ```
 
 ## Index

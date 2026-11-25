@@ -2,7 +2,8 @@
     generate_test_signal(signal, prn; kwargs...) -> NamedTuple
 
 Generate a synthetic noisy GNSS signal. Useful for testing acquisition and
-demonstrating the API.
+demonstrating the API. Not exported, as it is test tooling rather than part of a
+receiver: write `Acquisition.generate_test_signal`.
 
 Returns a NamedTuple with fields: `samples`, `code`, `carrier`, `num_samples`,
 `doppler`, `code_phase`, `sampling_freq`, `interm_freq`, `CN0`, `prn`.
@@ -24,7 +25,7 @@ Returns a NamedTuple with fields: `samples`, `code`, `carrier`, `num_samples`,
 ```julia
 using Acquisition, GNSSSignals
 
-(; samples, prn, sampling_freq, interm_freq) = generate_test_signal(GPSL1CA(), 1)
+(; samples, prn, sampling_freq, interm_freq) = Acquisition.generate_test_signal(GPSL1CA(), 1)
 result = acquire(GPSL1CA(), samples, sampling_freq, prn; interm_freq)
 is_detected(result)  # true
 ```

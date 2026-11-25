@@ -1,5 +1,6 @@
 using Test, FFTL, Acquisition, GNSSSignals, Random, Aqua, Unitful, RecipesBase
 import Unitful: Hz
+using Acquisition: generate_test_signal
 
 # Each new plan shape would otherwise compile its plan-dependent kernels in
 # `plan_acquire` (see `_precompile_search`); the suite builds dozens of shapes.
@@ -9,6 +10,8 @@ Acquisition._PRECOMPILE_SEARCH[] = false
 @testset "Aqua" begin
     Aqua.test_all(Acquisition)
 end
+
+include("api.jl")
 
 include("est_signal_noise_power.jl")
 include("cfar.jl")

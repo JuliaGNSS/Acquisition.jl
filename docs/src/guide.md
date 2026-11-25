@@ -11,7 +11,7 @@ import Unitful: Hz
 signal = GPSL1CA()
 
 # Generate synthetic GPS L1 C/A samples for PRN 1 (1 ms, 4 MHz)
-(; samples, sampling_freq, interm_freq) = generate_test_signal(signal, 1;
+(; samples, sampling_freq, interm_freq) = Acquisition.generate_test_signal(signal, 1;
     num_samples = 4096, sampling_freq = 4e6Hz)
 nothing # hide
 ```
@@ -355,7 +355,7 @@ nothing will ever fill. (The exception reaches the consumer wrapped in a
 Leaving a *bare-channel* stream early is the one case that needs care: a `for` loop
 does not close the channel it iterates, so a plain `break` leaves the search running
 and still holding the plan. Nothing is corrupted — the next search on that plan raises
-`PlanInUseError` — but nothing is stopped either. Use the `do`-block form, or `close`
+[`Acquisition.PlanInUseError`](@ref) — but nothing is stopped either. Use the `do`-block form, or `close`
 the channel and drain it yourself.
 
 [`acquire_stream`](@ref) is the same thing one level up — it plans and streams in a
@@ -386,7 +386,7 @@ measures within run-to-run noise at 1, 8 and 32 PRNs.
     ordered by `prns`, so the batch and streaming views can be mixed freely.
   - **The plan is in use until the search finishes.** The search writes into the plan's
     buffers from another task, so the same `plan` cannot serve a second `acquire!` or
-    `acquire_stream!` until the stream is done — trying raises `PlanInUseError` rather
+    `acquire_stream!` until the stream is done — trying raises [`Acquisition.PlanInUseError`](@ref) rather
     than letting two searches share one set of buffers. Iterating the channel to
     completion ends the search; the `do`-block form also ends it on `break`, `return`
     and exceptions. The `signal` must stay unmodified for the same span.
@@ -421,7 +421,7 @@ plan_ni = plan_acquire(signal, sampling_freq, [1];
     num_coherently_integrated_code_periods = 10,
     num_noncoherent_accumulations = 8)
 
-long_samples = generate_test_signal(signal, 1;
+long_samples = Acquisition.generate_test_signal(signal, 1;
     num_samples = 8 * 10 * 4096,
     sampling_freq = sampling_freq, CN0 = 30).samples
 
@@ -455,7 +455,7 @@ prn = 1
 doppler = 1500Hz
 
 # Generate 2 ms of samples (8000 at 4 MHz) — reused across all three plots
-signal_2ms = generate_test_signal(signal, prn;
+signal_2ms = Acquisition.generate_test_signal(signal, prn;
     num_samples = 8000, sampling_freq = fs, doppler = doppler).samples
 
 plan_1ms = plan_acquire(signal, fs, [prn])

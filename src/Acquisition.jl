@@ -16,15 +16,12 @@ export acquire,
     acquire_stream!,
     plan_acquire,
     AcquisitionPlan,
-    PlanInUseError,
     AcquisitionResults,
-    AbstractNoiseEstimator,
     OppositeRowNoiseEstimator,
     GlobalMeanNoiseEstimator,
     cfar_threshold,
     get_num_cells,
-    is_detected,
-    generate_test_signal
+    is_detected
 
 """
     AcquisitionResults{S,T}
