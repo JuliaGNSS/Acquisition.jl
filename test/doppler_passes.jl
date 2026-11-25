@@ -6,7 +6,7 @@
 # reaching the coverage is `num_blocks` when the coverage asks for just under it.
 function _single_grid_plan(system, sampling_freq, prns, num_blocks; kwargs...)
     N_coh = get(kwargs, :num_coherently_integrated_code_periods, 1)
-    spc = ceil(Int, get_code_length(system) / get_code_frequency(system) * sampling_freq)
+    spc = ceil(Int, get_code_length(system) / get_chip_rate(system) * sampling_freq)
     bin_width = sampling_freq / spc
     coverage = ((num_blocks - 2 / N_coh) / 2 - 0.01) * bin_width
     plan = plan_acquire(system, sampling_freq, prns; kwargs...,
@@ -72,7 +72,7 @@ end
         plan = plan_acquire(GPSL1CA(), fs, [1]; min_doppler_coverage = coverage,
             num_coherently_integrated_code_periods = N_coh)
         if Acquisition._code_doppler_compensation(ustrip(Hz, coverage),
-            get_code_center_frequency_ratio(GPSL1CA()), N_coh, 1000.0)
+            get_chip_rate_to_center_frequency_ratio(GPSL1CA()), N_coh, 1000.0)
             @test plan.num_doppler_passes > 1
         else
             @test plan.num_doppler_passes == 1

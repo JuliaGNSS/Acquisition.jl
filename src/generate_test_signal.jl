@@ -44,12 +44,13 @@ function generate_test_signal(
 )
     Random.seed!(seed)
 
+    code_frequency = get_chip_rate(system) + doppler * get_chip_rate_to_center_frequency_ratio(system)
     code = gen_code(
         num_samples,
         system,
         prn,
         sampling_freq,
-        get_code_frequency(system) + doppler * get_code_center_frequency_ratio(system),
+        code_frequency,
         code_phase,
     )
 

@@ -11,7 +11,7 @@ function _tuning_layouts(plan::AcquisitionPlan, num_prns::Int,
     N = plan.num_coherently_integrated_code_periods
     width = ustrip(Hz, plan.sampling_freq) / plan.samples_per_code
     coverage = ustrip(Hz, min_doppler_coverage)
-    ratio = get_code_center_frequency_ratio(plan.system)
+    ratio = get_chip_rate_to_center_frequency_ratio(plan.system)
     candidates = DopplerLayout[]
     _doppler_search_layout(plan.samples_per_code, width, coverage, N,
         max_doppler_passes, num_prns, ratio, candidates)

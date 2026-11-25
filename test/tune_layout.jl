@@ -25,7 +25,7 @@ end
         @test first(grid) <= -10000.0
         @test last(grid) >= 10000.0
         @test plan.samples_per_code % layout.num_blocks == 0
-        @test (layout.bins_per_pass ÷ 2 + 0.5) * get_code_center_frequency_ratio(system) <=
+        @test (layout.bins_per_pass ÷ 2 + 0.5) * get_chip_rate_to_center_frequency_ratio(system) <=
             Acquisition._MAX_CODE_DOPPLER_DRIFT
     end
     capped = plan_acquire(system, 2.048e6Hz, [1];

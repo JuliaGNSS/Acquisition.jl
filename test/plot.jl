@@ -47,7 +47,7 @@ end
         min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = 1,
         num_noncoherent_accumulations = 1)
 
-    f_code = Float64(ustrip(Hz, get_code_frequency(system)))
+    f_code = Float64(ustrip(Hz, get_chip_rate(system)))
     fs     = Float64(ustrip(Hz, sampling_freq))
 
     # Build a dummy power_bins matrix (all ones — shape correctness test)

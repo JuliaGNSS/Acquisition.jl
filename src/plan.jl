@@ -381,7 +381,7 @@ function _precompute_prn_ffts!(
     fft_size::Int,
     fft_plan,
 )
-    prn_code = gen_code(samples_per_code, system, prn, sampling_freq, get_code_frequency(system), 0.0)
+    prn_code = gen_code(samples_per_code, system, prn, sampling_freq, get_chip_rate(system), 0.0)
     conj_fft_matrix = zeros(ComplexF32, fft_size, num_blocks)
     fft_buf = zeros(ComplexF32, fft_size)
     for block_idx in 0:num_blocks-1
@@ -637,18 +637,12 @@ function _plan_acquire(
     end
 
     # Samples per code period
-    samples_per_code = ceil(Int, get_code_length(system) / get_code_frequency(system) * sampling_freq)
+    samples_per_code = ceil(Int, get_code_length(system) / get_chip_rate(system) * sampling_freq)
 
-    # Determine data bit period in code periods (bit_period_codes)
-    data_freq = get_data_frequency(system)
-    data_freq_hz = ustrip(Hz, data_freq)
-    has_data = isfinite(data_freq_hz) && data_freq_hz > 0
-    bit_period_codes = if has_data
-        bit_samples = ceil(Int, sampling_freq / data_freq)
-        bit_samples ÷ samples_per_code
-    else
-        num_coherently_integrated_code_periods  # no constraint for pilot channels
-    end
+    # Data bit period in code periods (bit_period_codes); 0 for a pilot, which
+    # broadcasts no bits and so imposes no constraint.
+    bit_period_codes = get_code_periods_per_bit(system)
+    has_data = bit_period_codes > 0
 
     # Blocks per code period and Doppler passes (src/doppler_passes.jl).
     #
@@ -676,7 +670,7 @@ function _plan_acquire(
     layout = _doppler_layout === nothing ?
         _doppler_search_layout(samples_per_code, bin_width, min_doppler_coverage_hz,
             num_coherently_integrated_code_periods, max_doppler_passes, length(prns),
-            get_code_center_frequency_ratio(system)) : _doppler_layout
+            get_chip_rate_to_center_frequency_ratio(system)) : _doppler_layout
     if isnothing(layout)
         throw(ArgumentError(
             "No valid num_blocks found: samples_per_code=$samples_per_code has no divisor " *
@@ -754,11 +748,11 @@ function _plan_acquire(
         num_coherently_integrated_code_periods)
 
     compensate = _code_doppler_compensation(min_doppler_coverage_hz,
-        get_code_center_frequency_ratio(system), num_coherently_integrated_code_periods,
+        get_chip_rate_to_center_frequency_ratio(system), num_coherently_integrated_code_periods,
         bin_width)
     code_doppler_shifts_per_period = compensate ?
-        doppler_pass_offsets_hz .* (get_code_center_frequency_ratio(system) *
-            samples_per_code / ustrip(Hz, get_code_frequency(system))) :
+        doppler_pass_offsets_hz .* (get_chip_rate_to_center_frequency_ratio(system) *
+            samples_per_code / ustrip(Hz, get_chip_rate(system))) :
         zeros(Float64, num_doppler_passes)
     code_doppler_phasors = Union{Nothing,Matrix{ComplexF32}}[
         _code_doppler_phasors(fft_size, num_coherently_integrated_code_periods, shift)

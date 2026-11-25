@@ -10,7 +10,7 @@
         @test last(plan.doppler_freqs) >= 7000Hz
         # Include half a bin beyond the most distant kept bin.
         residual = (plan.doppler_bins_per_pass ÷ 2 + 0.5) *
-            get_code_center_frequency_ratio(system)
+            get_chip_rate_to_center_frequency_ratio(system)
         @test residual <= Acquisition._MAX_CODE_DOPPLER_DRIFT
         @test any(!iszero, plan.code_doppler_shifts_per_period)
         rec = only(recommend_sampling_freqs(system; fs_min = fs, fs_max = fs,
@@ -41,7 +41,7 @@
     @test wide.num_doppler_passes > 16
     @test any(!iszero, wide.code_doppler_shifts_per_period)
     @test (wide.doppler_bins_per_pass ÷ 2 + 0.5) *
-        get_code_center_frequency_ratio(system) <= Acquisition._MAX_CODE_DOPPLER_DRIFT
+        get_chip_rate_to_center_frequency_ratio(system) <= Acquisition._MAX_CODE_DOPPLER_DRIFT
     wide_rec = only(recommend_sampling_freqs(system; fs_min = fs, fs_max = fs,
         min_doppler_coverage = 15000Hz, num_prns = 1,
         num_coherently_integrated_code_periods = 20))
@@ -93,9 +93,9 @@ end
             primary(rate) = [system.codes[mod(floor(Int,
                 code_phase + t * ustrip(rate / fs)), get_code_length(system)) + 1, 1]
                 for t in 0:n-1]
-            reference = carrier .* primary(get_code_frequency(system))
-            signal = carrier .* primary(get_code_frequency(system) +
-                doppler * get_code_center_frequency_ratio(system))
+            reference = carrier .* primary(get_chip_rate(system))
+            signal = carrier .* primary(get_chip_rate(system) +
+                doppler * get_chip_rate_to_center_frequency_ratio(system))
             # Keep the carrier layout identical in all three measurements.
             fill!(plan.code_doppler_shifts_per_period, 0.0)
             reference_peak = peak(acquire!(plan, reference, 1))

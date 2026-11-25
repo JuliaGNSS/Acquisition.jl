@@ -15,17 +15,11 @@
 # `_precompile_search`). Every signal costs ~3 s of compilation here.
 using PrecompileTools: @setup_workload, @compile_workload
 
-# Galileo E5b, E6 and the E5a pilot's QP component only exist from GNSSSignals 4
-# on, while this package supports `GNSSSignals = "3, 4"`. Naming one that the
-# resolved version does not define would make this workload — and with it the
-# whole package — fail to precompile, so they are included only when present.
-_precompile_optional(name) =
-    isdefined(GNSSSignals, name) ? (getfield(GNSSSignals, name)(),) : ()
-
 const _PRECOMPILE_SIGNALS = (
     GPSL1CA(),
     GPSL1C_D(),
     GPSL1C_P(),
+    GPSL1C_P(TMBOC),
     GPSL2CM(),
     # GPS L2CL is left out: its code is 767 250 chips (1.5 s) long, so one code
     # period is a multi-million-sample search that takes minutes — and a receiver
@@ -33,16 +27,16 @@ const _PRECOMPILE_SIGNALS = (
     GPSL5I(),
     GPSL5Q(),
     GalileoE1B(),
-    GalileoE1B_BOC11(),
+    GalileoE1B(CBOC),
     GalileoE1C(),
-    GalileoE1C_BOC11(),
+    GalileoE1C(CBOC),
     GalileoE5aI(),
     GalileoE5aQ(),
-    _precompile_optional(:GalileoE5aQP)...,
-    _precompile_optional(:GalileoE5bI)...,
-    _precompile_optional(:GalileoE5bQ)...,
-    _precompile_optional(:GalileoE6B)...,
-    _precompile_optional(:GalileoE6C)...,
+    GalileoE5aQP(),
+    GalileoE5bI(),
+    GalileoE5bQ(),
+    GalileoE6B(),
+    GalileoE6C(),
     BeiDouB1I(),
     BeiDouB1C_D(),
     BeiDouB1C_P(),
@@ -61,8 +55,8 @@ const _PRECOMPILE_SIGNALS = (
 # the frequency's element type, and an `Int`-valued rate would compile a
 # specialisation nobody calls.
 function _precompile_sampling_frequency(system)
-    code_frequency = get_code_frequency(system)
-    code_frequency <= 1.1e6Hz ? 16.0 * code_frequency : 2.0 * code_frequency
+    chip_rate = get_chip_rate(system)
+    chip_rate <= 1.1e6Hz ? 16.0 * chip_rate : 2.0 * chip_rate
 end
 
 # One code period at four samples per chip: the shortest signal `acquire`
@@ -70,7 +64,7 @@ end
 function _precompile_signal(system)
     sampling_freq = _precompile_sampling_frequency(system)
     num_samples =
-        round(Int, get_code_length(system) * sampling_freq / get_code_frequency(system))
+        round(Int, get_code_length(system) * sampling_freq / get_chip_rate(system))
     (; signal) = generate_test_signal(
         system,
         1;
