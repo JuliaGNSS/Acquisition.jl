@@ -205,22 +205,22 @@ end
         @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, true_doppler)) < ustrip(Hz, step(plan.doppler_freqs))
     end
 
-    @testset "L5I rotation search — multi-symbol N≥2L (data-bit × rotation; segfault regression)" begin
+    @testset "L5I rotation search — multi-bit N≥2L (bit × rotation; segfault regression)" begin
         # ──────────────────────────────────────────────────────────────────────
-        # Regression for the buffer-overflow segfault when BOTH the data-bit
+        # Regression for the buffer-overflow segfault when BOTH the bit
         # search and the rotation search are active (N ≥ 2·L). At N = 20 on L5I
-        # (L = 10) the kernel enumerates num_data_combos(2) × num_secondary_
+        # (L = 10) the kernel enumerates num_bit_combos(2) × num_secondary_
         # rotations(10) = 20 pattern columns, but the noncoherent buffer's cp
         # axis is only widened by num_secondary_rotations = 10. The kernel used
         # to write `dest_col = col + (q-1)*samples_per_code` for all 20 patterns,
         # overrunning the 10-block buffer → out-of-bounds write → segfault. No
         # prior test exercised this: every other rotation test uses N = 10
-        # (num_data_bits = 1), so num_data_combos = 1 and pattern index == rotation
+        # (num_bits = 1), so num_bit_combos = 1 and pattern index == rotation
         # index. The fix maps each pattern back to its rotation block and collapses
-        # the data-bit polarities sharing a rotation by a cell-wise max (the data
+        # the bit polarities sharing a rotation by a cell-wise max (the data
         # sign is a nuisance hypothesis, exactly as the non-rotation kernel treats
-        # it). This test plants a genuine data-bit sign flip between the two 10 ms
-        # symbols so the data-combo max must pick the correct polarity to detect.
+        # it). This test plants a genuine bit sign flip between the two 10 ms
+        # bits so the data-combo max must pick the correct polarity to detect.
         system        = GPSL5I()
         sampling_freq = 12e6Hz
         prn           = 1
@@ -236,8 +236,8 @@ end
         signal = ComplexF32[]
         for k in 0:N-1
             nh10      = Float32(GNSSSignals.secondary_value(sec, prn, mod(k, L)))
-            data_sign = k < L ? 1.0f0 : -1.0f0   # bit flip between the two symbols
-            append!(signal, (nh10 * data_sign) .* primary)
+            bit_sign = k < L ? 1.0f0 : -1.0f0   # sign flip between the two bits
+            append!(signal, (nh10 * bit_sign) .* primary)
         end
         ω = 2π * ustrip(Hz, true_doppler) / ustrip(Hz, sampling_freq)
         signal .*= ComplexF32.(cis.(ω .* (0:length(signal)-1)))
@@ -245,7 +245,7 @@ end
         plan = plan_acquire(system, sampling_freq, [prn];
             num_coherently_integrated_code_periods = N, num_noncoherent_accumulations = 1)
         @test plan.num_secondary_rotations == L   # rotation search active
-        @test plan.num_data_bits == N ÷ L         # data-bit search active (= 2)
+        @test plan.num_bits == N ÷ L         # bit search active (= 2)
 
         result = acquire!(plan, signal, prn; interm_freq = 0.0Hz)   # must not segfault
 
@@ -253,7 +253,7 @@ end
         @test result.code_phase ≈ true_cp atol = 1.0
         @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, true_doppler)) < ustrip(Hz, step(plan.doppler_freqs))
         # NH10 starts at chip 0 here (mod(k, L)); the estimator must recover it even
-        # across the data-bit boundary at the 10 ms mark.
+        # across the bit boundary at the 10 ms mark.
         @test result.secondary_code_phase == 0
     end
 

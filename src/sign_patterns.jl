@@ -1,43 +1,43 @@
 # src/sign_patterns.jl
 
-# Number of data-bit polarity hypotheses: the first bit's sign is fixed, the
-# other `num_data_bits - 1` bits each take ±1.
-@inline _num_data_combos(num_data_bits::Int) = 1 << (num_data_bits - 1)
+# Number of bit polarity hypotheses: the first bit's sign is fixed, the
+# other `num_bits - 1` bits each take ±1.
+@inline _num_bit_combos(num_bits::Int) = 1 << (num_bits - 1)
 
 """
-    sign_patterns(secondary_code, prn, num_data_bits, num_secondary_rotations, num_coh_periods, use_secondary_code)
+    sign_patterns(secondary_code, prn, num_bits, num_secondary_rotations, num_coh_periods, use_secondary_code)
         -> Matrix{Float32}  # (num_coh_periods, num_patterns)
 
 Pure enumeration of ±1 sign patterns over `num_coh_periods` coherent code periods, one per
-column. Production uses only the secondary-code axis (`num_data_bits = 1`) and adds the
-data-bit signs per bit-edge alignment itself ([`_fill_hypothesis_signs!`](@ref)); the
-data-bit axis serves the per-column reference [`_sign_search_step_with_rotations!`](@ref).
+column. Production uses only the secondary-code axis (`num_bits = 1`) and adds the
+bit signs per bit-edge alignment itself ([`_fill_hypothesis_signs!`](@ref)); the
+bit axis serves the per-column reference [`_sign_search_step_with_rotations!`](@ref).
 
 Two independent search axes:
-- Data-bit polarities: `2^(num_data_bits − 1)` patterns with `d[0] = +1` fixed.
+- Bit polarities: `2^(num_bits − 1)` patterns with `d[0] = +1` fixed.
 - Secondary-code rotations: `num_secondary_rotations` cyclic start phases, where rotation
   `r ∈ 0..L−1` produces signs `GNSSSignals.secondary_value(sec, prn, (k + r) mod L)` for `k = 0..N−1`.
 
 When `use_secondary_code = false` or `num_secondary_rotations == 1`, the secondary axis
-collapses to a single all-`+1` pattern and the result is exactly the data-bit polarity set.
+collapses to a single all-`+1` pattern and the result is exactly the bit polarity set.
 
 The two axes are combined as a Cartesian product: the resulting matrix has
-`2^(num_data_bits − 1) × num_secondary_rotations` columns. Within each column, the per-row
-sign is the product of the data-bit sign for that row's bit segment and the secondary-code
+`2^(num_bits − 1) × num_secondary_rotations` columns. Within each column, the per-row
+sign is the product of the bit sign for that row's bit segment and the secondary-code
 sign for that row's coherent period.
 """
-function sign_patterns(secondary_code, prn::Int, num_data_bits::Int,
+function sign_patterns(secondary_code, prn::Int, num_bits::Int,
                        num_secondary_rotations::Int, num_coh_periods::Int,
                        use_secondary_code::Bool)
-    num_data_combos = _num_data_combos(num_data_bits)
+    num_bit_combos = _num_bit_combos(num_bits)
     sec_active = use_secondary_code && num_secondary_rotations > 1
     num_sec = sec_active ? num_secondary_rotations : 1
-    coh_per_bit = num_coh_periods ÷ num_data_bits
+    coh_per_bit = num_coh_periods ÷ num_bits
     L = sec_active ? num_secondary_rotations : 1
-    patterns = Matrix{Float32}(undef, num_coh_periods, num_data_combos * num_sec)
+    patterns = Matrix{Float32}(undef, num_coh_periods, num_bit_combos * num_sec)
     col = 0
     for r in 0:num_sec-1
-        for d in 0:num_data_combos-1
+        for d in 0:num_bit_combos-1
             col += 1
             for k in 0:num_coh_periods-1
                 bit_idx = k ÷ coh_per_bit
@@ -78,7 +78,7 @@ so the optimal NH10-rotation-aware combination at fine-bin class `s` is
 We pre-compute `out[p+1, q, s+1] = patterns[p+1, q] · exp(-2πi · p · s / N_coh)`
 once per plan, so the kernel inner loop just multiplies `out[:, q, s+1]` against
 the sub-block FFT column at each ω. The phase ramp depends only on (p, s) and
-is independent of (data-bit polarity, rotation), so the same `phase_ramp[p, s]`
+is independent of (bit polarity, rotation), so the same `phase_ramp[p, s]`
 table is reused across every pattern column.
 
 `s = ω mod num_coh_periods` indexes the `num_coh_periods` distinct fine

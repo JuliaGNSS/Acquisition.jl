@@ -77,7 +77,7 @@ end
         carrier = cis.(2π .* (0:n-1) .* (doppler / fs))
         for code_phase in 5115.0625:0.125:5115.9375
             # Sample the primary code directly to isolate code drift from
-            # the secondary-code and data-bit hypotheses tested elsewhere.
+            # the secondary-code and bit hypotheses tested elsewhere.
             primary(rate) = [system.codes[mod(floor(Int,
                 code_phase + t * ustrip(rate / fs)), get_code_length(system)) + 1, 1]
                 for t in 0:n-1]

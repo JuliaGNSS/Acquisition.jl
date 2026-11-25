@@ -63,7 +63,7 @@ Results from GNSS signal acquisition for a single PRN.
     the rotation-search path). Part of the CFAR cell count — see [`get_num_cells`](@ref).
   - `sign_search_null::Union{SignSearchNull,Nothing}`: Null distribution of
     `peak_to_noise_ratio` when each cell is the maximum over several sign hypotheses
-    (data-bit polarities, bit-edge alignments); `nothing` when each cell is a single
+    (bit polarities, bit-edge alignments); `nothing` when each cell is a single
     hypothesis. Used by [`cfar_threshold`](@ref)`(result)` and [`is_detected`](@ref).
 
 # Plotting

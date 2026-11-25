@@ -1,6 +1,6 @@
 # src/sign_search_layout.jl
 #
-# The sign hypotheses of a sign search, in one place: which data-bit segments
+# The sign hypotheses of a sign search, in one place: which bit segments
 # each bit-edge alignment splits the coherent window into, which sign
 # combinations it searches, and the per-row signs of each hypothesis. The tile
 # kernel (`_sign_search_tile_power!`), the plan's scratch sizing and the CFAR
@@ -8,30 +8,30 @@
 # helpers, so they cannot disagree.
 
 # Shape of a sign search: a coherent window of `num_coh` code periods
-# (`num_coh · num_blocks` Doppler rows) holding `num_data_bits` data bits,
+# (`num_coh · num_blocks` Doppler rows) holding `num_bits` bits,
 # searched at `num_edges` bit-edge alignments.
 struct SignSearchLayout
-    num_data_bits::Int
+    num_bits::Int
     num_coh::Int
     num_edges::Int
     num_blocks::Int
 end
 
-_sign_search_layout(plan) = SignSearchLayout(plan.num_data_bits,
+_sign_search_layout(plan) = SignSearchLayout(plan.num_bits,
     plan.num_coherently_integrated_code_periods, plan.bit_edge_search_steps,
     plan.num_blocks)
 
 """
     _edge_alignment(layout, edge) -> (; first_edge, bit_period, num_segments, combos)
 
-Data-bit segments of bit-edge alignment `edge` (0-based) and the sign
+Bit segments of bit-edge alignment `edge` (0-based) and the sign
 combinations searched over them.
 
-The window holds `num_data_bits` bit periods of `bit_period = num_coh ÷
-num_data_bits` code periods; alignment `edge` puts the first bit edge
+The window holds `num_bits` bit periods of `bit_period = num_coh ÷
+num_bits` code periods; alignment `edge` puts the first bit edge
 `first_edge = edge · bit_period ÷ num_edges` code periods into the window.
-Aligned (`first_edge == 0`), the window is `num_data_bits` whole bits;
-otherwise a partial bit, the `num_data_bits − 1` whole bits and another partial
+Aligned (`first_edge == 0`), the window is `num_bits` whole bits;
+otherwise a partial bit, the `num_bits − 1` whole bits and another partial
 bit, each with its own sign. Segment boundaries are code-period boundaries
 (`_segment_rows`).
 
@@ -48,11 +48,11 @@ hypothesis loses up to `2 · off / (num_coh · num_blocks)` of its amplitude (at
 most 0.9 dB at 20 code periods, 0.45 dB on average over columns).
 """
 @inline function _edge_alignment(layout::SignSearchLayout, edge::Int)
-    (; num_data_bits, num_coh, num_edges) = layout
-    bit_period = num_coh ÷ num_data_bits
+    (; num_bits, num_coh, num_edges) = layout
+    bit_period = num_coh ÷ num_bits
     first_edge = edge * bit_period ÷ num_edges
-    num_segments = first_edge == 0 ? num_data_bits : num_data_bits + 1
-    combos = num_data_bits == 1 && num_segments == 2 ? (1:1) :
+    num_segments = first_edge == 0 ? num_bits : num_bits + 1
+    combos = num_bits == 1 && num_segments == 2 ? (1:1) :
              (0:(1 << (num_segments - 1)) - 1)
     return (; first_edge, bit_period, num_segments, combos)
 end
@@ -106,7 +106,7 @@ end
 
 Per-row signs of one sign hypothesis, for a code-phase column whose first
 code-period boundary is row `off`: secondary-code pattern `q` (cyclic, see
-`_fill_rotation_signs!`) times the data-bit sign of each row's segment at
+`_fill_rotation_signs!`) times the bit sign of each row's segment at
 `alignment` (`_edge_alignment`), with segment signs from `combo`. Shared by
 [`_sign_search_tile_power!`](@ref) and the CFAR null model
 (`_hypothesis_signs`).

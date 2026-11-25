@@ -113,10 +113,10 @@ end
 # ============================================================================
 # BitEdgeSearch — cost of bit_edge_search_steps for a 20 ms coherent window.
 #
-# 20 ms is the GPS L1 C/A bit period, so num_data_bits = 1 but a bit transition
+# 20 ms is the GPS L1 C/A bit period, so num_bits = 1 but a bit transition
 # can still land inside the window. bit_edge_search_steps tries a sign flip at
 # N − 1 candidate edges plus the no-transition hypothesis and keeps the
-# strongest. Values must divide bit_period_codes (= 20), so 1, 2, 5, 10 all apply.
+# strongest. Values must divide code_periods_per_bit (= 20), so 1, 2, 5, 10 all apply.
 # ============================================================================
 
 SUITE["BitEdgeSearch"] = BenchmarkGroup()

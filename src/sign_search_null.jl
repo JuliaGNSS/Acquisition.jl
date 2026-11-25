@@ -1,7 +1,7 @@
 # src/sign_search_null.jl
 #
 # CFAR null distribution of a power surface whose cells are the MAX over several
-# sign hypotheses (data-bit polarities, bit-edge alignments) — the surface every
+# sign hypotheses (bit polarities, bit-edge alignments) — the surface every
 # sign search produces. `cfar_threshold(pfa, num_cells; …)` assumes each cell is
 # one exponential power (χ²(2)) per non-coherent step; a max over K correlated
 # hypotheses has a higher mean, which the noise estimate absorbs, and a much
@@ -42,7 +42,7 @@ function _threshold(null::SignSearchNull, pfa_cell::Float64)
 end
 
 # Per-row signs (`num_doppler_bins × K`) of the K sign hypotheses one cell is
-# maximised over — rotation 0's data-bit polarities at every bit-edge alignment
+# maximised over — rotation 0's bit polarities at every bit-edge alignment
 # — for a code-phase column whose first code-period boundary is row `off`,
 # built with the kernel's own sign construction (`_fill_hypothesis_signs!`).
 # Rotations are not included: each rotation has its own cell (`get_num_cells`).

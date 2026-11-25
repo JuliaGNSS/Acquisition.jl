@@ -922,8 +922,8 @@ end
 # `L` secondary-code rotations and take the strongest. A full secondary-code period of
 # coherent despread is the unambiguous case (bounded periodic autocorrelation), so this
 # is exact at every code phase. `L = num_secondary_rotations` and only the first `L`
-# periods are used, so an unknown data-bit flip at a symbol boundary (N > L) never
-# enters — the NH-phase is constant across symbols anyway (N is a multiple of L).
+# periods are used, so an unknown bit flip at a bit boundary (N > L) never
+# enters — the NH-phase is constant across bits anyway (N is a multiple of L).
 #
 # Carrier (interm + doppler) wipe-off uses an incremental complex phasor reset each
 # period (one `sincos` per period, not per sample) to stay cheap and bound Float32
@@ -1020,7 +1020,7 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins, signal, inter
     #
     # The result is a lower bound on the true C/N₀. Real coherent gain is
     # `(C/N₀)·T·L` with `L ≤ 1` absorbing residual frequency error inside the
-    # Doppler bin, oscillator phase noise, and any data-bit transition inside
+    # Doppler bin, oscillator phase noise, and any bit transition inside
     # `T`; recovering `L` would need it estimated separately. The remaining bias
     # is in the conservative direction for a detection or quality gate.
     coherent_integration_time = plan.num_coherently_integrated_code_periods * code_period

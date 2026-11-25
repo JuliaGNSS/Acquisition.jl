@@ -152,7 +152,7 @@ end
     @testset "simple path" check_stitching(GPSL1CA(), fs, 3, signal)
     @testset "multistep" check_stitching(GPSL1CA(), fs, 3, signal;
         num_noncoherent_accumulations = 3)
-    @testset "data-bit + bit-edge search" check_stitching(GPSL1CA(), fs, 3, signal;
+    @testset "bit + bit-edge search" check_stitching(GPSL1CA(), fs, 3, signal;
         num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4)
     @testset "bit transition (one-bit window)" check_stitching(GPSL1CA(), fs, 3, signal;
         num_coherently_integrated_code_periods = 20, bit_edge_search_steps = 5)
@@ -174,7 +174,7 @@ end
     (; signal) = generate_test_signal(GPSL5I(), 1; sampling_freq = fs5,
         num_samples = 21 * 10238, doppler = -1700Hz, code_phase = 5115.3, CN0 = 50,
         interm_freq = 0.0Hz, seed = 6)
-    @testset "rotation × data bits × bit edges" check_stitching(GPSL5I(), fs5, 1,
+    @testset "rotation × bits × bit edges" check_stitching(GPSL5I(), fs5, 1,
         ComplexF32.(signal); num_coherently_integrated_code_periods = 20,
         bit_edge_search_steps = 2)
 end
@@ -232,7 +232,7 @@ end
     (; signal) = generate_test_signal(GPSL5I(), 1; sampling_freq = fs5,
         num_samples = 41 * 10238, doppler = 6400Hz, code_phase = 5115.3, CN0 = 50,
         interm_freq = 0.0Hz, seed = 6)
-    @testset "rotation × data bits × bit edges" check_multistep_drift(GPSL5I(), fs5, 1,
+    @testset "rotation × bits × bit edges" check_multistep_drift(GPSL5I(), fs5, 1,
         ComplexF32.(signal); N_nc = 2, num_coherently_integrated_code_periods = 20,
         bit_edge_search_steps = 2)
 end

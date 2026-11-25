@@ -88,8 +88,8 @@ CFAR threshold on `result.peak_to_noise_ratio` at false-alarm probability `pfa` 
 the search that produced `result`. Without a sign search this is
 `cfar_threshold(pfa, get_num_cells(result); num_noncoherent_integrations)`.
 
-After a sign search (data-bit polarities with `num_coherently_integrated_code_periods`
-longer than a data bit, or `bit_edge_search_steps > 1`), each cell is the maximum over
+After a sign search (bit polarities with `num_coherently_integrated_code_periods`
+longer than a bit, or `bit_edge_search_steps > 1`), each cell is the maximum over
 several correlated hypotheses. That raises the noise floor the statistic is divided by
 and shortens its tail, so the χ² threshold above would be far too high (no false alarms
 at all, and lost sensitivity). The threshold then comes from the null distribution of

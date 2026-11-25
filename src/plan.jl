@@ -58,20 +58,20 @@ struct AcquisitionScratch{P2,P3,P4}
     # rows) for the on-demand column recompute used by subsample interpolation
     # on the streamed path.
     col_power_buf::Vector{Float32}
-    # Sign search (`_sign_search_tile_power!`: secondary-code rotations, data-bit
+    # Sign search (`_sign_search_tile_power!`: secondary-code rotations, bit
     # polarities, bit-edge alignments), all 0-sized on the simple path:
     # one sign-modulated, Doppler-transformed copy of `coherent_tile_t`,
     # (block_size, pass_fft_bins) — the tile itself is reused by every hypothesis;
     modulated_tile::Matrix{ComplexF32}
     # the power of a rotation's hypotheses max-reduced, (block_size,
-    # pass_fft_bins) — only when a rotation has more than one hypothesis (data-bit
+    # pass_fft_bins) — only when a rotation has more than one hypothesis (bit
     # polarities or bit-edge alignments), otherwise `modulated_tile` is reduced
     # directly;
     hypothesis_power::Matrix{Float32}
     # the per-row hypothesis signs for the tile's two code-phase ranges,
     # (pass_fft_bins, 2);
     row_signs::Matrix{Float32}
-    # one Doppler-transformed tile per data-bit segment, (block_size,
+    # one Doppler-transformed tile per bit segment, (block_size,
     # num_doppler_bins) each, for alignments whose sign combinations are
     # combined by Gray code (`_direct_hypotheses`) — empty when none are; and the
     # running segment signs of that enumeration.
@@ -110,7 +110,7 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     num_blocks::Int             # paper N_step — blocks per code period (power of 2)
     block_size::Int             # paper B_size — samples per block = samples_per_code ÷ num_blocks
     num_coherently_integrated_code_periods::Int       # paper N     — total code periods per coherent integration
-    num_data_bits::Int          # paper N_db  — data bit periods per coherent block (1 for pilot/sub-bit)
+    num_bits::Int          # paper N_db  — bit periods per coherent block (1 for pilot/sub-bit)
     bit_edge_search_steps::Int          # paper N_be  — bit edge search positions (1 = disabled)
     num_noncoherent_accumulations::Int  # incoherent integration steps
     # Conjugated PRN FFTs: prn_conj_ffts[prn] is (fft_size, num_blocks);
@@ -221,13 +221,13 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     # Pre-computed ±1 secondary-code pattern per rotation, (num_coh_periods,
     # num_secondary_rotations) per PRN — a single all-+1 column without a
     # rotation search — consumed by `_sign_search_tile_power!`, which adds the
-    # data-bit signs itself. Built once in `plan_acquire`. Empty on the simple
+    # bit signs itself. Built once in `plan_acquire`. Empty on the simple
     # path. For PRN-independent patterns (no rotation, or shared
     # secondary code) the same matrix value is stored under every PRN key — keeps
     # the lookup uniform without per-call allocation.
     sign_patterns_by_prn::Dict{Int,Matrix{Float32}}
     # CFAR null distribution of a cell that is the max over several sign
-    # hypotheses (data-bit polarities × bit-edge alignments, per rotation);
+    # hypotheses (bit polarities × bit-edge alignments, per rotation);
     # `nothing` when each cell is one hypothesis. See `SignSearchNull`.
     sign_search_null::Union{SignSearchNull,Nothing}
 end
@@ -428,14 +428,14 @@ multi-threaded acquisition. Scratch buffers are tile-sized (nothing scales with
   integration block (default: `1`). Determines Doppler resolution:
   `bin_spacing = 1 / (num_coherently_integrated_code_periods × T_code)`.
 - `bit_edge_search_steps`: Number of bit-edge alignment candidates to search
-  (default: `1`, disabled). Only valid for signals with data bits and
+  (default: `1`, disabled). Only valid for data signals and
   `num_coherently_integrated_code_periods > 1`. When the window holds at most
-  one data bit (`num_coherently_integrated_code_periods ≤ bit_period_codes`),
+  one bit (`num_coherently_integrated_code_periods ≤ get_code_periods_per_bit(system)`),
   it searches for one bit transition at `bit_edge_search_steps − 1` evenly
   spaced code-period boundaries, plus the no-transition hypothesis, and must
-  divide `min(num_coherently_integrated_code_periods, bit_period_codes)`. For
+  divide `min(num_coherently_integrated_code_periods, get_code_periods_per_bit(system))`. For
   longer windows it places the first bit edge at `bit_edge_search_steps` evenly
-  spaced positions within a bit period, must divide `bit_period_codes`, and
+  spaced positions within a bit period, must divide `get_code_periods_per_bit(system)`, and
   searches every sign of the partial bits at both ends and the whole bits in
   between.
 - `num_noncoherent_accumulations`: Number of successive incoherent integration
@@ -615,9 +615,9 @@ function _plan_acquire(
         #    full secondary-code period (N % L == 0), where the periodic autocorrelation
         #    of the secondary code is bounded.
         #
-        # For data signals this mostly coincides with the bit_period_codes check below
-        # (bit_period_codes is typically a multiple of L), but it ALSO catches the sub-bit
-        # regime N < bit_period_codes, which that check deliberately allows.
+        # For data signals this mostly coincides with the code_periods_per_bit check below
+        # (code_periods_per_bit is typically a multiple of L), but it ALSO catches the sub-bit
+        # regime N < code_periods_per_bit, which that check deliberately allows.
         if use_secondary_code && L > 1 &&
            num_coherently_integrated_code_periods > 1 &&
            num_coherently_integrated_code_periods % L != 0
@@ -639,10 +639,10 @@ function _plan_acquire(
     # Samples per code period
     samples_per_code = ceil(Int, get_code_length(system) / get_chip_rate(system) * sampling_freq)
 
-    # Data bit period in code periods (bit_period_codes); 0 for a pilot, which
+    # Bit period in code periods (code_periods_per_bit); 0 for a pilot, which
     # broadcasts no bits and so imposes no constraint.
-    bit_period_codes = get_code_periods_per_bit(system)
-    has_data = bit_period_codes > 0
+    code_periods_per_bit = get_code_periods_per_bit(system)
+    has_data = code_periods_per_bit > 0
 
     # Blocks per code period and Doppler passes (src/doppler_passes.jl).
     #
@@ -682,31 +682,31 @@ function _plan_acquire(
     doppler_bins_per_pass = layout.bins_per_pass
 
     # Validate data-channel coherent integration length.
-    # Sub-bit integration (num_coherently_integrated_code_periods < bit_period_codes) is always valid — a bit
+    # Sub-bit integration (num_coherently_integrated_code_periods < code_periods_per_bit) is always valid — a bit
     # boundary may still fall within the window (bit edge search handles this), but there
-    # can be at most one transition so num_data_bits=1 and no bit combination search is needed.
-    # Multi-bit integration (num_coherently_integrated_code_periods >= bit_period_codes) requires the window to span
+    # can be at most one transition so num_bits=1 and no bit combination search is needed.
+    # Multi-bit integration (num_coherently_integrated_code_periods >= code_periods_per_bit) requires the window to span
     # a whole number of bit periods so the FM-DBZP sub-block structure is consistent.
-    if has_data && num_coherently_integrated_code_periods >= bit_period_codes
-        num_coherently_integrated_code_periods % bit_period_codes == 0 || throw(ArgumentError(
+    if has_data && num_coherently_integrated_code_periods >= code_periods_per_bit
+        num_coherently_integrated_code_periods % code_periods_per_bit == 0 || throw(ArgumentError(
             "num_coherently_integrated_code_periods=$num_coherently_integrated_code_periods must be divisible by " *
-            "bit_period_codes=$bit_period_codes (code periods per data bit)."))
-        bit_period_codes % bit_edge_search_steps == 0 || throw(ArgumentError(
-            "bit_edge_search_steps=$bit_edge_search_steps must divide bit_period_codes=$bit_period_codes."))
+            "code_periods_per_bit=$code_periods_per_bit (code periods per bit)."))
+        code_periods_per_bit % bit_edge_search_steps == 0 || throw(ArgumentError(
+            "bit_edge_search_steps=$bit_edge_search_steps must divide code_periods_per_bit=$code_periods_per_bit."))
     end
     # Sub-bit windows search a single transition at `bit_edge_search_steps`
     # evenly spaced code-period boundaries (see `_edge_alignment`), so the step
     # count must divide the window.
-    if has_data && num_coherently_integrated_code_periods < bit_period_codes
+    if has_data && num_coherently_integrated_code_periods < code_periods_per_bit
         num_coherently_integrated_code_periods % bit_edge_search_steps == 0 || throw(ArgumentError(
             "bit_edge_search_steps=$bit_edge_search_steps must divide " *
             "num_coherently_integrated_code_periods=$num_coherently_integrated_code_periods " *
-            "when the window is shorter than a data bit (bit_period_codes=$bit_period_codes)."))
+            "when the window is shorter than a bit (code_periods_per_bit=$code_periods_per_bit)."))
     end
-    # A signal without data bits has no bit edge to search.
+    # A pilot broadcasts no bits, so it has no bit edge to search.
     if !has_data && bit_edge_search_steps > 1
         throw(ArgumentError(
-            "bit_edge_search_steps must be 1 for $(typeof(system).name.name), which carries no data bits, " *
+            "bit_edge_search_steps must be 1 for $(typeof(system).name.name), a pilot, which broadcasts no bits, " *
             "got $bit_edge_search_steps."))
     end
 
@@ -718,10 +718,10 @@ function _plan_acquire(
     # normalised by the actual length (see `_build_coherent_tile!`), so the
     # padding changes neither num_blocks, the Doppler grid, nor the result.
     fft_size = _inner_fft_size(double_block_size)
-    # num_data_bits (paper: N_db): number of full data bit periods within the coherent window.
+    # num_bits (paper: N_db): number of full bit periods within the coherent window.
     # 1 for pilot channels and sub-bit integration (< one bit period); bit combination search
-    # is only needed when num_data_bits > 1 (multiple bits → unknown polarity transitions).
-    num_data_bits = (has_data && num_coherently_integrated_code_periods >= bit_period_codes) ? num_coherently_integrated_code_periods ÷ bit_period_codes : 1
+    # is only needed when num_bits > 1 (multiple bits → unknown polarity transitions).
+    num_bits = (has_data && num_coherently_integrated_code_periods >= code_periods_per_bit) ? num_coherently_integrated_code_periods ÷ code_periods_per_bit : 1
     # One pass's FM-DBZP Doppler FFT length (paper C_fd), and the stitched grid.
     pass_fft_bins = num_coherently_integrated_code_periods * num_blocks
     num_doppler_bins = num_doppler_passes * doppler_bins_per_pass
@@ -794,12 +794,12 @@ function _plan_acquire(
     fftshift_perm = [mod(r - 1 + pass_fft_bins ÷ 2, pass_fft_bins) + 1 for r in 1:pass_fft_bins]
     result_buffers = Union{Nothing,Matrix{Float32}}[nothing for _ in prns]
 
-    # Every search other than the simple path (num_data_bits == 1,
+    # Every search other than the simple path (num_bits == 1,
     # bit_edge_search_steps == 1, no rotation search) is a sign search, run per
     # tile by `_sign_search_tile_power!`.
-    sign_search_path_active = num_data_bits > 1 || bit_edge_search_steps > 1 ||
+    sign_search_path_active = num_bits > 1 || bit_edge_search_steps > 1 ||
                               rotation_search_active
-    sign_layout = SignSearchLayout(num_data_bits, num_coherently_integrated_code_periods,
+    sign_layout = SignSearchLayout(num_bits, num_coherently_integrated_code_periods,
         bit_edge_search_steps, num_blocks)
     modulated_tile_size = sign_search_path_active ? (block_size, pass_fft_bins) : (0, 0)
     # Sign hypotheses per rotation; the max-reduced power tile is needed only
@@ -931,7 +931,7 @@ function _plan_acquire(
 
     plan = AcquisitionPlan(
         system, convert(typeof(1.0Hz), sampling_freq),
-        samples_per_code, samples_per_code_eff, num_blocks, block_size, num_coherently_integrated_code_periods, num_data_bits, bit_edge_search_steps, num_noncoherent_accumulations,
+        samples_per_code, samples_per_code_eff, num_blocks, block_size, num_coherently_integrated_code_periods, num_bits, bit_edge_search_steps, num_noncoherent_accumulations,
         prn_conj_ffts,
         double_block_fft_plan,
         doppler_freqs,

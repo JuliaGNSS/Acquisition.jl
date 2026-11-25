@@ -173,7 +173,7 @@ end
     # L5I rotation search: one hypothesis per rotation at N_coh = 10 …
     @test plan_acquire(GPSL5I(), 10.23e6Hz, [1]; num_coherently_integrated_code_periods = 10,
         fft_flag = FFTL.ESTIMATE).sign_search_null === nothing
-    # … two data-bit polarities per rotation at N_coh = 20.
+    # … two bit polarities per rotation at N_coh = 20.
     @test plan_acquire(GPSL5I(), 10.23e6Hz, [1]; num_coherently_integrated_code_periods = 20,
         fft_flag = FFTL.ESTIMATE).sign_search_null.num_hypotheses == 2
 end
@@ -211,7 +211,7 @@ end
             num_noncoherent_accumulations = 3, min_doppler_coverage = 2000Hz)
         @test plan.num_doppler_passes > 1
     end
-    # Secondary-code rotations × data bits × bit edges.
+    # Secondary-code rotations × bits × bit edges.
     @testset "L5I rotations × 2 alignments" false_alarms(GPSL5I(), 10.23e6Hz, 300;
         ncoh = 20, edges = 2, min_doppler_coverage = 1000Hz)
 end

@@ -81,8 +81,8 @@ separately (e.g. for plotting or custom logic). Prefer
 threshold = cfar_threshold(result; pfa = 0.01)
 ```
 
-**Sign searches.** With a data-bit polarity search (a window longer than one
-data bit) or a bit-edge search (`bit_edge_search_steps > 1`), each cell is the
+**Sign searches.** With a bit polarity search (a window longer than one
+bit) or a bit-edge search (`bit_edge_search_steps > 1`), each cell is the
 maximum over several sign hypotheses. Under noise that maximum has a higher
 mean — which the noise estimate absorbs — and a much shorter tail relative to
 it than one χ² cell, so the χ² threshold would be far too high: no false
@@ -777,7 +777,7 @@ runs during later `acquire!` calls.
 
 Tuning uses a private random stream to generate reproducible `ComplexF32` noise.
 It measures the complete acquisition pipeline, including signal preparation,
-noncoherent steps, secondary/data-bit hypotheses, parallel PRN tasks, and result
+noncoherent steps, secondary/bit hypotheses, parallel PRN tasks, and result
 extraction. `tuning_prns` defaults to the full planned batch. Set
 `tuning_interm_freq` to the intermediate frequency you expect to pass to
 `acquire!` (default `0.0Hz`). Other sample types or batch sizes may favor a
@@ -789,9 +789,9 @@ time; discarded plans are released. The result is the fastest measured layout
 among the shortlist, with a noise margin, rather than a guarantee of the global
 optimum or a speedup on every later call.
 
-### Coherent Integration with Data Bits (GPS L1 C/A)
+### Coherent Integration Across Bits (GPS L1 C/A)
 
-GPS L1 C/A data bits flip every 20 ms. Integrating across a bit transition cancels
+GPS L1 C/A bits flip every 20 ms. Integrating across a bit transition cancels
 signal energy. The library handles this automatically:
 
 **Windows of at most one bit** (`num_coherently_integrated_code_periods ≤ 20`):
@@ -810,18 +810,18 @@ plan = plan_acquire(system, sampling_freq, prns;
 ```
 
 **Multi-bit integration** (`num_coherently_integrated_code_periods ≥ 20`):
-The window spans whole data bit periods. Two constraints apply:
-1. `num_coherently_integrated_code_periods` must be divisible by `bit_period_codes` (= 20 for GPS L1)
-2. `bit_period_codes` must be divisible by `bit_edge_search_steps`
+The window spans whole bit periods. Two constraints apply:
+1. `num_coherently_integrated_code_periods` must be divisible by `code_periods_per_bit` (= 20 for GPS L1)
+2. `code_periods_per_bit` must be divisible by `bit_edge_search_steps`
 
-The algorithm searches all `2^(num_data_bits - 1)` sign-flip combinations across
-the data bits in the window. With `bit_edge_search_steps > 1` the first bit edge
+The algorithm searches all `2^(num_bits - 1)` sign-flip combinations across
+the bits in the window. With `bit_edge_search_steps > 1` the first bit edge
 is also placed at `bit_edge_search_steps` evenly spaced positions within a bit
 period; away from the window start the window then holds a partial bit at each
-end, and all `2^num_data_bits` sign combinations of the partial and whole bits
+end, and all `2^num_bits` sign combinations of the partial and whole bits
 are searched.
 
-**Pilot channels** (e.g. GPS L5-Q, Galileo E1-C): no data bit constraint; set
+**Pilot channels** (e.g. GPS L5-Q, Galileo E1-C): no bit constraint; set
 `num_coherently_integrated_code_periods` freely.
 
 ### Sub-sample Interpolation

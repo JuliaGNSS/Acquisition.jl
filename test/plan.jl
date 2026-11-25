@@ -11,7 +11,7 @@
     @test plan.num_blocks == 32              # smallest divisor of 2048 >= ceil(20000/1000 + 2/1)=22 → 32
     @test plan.block_size == 64              # 2048÷32
     @test plan.num_coherently_integrated_code_periods == 1
-    @test plan.num_data_bits == 1            # pilot/short: no data bit search
+    @test plan.num_bits == 1            # pilot/short: no bit search
     @test plan.bit_edge_search_steps == 1
     @test plan.num_noncoherent_accumulations == 1
     @test length(plan.doppler_freqs) == 32   # num_doppler_bins = 1*32
@@ -25,7 +25,7 @@ end
 @testset "plan_acquire parameters — GPS L1 multi-ms" begin
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
-    # num_coherently_integrated_code_periods=40 → num_data_bits = 40÷20 = 2 data bits
+    # num_coherently_integrated_code_periods=40 → num_bits = 40÷20 = 2 bits
     plan = plan_acquire(system, sampling_freq, [1];
         min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4, num_noncoherent_accumulations = 5)
 
@@ -34,7 +34,7 @@ end
     @test plan.num_doppler_passes > 1
     @test any(!iszero, plan.code_doppler_shifts_per_period)
     @test plan.num_coherently_integrated_code_periods == 40
-    @test plan.num_data_bits == 2            # 40 code periods / 20 code periods per GPS bit
+    @test plan.num_bits == 2            # 40 code periods / 20 code periods per GPS bit
     @test plan.bit_edge_search_steps == 4
     @test plan.num_noncoherent_accumulations == 5
     @test length(plan.doppler_freqs) == plan.num_doppler_passes * plan.doppler_bins_per_pass
@@ -74,7 +74,7 @@ end
 @testset "plan_acquire — secondary-code rotation length must divide N when N > L (pilot)" begin
     # L5I has L = 10. With N = 15: 15 > 10 and 15 % 10 ≠ 0 → must throw. We assert on a
     # keyword unique to the new rotation-divisibility check so this isn't satisfied
-    # vicariously by the older data-bit divisibility throw (which would fire on signals
+    # vicariously by the older bit divisibility throw (which would fire on signals
     # where has_data is true).
     err = try
         plan_acquire(GPSL5I(), 10.24e6Hz, [1];
@@ -150,10 +150,10 @@ end
 @testset "plan_acquire validation errors" begin
     system = GPSL1CA()
     sampling_freq = 2.048e6Hz
-    # num_coherently_integrated_code_periods >= bit_period_codes (20) but not divisible by it
+    # num_coherently_integrated_code_periods >= code_periods_per_bit (20) but not divisible by it
     @test_throws ArgumentError plan_acquire(system, sampling_freq, [1];
         num_coherently_integrated_code_periods = 30)
-    # bit_edge_search_steps does not divide bit_period_codes (20)
+    # bit_edge_search_steps does not divide code_periods_per_bit (20)
     @test_throws ArgumentError plan_acquire(system, sampling_freq, [1];
         num_coherently_integrated_code_periods = 20, bit_edge_search_steps = 3)
     # bit_edge_search_steps > 1 only makes sense when num_coherently_integrated_code_periods > 1
@@ -162,7 +162,7 @@ end
     # Sub-bit window: bit_edge_search_steps must divide the window (10 code periods)
     @test_throws ArgumentError plan_acquire(system, sampling_freq, [1];
         num_coherently_integrated_code_periods = 10, bit_edge_search_steps = 4)
-    # No data bits → no bit edge to search
+    # No bits → no bit edge to search
     @test_throws ArgumentError plan_acquire(GPSL5Q(), 10.24e6Hz, [1];
         num_coherently_integrated_code_periods = 20, bit_edge_search_steps = 2)
     # Other basic guard checks
@@ -303,7 +303,7 @@ end
         plan_acquire(GPSL1CA(), 5e6Hz, [1]),
         # multistep simple
         plan_acquire(GPSL1CA(), 5e6Hz, [1]; num_noncoherent_accumulations = 4),
-        # data-bit + bit-edge search
+        # bit + bit-edge search
         plan_acquire(GPSL1CA(), 2.048e6Hz, [1];
             min_doppler_coverage = 10_000Hz,
             num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4),
@@ -322,8 +322,8 @@ end
             # Nothing else may exceed the tile's column count except the
             # 1-D col_sums and — at N_nc>1 only — the per-slot accumulator
             # (bounded by min(threads, cores, num_prns) slots, never per PRN).
-            # Gray-code segment tiles: at most one per data-bit segment.
-            @test length(scratch.segment_tiles) <= plan.num_data_bits + 1
+            # Gray-code segment tiles: at most one per bit segment.
+            @test length(scratch.segment_tiles) <= plan.num_bits + 1
             @test all(t -> size(t) == (plan.block_size, ndop), scratch.segment_tiles)
             @test size(scratch.col_max_buf) == (plan.block_size, plan.num_secondary_rotations)
             # Rotation-search tiles are tile-sized, like the coherent tile.
@@ -381,7 +381,7 @@ end
 end
 
 @testset "sign-search scratch is 0x0 when the simple path is provably taken" begin
-    # The routers take the simple/pilot path when num_data_bits == 1 &&
+    # The routers take the simple/pilot path when num_bits == 1 &&
     # bit_edge_search_steps == 1 && no rotation search. Every other plan runs
     # the sign-search tile kernel, whose buffers are tile-sized.
     system = GPSL1CA()
@@ -389,7 +389,7 @@ end
 
     simple_plan = plan_acquire(system, sampling_freq, [1];
         num_coherently_integrated_code_periods = 1, bit_edge_search_steps = 1)
-    @test simple_plan.num_data_bits == 1
+    @test simple_plan.num_bits == 1
     @test simple_plan.bit_edge_search_steps == 1
     # Every pool slot — not just slot 1.
     for t_scratch in simple_plan.thread_scratch
@@ -415,7 +415,7 @@ end
             num_coherently_integrated_code_periods = 80), 8, 4),
         # Rotation search alone: one hypothesis per rotation.
         (plan_acquire(GPSL5I(), 10.24e6Hz, [1]; num_coherently_integrated_code_periods = 10), 1, 0),
-        # Rotation × 2 data-bit polarities.
+        # Rotation × 2 bit polarities.
         (plan_acquire(GPSL5I(), 10.24e6Hz, [1]; num_coherently_integrated_code_periods = 20), 2, 0),
     ]
     for (plan, num_hypotheses, num_segment_tiles) in cases
