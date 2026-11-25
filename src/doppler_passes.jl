@@ -166,7 +166,7 @@ as a multi-pass layout that holds the sensitivity bound described at the top of
 this file; the cheapest by `_search_cost` wins, a multi-pass layout only if it
 costs at most `_MULTI_PASS_MIN_GAIN` times the single grid. Returns `nothing` if
 no layout exists (only when `samples_per_code` is smaller than the blocks the
-coverage needs). With a nonzero `code_center_frequency_ratio`, drift above
+coverage needs). With a nonzero `chip_rate_to_center_frequency_ratio`, drift above
 `_MAX_CODE_DOPPLER_DRIFT` also enables passes at ordinary rates and constrains
 their kept width. The cheapest compensated layout wins without a speedup
 requirement. `max_doppler_passes = nothing` leaves the count to the cost model;
@@ -177,7 +177,7 @@ function _doppler_search_layout(samples_per_code::Integer, bin_width_hz::Real,
                                 min_doppler_coverage_hz::Real,
                                 num_coherently_integrated_code_periods::Integer,
                                 max_doppler_passes::Union{Integer,Nothing}, num_prns::Integer,
-                                code_center_frequency_ratio::Real = 0.0,
+                                chip_rate_to_center_frequency_ratio::Real = 0.0,
                                 candidates::Union{Nothing,Vector{DopplerLayout}} = nothing)
     N_coh = num_coherently_integrated_code_periods
     min_num_blocks = _min_num_blocks(min_doppler_coverage_hz, bin_width_hz, N_coh)
@@ -186,7 +186,7 @@ function _doppler_search_layout(samples_per_code::Integer, bin_width_hz::Real,
         DopplerLayout(single_num_blocks, 1, N_coh * single_num_blocks)
     pass_limit = something(max_doppler_passes, typemax(Int))
     compensate = _code_doppler_compensation(min_doppler_coverage_hz,
-        code_center_frequency_ratio, N_coh, bin_width_hz)
+        chip_rate_to_center_frequency_ratio, N_coh, bin_width_hz)
     if candidates !== nothing && best !== nothing && (!compensate || pass_limit == 1)
         push!(candidates, best)
     end
@@ -212,7 +212,7 @@ function _doppler_search_layout(samples_per_code::Integer, bin_width_hz::Real,
     # Local bin edges must drift by at most the tolerance over N_coh periods.
     # spacing * T_coh = 1, so the limit in bins is tolerance / ratio.
     max_code_bins = compensate ?
-        2 * floor(Int, _MAX_CODE_DOPPLER_DRIFT / code_center_frequency_ratio - 0.5) + 1 :
+        2 * floor(Int, _MAX_CODE_DOPPLER_DRIFT / chip_rate_to_center_frequency_ratio - 0.5) + 1 :
         typemax(Int)
     last_divisor = something(single_num_blocks, samples_per_code + 1) - 1
     compensate && (last_divisor = something(single_num_blocks, samples_per_code))

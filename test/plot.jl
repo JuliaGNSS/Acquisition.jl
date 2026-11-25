@@ -47,7 +47,7 @@ end
         min_doppler_coverage = 5_000Hz, num_coherently_integrated_code_periods = 1,
         num_noncoherent_accumulations = 1)
 
-    f_code = Float64(ustrip(Hz, get_chip_rate(signal)))
+    chip_rate = Float64(ustrip(Hz, get_chip_rate(signal)))
     fs     = Float64(ustrip(Hz, sampling_freq))
 
     # Build a dummy power_bins matrix (all ones — shape correctness test)
@@ -55,7 +55,7 @@ end
     dummy_bins = ones(Float32, num_doppler_bins, plan.samples_per_code)
 
     chip_axis, ordered = Acquisition._fmdbzp_sort_by_chip(
-        dummy_bins, plan.num_blocks, plan.block_size, f_code, fs)
+        dummy_bins, plan.num_blocks, plan.block_size, chip_rate, fs)
 
     # Output shape matches input
     @test length(chip_axis) == plan.samples_per_code
@@ -65,7 +65,7 @@ end
     @test all(diff(chip_axis) .>= 0)
 
     # chip_axis covers [0, code_length) without duplicates
-    code_length = plan.samples_per_code * f_code / fs
+    code_length = plan.samples_per_code * chip_rate / fs
     @test minimum(chip_axis) >= 0.0
     @test maximum(chip_axis) < code_length
     @test length(unique(chip_axis)) == plan.samples_per_code

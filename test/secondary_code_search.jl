@@ -37,12 +37,12 @@ end
         signal        = GPSL5I()
         sampling_freq = 10.24e6Hz
         prn           = 1
-        fc            = get_chip_rate(signal)
-        samples_per_code = ceil(Int, get_code_length(signal) / fc * sampling_freq)
+        chip_rate     = get_chip_rate(signal)
+        samples_per_code = ceil(Int, get_code_length(signal) / chip_rate * sampling_freq)
         N = 10
         L = 10
         sec = get_secondary_code(signal)
-        primary = ComplexF32.(gen_code(samples_per_code, signal, prn, sampling_freq, fc, 0.0))
+        primary = ComplexF32.(gen_code(samples_per_code, signal, prn, sampling_freq, chip_rate, 0.0))
 
         plan = plan_acquire(signal, sampling_freq, [prn];
             min_doppler_coverage = 1_000Hz, num_coherently_integrated_code_periods = N,
@@ -98,12 +98,12 @@ end
         signal        = GPSL5I()
         sampling_freq = 10.24e6Hz
         prn           = 1
-        fc            = get_chip_rate(signal)
-        samples_per_code = ceil(Int, get_code_length(signal) / fc * sampling_freq)
+        chip_rate     = get_chip_rate(signal)
+        samples_per_code = ceil(Int, get_code_length(signal) / chip_rate * sampling_freq)
         N = 10
         sec = get_secondary_code(signal)
 
-        primary = ComplexF32.(gen_code(samples_per_code, signal, prn, sampling_freq, fc, 0.0))
+        primary = ComplexF32.(gen_code(samples_per_code, signal, prn, sampling_freq, chip_rate, 0.0))
         samples = ComplexF32[]
         for k in 0:N-1
             nh10_chip = Float32(GNSSSignals.secondary_value(sec, prn, k))
@@ -144,12 +144,12 @@ end
         signal        = GPSL5I()
         sampling_freq = 10.24e6Hz
         prn           = 1
-        fc            = get_chip_rate(signal)
-        samples_per_code = ceil(Int, get_code_length(signal) / fc * sampling_freq)
+        chip_rate     = get_chip_rate(signal)
+        samples_per_code = ceil(Int, get_code_length(signal) / chip_rate * sampling_freq)
         N = 10
         sec = get_secondary_code(signal)
 
-        primary = ComplexF32.(gen_code(samples_per_code, signal, prn, sampling_freq, fc, 0.0))
+        primary = ComplexF32.(gen_code(samples_per_code, signal, prn, sampling_freq, chip_rate, 0.0))
         samples = ComplexF32[]
         for k in 0:N-1
             nh10_chip = Float32(GNSSSignals.secondary_value(sec, prn, k))
@@ -228,10 +228,10 @@ end
         true_cp       = 1234.5
         N = 20; L = 10
 
-        fc  = get_chip_rate(signal)
-        spc = ceil(Int, get_code_length(signal) / fc * sampling_freq)
+        chip_rate = get_chip_rate(signal)
+        spc = ceil(Int, get_code_length(signal) / chip_rate * sampling_freq)
         sec = get_secondary_code(signal)
-        primary = ComplexF32.(gen_code(spc, signal, prn, sampling_freq, fc, true_cp))
+        primary = ComplexF32.(gen_code(spc, signal, prn, sampling_freq, chip_rate, true_cp))
 
         samples = ComplexF32[]
         for k in 0:N-1
@@ -268,8 +268,8 @@ end
         sampling_freq = 12e6Hz
         prn           = 1
         N = 10; L = 10
-        fc  = get_chip_rate(signal)
-        spc = ceil(Int, get_code_length(signal) / fc * sampling_freq)
+        chip_rate = get_chip_rate(signal)
+        spc = ceil(Int, get_code_length(signal) / chip_rate * sampling_freq)
         sec = get_secondary_code(signal)
         plan = plan_acquire(signal, sampling_freq, [prn];
             num_coherently_integrated_code_periods = N, num_noncoherent_accumulations = 1)
@@ -277,7 +277,7 @@ end
         @testset "r0=$r0, cp=$cp, dop=$dop" for r0 in (0, 3, 7, 9),
                                                  cp in (0.0, 2000.0, 5115.0, 9000.0),
                                                  dop in (0.0, 1300.0)
-            primary = ComplexF32.(gen_code(spc, signal, prn, sampling_freq, fc, cp))
+            primary = ComplexF32.(gen_code(spc, signal, prn, sampling_freq, chip_rate, cp))
             samples = ComplexF32[]
             for k in 0:N-1
                 append!(samples, Float32(GNSSSignals.secondary_value(sec, prn, mod(k + r0, L))) .* primary)
@@ -424,9 +424,9 @@ end
 
         # Build a noiseless NH10·primary signal at amplitude 1.0 at the test Doppler.
         sec = get_secondary_code(signal)
-        fc  = get_chip_rate(signal)
+        chip_rate = get_chip_rate(signal)
         code_full = ComplexF32.(gen_code(N_total, signal, prn, sampling_freq,
-                                         fc, true_cp))
+                                         chip_rate, true_cp))
         # The L5I sample-level code generation already bakes NH10 across primary
         # periods (same property `_LongL5I` exploits), so `code_full` *is* the
         # NH10·primary product over 10 periods.

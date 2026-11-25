@@ -4,7 +4,7 @@
 #
 # power_bins is stored in FM-DBZP column order: (num_doppler_bins, samples_per_code).
 # Columns are in block-permuted order — column c corresponds to delay tau, which maps
-# to code phase chip = mod(-tau * code_freq_hz / sampling_freq_hz, code_length).  At
+# to code phase chip = mod(-tau * chip_rate_hz / sampling_freq_hz, code_length).  At
 # typical GNSS sampling rates (2× oversampled) this mapping is a bijection, so columns
 # can be sorted into monotone chip order for plotting.
 
@@ -20,7 +20,7 @@ function _fmdbzp_column_to_tau(scrambled_col_idx::Int, num_blocks::Int, block_si
 end
 
 """
-    _fmdbzp_sort_by_chip(power_bins, num_blocks, block_size, code_freq_hz, sampling_freq_hz)
+    _fmdbzp_sort_by_chip(power_bins, num_blocks, block_size, chip_rate_hz, sampling_freq_hz)
         -> (chip_axis, chip_sorted_power_bins)
 
 Return `(chip_axis, chip_sorted_power_bins)` where columns of `power_bins` are permuted
@@ -28,7 +28,7 @@ into monotone code-phase order.  `chip_axis[i]` is the code phase in chips for c
 `i` of `chip_sorted_power_bins`.
 
 Each FM-DBZP scrambled column `scrambled_col_idx` corresponds to delay `tau` samples,
-and chip phase `mod(-tau * code_freq_hz / sampling_freq_hz, code_length)`.  At GNSS
+and chip phase `mod(-tau * chip_rate_hz / sampling_freq_hz, code_length)`.  At GNSS
 sampling rates (≥ 2× oversampled) this is a bijection, so `sortperm` on the chip values
 gives a valid reordering.
 """
@@ -36,18 +36,18 @@ function _fmdbzp_sort_by_chip(
     power_bins::Matrix,
     num_blocks::Int,
     block_size::Int,
-    code_freq_hz::Float64,
+    chip_rate_hz::Float64,
     sampling_freq_hz::Float64,
 )
     _, samples_per_code = size(power_bins)
-    code_length = samples_per_code * code_freq_hz / sampling_freq_hz  # chips (≈ 1023 for GPS L1)
+    code_length = samples_per_code * chip_rate_hz / sampling_freq_hz  # chips (≈ 1023 for GPS L1)
 
     # Compute chip value for each scrambled column
     chip_phases = Vector{Float64}(undef, samples_per_code)
     for scrambled_col_idx in 0:samples_per_code-1
         tau = _fmdbzp_column_to_tau(scrambled_col_idx, num_blocks, block_size)
         chip_phases[scrambled_col_idx + 1] =
-            mod(-tau * code_freq_hz / sampling_freq_hz, code_length)
+            mod(-tau * chip_rate_hz / sampling_freq_hz, code_length)
     end
 
     # Sort columns into chip order
@@ -63,11 +63,11 @@ end
     num_blocks = result.num_blocks
     block_size = result.block_size
 
-    code_freq_hz     = Float64(ustrip(Hz, get_chip_rate(result.signal)))
+    chip_rate_hz     = Float64(ustrip(Hz, get_chip_rate(result.signal)))
     sampling_freq_hz = Float64(ustrip(Hz, result.sampling_frequency))
 
     chip_axis, chip_sorted_power_bins =
-        _fmdbzp_sort_by_chip(result.power_bins, num_blocks, block_size, code_freq_hz, sampling_freq_hz)
+        _fmdbzp_sort_by_chip(result.power_bins, num_blocks, block_size, chip_rate_hz, sampling_freq_hz)
 
     seriestype  := :surface
     seriescolor --> :viridis

@@ -644,7 +644,7 @@ Acquisition's cost is dominated by FFTs (computed with
 [FFTL.jl](https://github.com/JuliaMath/FFTL.jl)), which run fastest when the
 transform lengths factor into small primes — best of all powers of two — and
 slower when they carry a large prime (11, 13, 31, 257, …). Both lengths are ultimately set by the
-sampling frequency, since `samples_per_code = ceil(code_length × fs / code_freq)`.
+sampling frequency, since `samples_per_code = ceil(code_length × fs / chip_rate)`.
 There are two FFT stages, and they behave very differently:
 
 - **Inner double-block FFT** (size `2 × block_size`) — handled automatically.
