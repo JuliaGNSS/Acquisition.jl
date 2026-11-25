@@ -300,3 +300,17 @@ end
     right = row < n ? row + 1 : (wraps ? 1 : 0)
     return left, right
 end
+
+function _largest_prime_factor(n::Integer)
+    n <= 1 && return 1
+    largest = 1
+    p = 2
+    while p * p <= n
+        while n % p == 0
+            largest = p
+            n ÷= p
+        end
+        p += 1
+    end
+    n > 1 ? Int(n) : largest
+end

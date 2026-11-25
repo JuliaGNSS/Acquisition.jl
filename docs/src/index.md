@@ -33,8 +33,7 @@ results = acquire!(plan, signal, 1:32; interm_freq)
     `samples_per_code`. The inner FFT is zero-padded to a fast size
     automatically, but a rate that forces `num_blocks` onto a large prime
     (e.g. 1.542 MHz → 257) still gives a slow column FFT. See
-    [Sampling Frequency and FFT Performance](@ref) for the rule of thumb, and
-    [`recommend_sampling_freqs`](@ref) to pick a good rate.
+    [Sampling Frequency and FFT Performance](@ref) for the rule of thumb.
 
 ## Algorithm Overview
 

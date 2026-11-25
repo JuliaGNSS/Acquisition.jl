@@ -1,5 +1,5 @@
 # Sparse compensation of code Doppler inside a coherent integration window.
-@testset "Code Doppler — plan and recommendation agree" begin
+@testset "Code Doppler — the plan compensates the drift" begin
     system = GPSL5I()
     fs = 10.24e6Hz
     for N_coh in (10, 20)
@@ -13,15 +13,9 @@
             get_chip_rate_to_center_frequency_ratio(system)
         @test residual <= Acquisition._MAX_CODE_DOPPLER_DRIFT
         @test any(!iszero, plan.code_doppler_shifts_per_period)
-        rec = only(recommend_sampling_freqs(system; fs_min = fs, fs_max = fs,
-            num_prns = 1, num_coherently_integrated_code_periods = N_coh))
-        @test rec.num_blocks == plan.num_blocks
-        @test rec.num_doppler_passes == plan.num_doppler_passes
-        @test rec.doppler_bins_per_pass == plan.doppler_bins_per_pass
-        @test rec.cost == Acquisition._search_cost(plan.samples_per_code,
-            plan.num_blocks, N_coh, plan.num_doppler_passes, 1, true)
-        @test rec.cost > Acquisition._search_cost(plan.samples_per_code,
-            plan.num_blocks, N_coh, plan.num_doppler_passes, 1)
+        @test Acquisition._search_cost(plan.samples_per_code, plan.num_blocks, N_coh,
+            plan.num_doppler_passes, 1, true) > Acquisition._search_cost(
+            plan.samples_per_code, plan.num_blocks, N_coh, plan.num_doppler_passes, 1)
     end
     single = plan_acquire(system, fs, [1];
         num_coherently_integrated_code_periods = 20, max_doppler_passes = 1)
@@ -42,12 +36,6 @@
     @test any(!iszero, wide.code_doppler_shifts_per_period)
     @test (wide.doppler_bins_per_pass ÷ 2 + 0.5) *
         get_chip_rate_to_center_frequency_ratio(system) <= Acquisition._MAX_CODE_DOPPLER_DRIFT
-    wide_rec = only(recommend_sampling_freqs(system; fs_min = fs, fs_max = fs,
-        min_doppler_coverage = 15000Hz, num_prns = 1,
-        num_coherently_integrated_code_periods = 20))
-    @test wide_rec.num_blocks == wide.num_blocks
-    @test wide_rec.num_doppler_passes == wide.num_doppler_passes
-    @test wide_rec.doppler_bins_per_pass == wide.doppler_bins_per_pass
     capped = plan_acquire(system, fs, [1]; min_doppler_coverage = 15000Hz,
         num_coherently_integrated_code_periods = 20, max_doppler_passes = 16,
         use_secondary_code = false)

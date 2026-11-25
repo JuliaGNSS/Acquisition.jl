@@ -24,13 +24,7 @@ export acquire,
     cfar_threshold,
     get_num_cells,
     is_detected,
-    generate_test_signal,
-    recommend_sampling_freqs,
-    SamplingFreqRecommendation,
-    AbstractSDRClockPlan,
-    AD9361ClockPlan,
-    is_valid_sample_rate,
-    sample_rate_range
+    generate_test_signal
 
 """
     AcquisitionResults{S,T}
@@ -203,7 +197,5 @@ include("acquire.jl")
 include("tune_layout.jl")
 include("plot.jl")
 include("generate_test_signal.jl")
-include("sdr_clock_plans.jl")
-include("recommend_sampling_freq.jl")
 include("precompile.jl")
 end

@@ -25,5 +25,3 @@ include("secondary_code_search.jl")
     include("tune_layout.jl")
     include("plot.jl")
 end
-
-include("recommend_sampling_freq.jl")

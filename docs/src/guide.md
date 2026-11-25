@@ -631,8 +631,7 @@ fast length regardless of `block_size` (see
 [Sampling Frequency and FFT Performance](#Sampling-Frequency-and-FFT-Performance)),
 so a `block_size` with a large prime factor no longer penalises a smaller
 divisor — the smallest valid divisor is unconditionally the right default. The
-only prime-factorization concern left is the column FFT length `num_doppler_bins`,
-which the [`recommend_sampling_freqs`](@ref) helper accounts for.
+only prime-factorization concern left is the column FFT length `num_doppler_bins`.
 
 This is the rule for a *single* Doppler grid. When that divisor is far above
 the need (sparse divisors), `plan_acquire` also weighs every smaller divisor
@@ -673,6 +672,12 @@ There are two FFT stages, and they behave very differently:
   ~13× more cells than the 20 bins of the 1.500 MHz neighbour. `plan_acquire`
   avoids this automatically by splitting the search into Doppler passes, below.
 
+  The one exception: with `num_coherently_integrated_code_periods = 1`, a prime
+  `samples_per_code` has no divisor but 1 and itself, and no pass layout keeps
+  the sensitivity bound, so the search falls back to one-sample blocks and runs
+  orders of magnitude slower (4.787 MHz on GPS L1 C/A: seconds instead of
+  milliseconds). Pick a rate whose `samples_per_code` has a small factor.
+
 #### Doppler Passes
 
 Instead of one wide grid, `plan_acquire` can cover the Doppler range with `P`
@@ -701,7 +706,7 @@ grid needs at least 1.9× the blocks the coverage asks for (1.542 MHz: 257 for
 (20 for 16), 2.048 MHz at ±10 kHz (32 for 22), 4 MHz at ±25 kHz (80 for 52) —
 keep their single grid. On a sparse-divisor rate `plan_acquire` chooses between
 the single grid and every pass layout with a cost model fitted to measured
-`acquire!` timings (see [`recommend_sampling_freqs`](@ref)), and only leaves the
+`acquire!` timings, and only leaves the
 single grid when passes are expected to be at least 10% cheaper. Pass
 `max_doppler_passes = 1` to always use one grid.
 
@@ -782,78 +787,7 @@ Planning can take substantially longer because each candidate needs its own
 buffers, FFT/PRN preparation, and warmup. Only one challenger is considered at a
 time; discarded plans are released. The result is the fastest measured layout
 among the shortlist, with a noise margin, rather than a guarantee of the global
-optimum or a speedup on every later call. Sampling-frequency recommendations
-continue to use the cost model.
-
-### Picking a Good Sampling Frequency
-
-When you have flexibility in the front-end clock,
-[`recommend_sampling_freqs`](@ref) sweeps a frequency range and returns the
-candidates with the smoothest FFT factorizations and lowest estimated cost.
-It accounts for the [`num_blocks` divisibility constraint](#The-num_blocks-Divisibility-Constraint),
-both FFT stages of the algorithm (inner double-block + column FFT), and the
-[Doppler passes](#Doppler-Passes) `plan_acquire` would use, so it reports exactly
-the layout the plan will run.
-
-```@example guide
-using Acquisition, GNSSSignals
-import Unitful: Hz
-
-recommend_sampling_freqs(GPSL1CA();
-    fs_min = 2e6Hz,
-    fs_max = 5e6Hz,
-    min_doppler_coverage = 7000Hz,
-    num_coherently_integrated_code_periods = 1,
-    num_alternatives = 5,
-)
-```
-
-For a custom code geometry (e.g. a non-standard system) pass `code_length` and
-`code_freq` directly:
-
-```@example guide
-recommend_sampling_freqs(10_000, 36e6Hz;
-    fs_min = 36e6Hz,
-    fs_max = 40e6Hz,
-    min_doppler_coverage = 10_000Hz,
-    num_coherently_integrated_code_periods = 36,
-    num_alternatives = 5,
-)
-```
-
-By default candidates are ranked by estimated FFT cost; pass
-`sort_by = :smoothness` to rank by largest prime factor of `num_doppler_bins`
-(the column FFT) instead. Use `max_prime` to tighten or relax the smoothness
-budget (default `7`). Both apply to the column FFT only —
-the inner FFT is zero-padded to a fast size regardless, so a rate like
-16.368 MHz (non-smooth `samples_per_code`, but smooth `num_doppler_bins`) is now
-recommended rather than rejected. Likewise a sparse-divisor rate such as
-1.542 MHz is recommended with its Doppler-pass layout; pass
-`max_doppler_passes = 1` to restrict the search to single-grid rates.
-
-#### Filtering against an SDR's hardware constraints
-
-Most SDRs can only reach a discrete subset of sampling frequencies — the
-output of a master clock, divider tree, and PLL. Pass an
-[`AbstractSDRClockPlan`](@ref) via `sdr_clock_plan` to skip rates the
-hardware can't produce:
-
-```@example guide
-recommend_sampling_freqs(GPSL1CA();
-    fs_min = 2e6Hz,
-    fs_max = 8e6Hz,
-    min_doppler_coverage = 7000Hz,
-    num_alternatives = 5,
-    sdr_clock_plan = AD9361ClockPlan(),
-)
-```
-
-[`AD9361ClockPlan`](@ref) reproduces the validation done by the AD9361 driver
-shipped with `litex_m2sdr` (550 kHz – 61.44 MSPS, divider search through
-`{12, 8, 6, 4, 3, 2, 1}` against an ADC clock window of 25–640 MHz, and a
-reachable BBPLL). Other SDRs can be supported by subtyping
-[`AbstractSDRClockPlan`](@ref) and implementing
-[`is_valid_sample_rate`](@ref) (and optionally [`sample_rate_range`](@ref)).
+optimum or a speedup on every later call.
 
 ### Coherent Integration with Data Bits (GPS L1 C/A)
 
