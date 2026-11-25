@@ -591,8 +591,8 @@ function _acquire_multistep!(plan, samples, prns, segment_length, interm_freq_hz
     chip_rate_hz = ustrip(Hz, get_chip_rate(plan.signal))
     code_length = get_code_length(plan.signal)
     code_period = code_length / get_chip_rate(plan.signal)
-    num_doppler_bins = length(plan.doppler_freqs)
-    doppler_step = step(plan.doppler_freqs)
+    num_doppler_bins = length(plan.doppler_bins)
+    doppler_step = step(plan.doppler_bins)
     _foreach_prn_chunk(plan, eachindex(prns), results, results_channel) do result_idx
         _acquire_one_multistep!(plan, results, prns, result_idx, samples,
             interm_freq_hz, sampling_freq_hz, chip_rate_hz, code_length,
@@ -645,8 +645,8 @@ function _acquire_sequential!(plan, samples, prns, segment_length, interm_freq_h
     chip_rate_hz = ustrip(Hz, get_chip_rate(plan.signal))
     code_length = get_code_length(plan.signal)
     code_period = code_length / get_chip_rate(plan.signal)
-    num_doppler_bins = length(plan.doppler_freqs)
-    doppler_step = step(plan.doppler_freqs)
+    num_doppler_bins = length(plan.doppler_bins)
+    doppler_step = step(plan.doppler_bins)
 
     _foreach_prn_chunk(plan, eachindex(prns), results, results_channel) do result_idx
         _acquire_one_sequential!(plan, results, prns, result_idx, samples,
@@ -689,7 +689,7 @@ end
 function _get_result_buffer!(plan::AcquisitionPlan, prn_idx::Int)
     cached = plan.result_buffers[prn_idx]
     buf = cached === nothing ?
-        Matrix{Float32}(undef, length(plan.doppler_freqs), plan.samples_per_code_eff) :
+        Matrix{Float32}(undef, length(plan.doppler_bins), plan.samples_per_code_eff) :
         cached
     plan.result_buffers[prn_idx] = buf
     return buf
@@ -1055,7 +1055,7 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins, samples, inte
         end
     end
 
-    doppler = plan.doppler_freqs[doppler_bin_idx]
+    doppler = plan.doppler_bins[doppler_bin_idx]
     dop_row_left, dop_row_right = _doppler_neighbour_rows(plan, doppler_bin_idx)
     # A peak on the edge row of a stitched grid has no neighbour beyond it, so
     # its Doppler is not interpolated.
@@ -1103,7 +1103,7 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins, samples, inte
         Float32(peak_to_noise),
         plan.num_noncoherent_integrations,
         result_buf,
-        plan.doppler_freqs,
+        plan.doppler_bins,
         plan.num_blocks,
         plan.block_size,
         plan.num_secondary_rotations,
@@ -1150,7 +1150,7 @@ function _extract_result_streamed!(plan, scratch, prn,
     delay_samples = _fmdbzp_column_to_tau(scrambled_col, plan.num_blocks, plan.block_size)
     code_phase = mod(-delay_samples * chip_rate_hz / sampling_freq_hz, code_length)
 
-    doppler = plan.doppler_freqs[peak_doppler_bin]
+    doppler = plan.doppler_bins[peak_doppler_bin]
 
     if subsample_interpolation
         # Neighbouring columns must stay within the SAME rotation block
@@ -1226,7 +1226,7 @@ function _extract_result_streamed!(plan, scratch, prn,
         Float32(peak_to_noise),
         plan.num_noncoherent_integrations,
         store_buf,
-        plan.doppler_freqs,
+        plan.doppler_bins,
         plan.num_blocks,
         plan.block_size,
         plan.num_secondary_rotations,

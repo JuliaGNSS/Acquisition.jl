@@ -20,7 +20,7 @@ end
 # blocks (left by the last `acquire!`, N_nc = 1).
 function _reference_surface_error(plan, prn, stored)
     scratch = Acquisition._default_scratch(plan)
-    ndop = length(plan.doppler_freqs)
+    ndop = length(plan.doppler_bins)
     ncoh = plan.num_coherently_integrated_code_periods
     cim = zeros(ComplexF32, ndop, plan.samples_per_code)
     Acquisition._build_coherent_integration_matrix!(cim, plan.signal_block_ffts,
@@ -39,7 +39,7 @@ end
     @test plan.doppler_bins_per_pass == 5
     @test plan.pass_fft_bins == 6
     # One uniform grid, symmetric about 0, reaching ±7 kHz.
-    @test plan.doppler_freqs == (-7000.0:1000.0:7000.0) .* Hz
+    @test plan.doppler_bins == (-7000.0:1000.0:7000.0) .* Hz
     # Pass k is centred on its middle bin and keeps its 5 central bins.
     @test plan.doppler_pass_offsets_hz == [-5000.0, 0.0, 5000.0]
     @test plan.pass_row_offset == 1     # sorted rows 2:6 of a pass's 6 (-3..2 kHz)
@@ -48,7 +48,7 @@ end
     single = plan_acquire(GPSL1CA(), 1.542e6Hz, [1]; max_doppler_passes = 1)
     @test single.num_blocks == 257
     @test single.num_doppler_passes == 1
-    @test single.doppler_bins_per_pass == length(single.doppler_freqs) == 257
+    @test single.doppler_bins_per_pass == length(single.doppler_bins) == 257
     @test single.doppler_pass_offsets_hz == [0.0]
 
     # Common rates with a well-placed divisor keep their single grid.
@@ -76,7 +76,7 @@ end
             @test plan.num_doppler_passes > 1
         else
             @test plan.num_doppler_passes == 1
-            @test length(plan.doppler_freqs) == plan.pass_fft_bins
+            @test length(plan.doppler_bins) == plan.pass_fft_bins
         end
     end
     # Sparse divisors: 1023 = 3·11·31 and 3069 = 3²·11·31 need 31 blocks for 16.
@@ -105,8 +105,8 @@ end
     # below the FFT bins it holds: a signal at 0 Hz peaked loss-free but was
     # reported at -500 Hz.
     plan = plan_acquire(GPSL1CA(), 1.542e6Hz, [1]; max_doppler_passes = 1)
-    @test first(plan.doppler_freqs) == -128_000.0Hz
-    @test 0.0Hz in plan.doppler_freqs
+    @test first(plan.doppler_bins) == -128_000.0Hz
+    @test 0.0Hz in plan.doppler_bins
     for doppler in (0Hz, 3000Hz, -2000Hz)
         (; samples) = generate_test_signal(GPSL1CA(), 1; sampling_freq = 1.542e6Hz,
             num_samples = 3084, carrier_doppler = doppler, code_phase = 400.3, CN0 = 90,
@@ -140,8 +140,8 @@ end
                 @test _reference_surface_error(ref_plan, prn, ref.power_bins) <= 1e-5
             end
             # ≈: the two grids' bin labels round differently (e.g. 60 code periods).
-            @test ref_plan.doppler_freqs[rows] .+ offset * Hz ≈
-                  plan.doppler_freqs[(k-1)*K+1 : k*K] rtol = 1e-12
+            @test ref_plan.doppler_bins[rows] .+ offset * Hz ≈
+                  plan.doppler_bins[(k-1)*K+1 : k*K] rtol = 1e-12
         end
     end
     fs = 1.542e6Hz
@@ -283,7 +283,7 @@ end
         @test alone.carrier_doppler == r7.carrier_doppler
         @test alone.code_phase == r7.code_phase
         @test alone.peak_to_noise_ratio == r7.peak_to_noise_ratio
-        @test get_num_cells(r7) == length(plan.doppler_freqs) * plan.samples_per_code
+        @test get_num_cells(r7) == length(plan.doppler_bins) * plan.samples_per_code
     end
 end
 
@@ -299,7 +299,7 @@ end
     r_nostore = acquire!(plan, samples, 2; subsample_interpolation = true)
     r_store = acquire!(plan, samples, 2; subsample_interpolation = true,
         store_power_bins = true)
-    peak_row = findfirst(==(2000.0Hz), plan.doppler_freqs)
+    peak_row = findfirst(==(2000.0Hz), plan.doppler_bins)
     @test Acquisition._doppler_row_to_pass(plan, peak_row)[1] !=
           Acquisition._doppler_row_to_pass(plan, peak_row + 1)[1]
     @test r_nostore.code_phase == r_store.code_phase
@@ -313,12 +313,12 @@ end
     # past +7 kHz is not -7 kHz, so a peak on an edge row keeps its bin Doppler.
     fs = 1.542e6Hz
     plan = plan_acquire(GPSL1CA(), fs, [4])
-    n = length(plan.doppler_freqs)
+    n = length(plan.doppler_bins)
     @test Acquisition._doppler_neighbour_rows(plan, 1) == (0, 2)
     @test Acquisition._doppler_neighbour_rows(plan, n) == (n - 1, 0)
     @test Acquisition._doppler_neighbour_rows(plan, 5) == (4, 6)
     single = plan_acquire(GPSL1CA(), 2.048e6Hz, [4])
-    m = length(single.doppler_freqs)
+    m = length(single.doppler_bins)
     @test Acquisition._doppler_neighbour_rows(single, 1) == (m, 2)
     @test Acquisition._doppler_neighbour_rows(single, m) == (m - 1, 1)
 

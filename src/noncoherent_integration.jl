@@ -25,7 +25,7 @@
 
 Column-wise FFT path for pilot channels and sub-bit integration (num_bits = 1,
 no bit combination search). Applies fftshift so row indices map to sorted
-`doppler_freqs`, accumulates `|FFT|²` into `noncoherent_integration_matrix` (shape `(num_doppler_bins, samples_per_code)`).
+`doppler_bins`, accumulates `|FFT|²` into `noncoherent_integration_matrix` (shape `(num_doppler_bins, samples_per_code)`).
 
 Reference implementation used by tests; production uses the fused kernels below.
 """
@@ -321,7 +321,7 @@ code-phase walk-off caused by carrier Doppler during coherent integration.
 `accumulation_step_index` is the 0-based incoherent step index (0 → no shift).
 `S_CD[w] = round(doppler_hz[w] * accumulation_step_index * T_coherent * sampling_freq_hz / carrier_freq_hz)`
 
-The buffer is in **sorted-Doppler row order**, so `doppler_freqs[w]` directly
+The buffer is in **sorted-Doppler row order**, so `doppler_bins[w]` directly
 gives the frequency for row `w`.
 
 Reference implementation (allocates its row scratch locally): production folds
@@ -349,7 +349,7 @@ function _apply_code_drift!(noncoherent_integration_buf::Matrix{Float32}, plan::
     row_buf = zeros(Float32, samples_per_code)
     row_shift_buf = zeros(Float32, samples_per_code)
     for doppler_row in 1:num_doppler_bins
-        doppler_hz = ustrip(Hz, plan.doppler_freqs[doppler_row])
+        doppler_hz = ustrip(Hz, plan.doppler_bins[doppler_row])
         shift = round(Int, doppler_hz * accumulation_step_index * coherent_duration_s * sampling_freq_hz / carrier_freq_hz)
         shift == 0 && continue
         for r in 0:num_rotation_blocks-1
@@ -399,7 +399,7 @@ end
 # shift AND fftshift row permutation, folded into one pass (Issue #62).
 #
 # `code_drift_shifts` is indexed by SORTED-Doppler row (it is filled from
-# `plan.doppler_freqs[row]`), pre-normalised to `[0, samples_per_code)` by
+# `plan.doppler_bins[row]`), pre-normalised to `[0, samples_per_code)` by
 # `_fill_code_drift_shifts!` so the inner loop replaces `mod(c-1+shift, spc)+1`
 # with a single conditional subtract. Raw FFT bin `r` lands in sorted row
 # `fftshift_perm[r]`, so its drift is that DESTINATION row's shift
@@ -457,7 +457,7 @@ function _fill_code_drift_shifts!(shifts::Vector{Int}, plan::AcquisitionPlan,
     samples_per_code = plan.samples_per_code
     has_drift = false
     @inbounds for r in 1:length(shifts)
-        doppler_hz = ustrip(Hz, plan.doppler_freqs[rows.dest_offset + r])
+        doppler_hz = ustrip(Hz, plan.doppler_bins[rows.dest_offset + r])
         raw = round(Int, doppler_hz * accumulation_step_index * coherent_duration_s * sampling_freq_hz / carrier_freq_hz)
         if raw != 0
             has_drift = true
@@ -887,7 +887,7 @@ function _accumulate_noncoherent_integration_step!(
     accumulation_step_index::Int,
 )
     num_doppler_bins = plan.pass_fft_bins
-    length(plan.doppler_freqs) == num_doppler_bins || throw(ArgumentError(
+    length(plan.doppler_bins) == num_doppler_bins || throw(ArgumentError(
         "_accumulate_noncoherent_integration_step! needs a single-grid plan " *
         "(max_doppler_passes = 1), got $(plan.num_doppler_passes) Doppler passes"))
 

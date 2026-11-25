@@ -1,7 +1,7 @@
 # test/noncoherent_integration.jl
 #
 # Kernel-level tests: they materialise one FM-DBZP grid and read it against
-# `plan.doppler_freqs`, so every plan here is pinned to a single Doppler grid
+# `plan.doppler_bins`, so every plan here is pinned to a single Doppler grid
 # (`max_doppler_passes = 1`). Doppler passes are covered in test/doppler_passes.jl.
 # Tests for noncoherent integration: column FFT accumulation, bit search, code drift correction
 
@@ -10,7 +10,7 @@
     # folding `_apply_code_drift!` into the per-column accumulator loop. Raw FFT
     # bin r writes its (c) cell into nim[fftshift_perm[r], (c + shift) mod spc]
     # where `shift` is the drift of the DESTINATION sorted-Doppler row —
-    # code_drift_shifts[fftshift_perm[r]], keyed on doppler_freqs[fftshift_perm[r]]
+    # code_drift_shifts[fftshift_perm[r]], keyed on doppler_bins[fftshift_perm[r]]
     # (Issue #74; previously mis-keyed on the raw bin). The unfused reference
     # therefore fftshift-scatters into sorted-Doppler order FIRST, then drifts
     # each sorted row by its own shift — matching the sign-search path.
@@ -29,14 +29,14 @@
         fftshift_perm = [mod(r - 1 + num_doppler_bins ÷ 2, num_doppler_bins) + 1
                          for r in 1:num_doppler_bins]
 
-        # Synthetic doppler grid in sorted order (matches plan.doppler_freqs).
+        # Synthetic doppler grid in sorted order (matches plan.doppler_bins).
         doppler_coverage_hz = 32_000.0
-        doppler_freqs = range(-doppler_coverage_hz / 2,
+        doppler_bins = range(-doppler_coverage_hz / 2,
                               step = doppler_coverage_hz / num_doppler_bins,
                               length = num_doppler_bins)
         coherent_duration_s = samples_per_code / sampling_freq_hz_test
         # Raw shifts for the reference circshift (any integer is fine).
-        raw_shifts = [round(Int, doppler_freqs[r] * accumulation_step *
+        raw_shifts = [round(Int, doppler_bins[r] * accumulation_step *
                        coherent_duration_s * sampling_freq_hz_test / carrier_freq_hz_test)
                       for r in 1:num_doppler_bins]
         # Fused kernels expect shifts normalised to [0, samples_per_code) so
@@ -53,7 +53,7 @@
             col_buf, col_fft_plan, samples_per_code)
         Acquisition._scatter_fftshift_accumulate!(ref_acc, ref_buf, fftshift_perm, samples_per_code)
         # Apply the row-wise circular shift in sorted-Doppler order (Issue #74):
-        # sorted row `row` drifts by its own doppler_freqs[row]-derived shift.
+        # sorted row `row` drifts by its own doppler_bins[row]-derived shift.
         if accumulation_step != 0
             row_buf = zeros(Float32, samples_per_code)
             row_shift_buf = zeros(Float32, samples_per_code)
@@ -85,10 +85,10 @@ end
 
 @testset "Fused pilot drift kernel indexes shift by destination Doppler row (Issue #74)" begin
     # Issue #74: `code_drift_shifts` is indexed by SORTED-Doppler row (it is
-    # filled from `plan.doppler_freqs[r]`). The fused pilot kernels iterate raw
+    # filled from `plan.doppler_bins[r]`). The fused pilot kernels iterate raw
     # FFT bins `r`, write the cell to sorted row `fftshift_perm[r]`, and so must
     # shift by the drift of the DESTINATION row — `code_drift_shifts[perm[r]]`,
-    # whose true Doppler is `doppler_freqs[perm[r]]` — not `code_drift_shifts[r]`
+    # whose true Doppler is `doppler_bins[perm[r]]` — not `code_drift_shifts[r]`
     # (the row half the searched band away). This mirrors the sign-search path
     # (`_accumulate_sign_tile!`), which drifts in sorted-Doppler row order.
     #
@@ -109,12 +109,12 @@ end
                          for r in 1:num_doppler_bins]
 
         doppler_coverage_hz = 10_000.0
-        doppler_freqs = range(-doppler_coverage_hz / 2,
+        doppler_bins = range(-doppler_coverage_hz / 2,
                               step = doppler_coverage_hz / num_doppler_bins,
                               length = num_doppler_bins)
         coherent_duration_s = samples_per_code / sampling_freq_hz_test
         # `code_drift_shifts[row]` is indexed by SORTED-Doppler row.
-        raw_shifts = [round(Int, doppler_freqs[row] * accumulation_step *
+        raw_shifts = [round(Int, doppler_bins[row] * accumulation_step *
                        coherent_duration_s * sampling_freq_hz_test / carrier_freq_hz_test)
                       for row in 1:num_doppler_bins]
         norm_shifts = [mod(s, samples_per_code) for s in raw_shifts]
@@ -169,7 +169,7 @@ end
     # (a) all-zero drift on the simple/batched path
     plan_a = plan_acquire(GPSL1CA(), 5.0e6Hz, [1];
         max_doppler_passes = 1, min_doppler_coverage = 2000Hz, num_noncoherent_integrations = 8)
-    n_dop_a = length(plan_a.doppler_freqs)
+    n_dop_a = length(plan_a.doppler_bins)
     shifts_a = zeros(Int, n_dop_a)
 
     # step 0: definitionally has_drift=false, shifts all 0
@@ -204,7 +204,7 @@ end
         max_doppler_passes = 1, min_doppler_coverage = 12_000Hz,
         num_coherently_integrated_code_periods = 20,
         num_noncoherent_integrations = 8)
-    n_dop_b = length(plan_b.doppler_freqs)
+    n_dop_b = length(plan_b.doppler_bins)
     shifts_b = zeros(Int, n_dop_b)
 
     # step 0 is still has_drift=false even on the larger grid.
@@ -276,7 +276,7 @@ end
     scratch = Acquisition._default_scratch(plan)
     # Full CIM materialised locally via the reference wrapper (production is tiled).
     cim = zeros(ComplexF32, plan.num_coherently_integrated_code_periods * plan.num_blocks, plan.samples_per_code)
-    doppler_bin_spacing = step(plan.doppler_freqs)
+    doppler_bin_spacing = step(plan.doppler_bins)
     tau_samples = round(Int, (get_code_length(signal) - code_phase) * plan.samples_per_code / get_code_length(signal))
 
     (; samples) = generate_test_signal(signal, prn;
@@ -298,7 +298,7 @@ end
         scratch.col_fft_plan, plan.samples_per_code)
 
     peak_row, peak_col = Tuple(argmax(noncoherent_integration_matrix))
-    detected_doppler = plan.doppler_freqs[plan.fftshift_perm[peak_row]]
+    detected_doppler = plan.doppler_bins[plan.fftshift_perm[peak_row]]
 
     # 1. Only the one column block scrambled_block = (num_blocks - block_row) mod num_blocks
     # accumulates coherently; all other column blocks are noise-level (verified empirically).
@@ -374,8 +374,8 @@ end
 
     # 2. Doppler: FM-DBZP has alias ambiguity at alias_period = sampling_freq/samples_per_code = 1000 Hz.
     # The detected bin must be a valid alias of the true Doppler.
-    detected_doppler = plan.doppler_freqs[peak_row]
-    doppler_bin_spacing = step(plan.doppler_freqs)
+    detected_doppler = plan.doppler_bins[peak_row]
+    doppler_bin_spacing = step(plan.doppler_bins)
     alias_period = plan.sampling_freq / plan.samples_per_code
     diff = mod((detected_doppler - true_doppler) / (1Hz), alias_period / (1Hz))
     diff_sym = min(diff, alias_period / (1Hz) - diff)
@@ -429,8 +429,8 @@ end
 
     # The detected Doppler (from the corrected peak) must be a valid alias
     peak_row, _ = Tuple(argmax(noncoherent_integration_data))
-    detected_doppler = plan.doppler_freqs[peak_row]
-    doppler_bin_spacing = step(plan.doppler_freqs)
+    detected_doppler = plan.doppler_bins[peak_row]
+    doppler_bin_spacing = step(plan.doppler_bins)
     alias_period = plan.sampling_freq / plan.samples_per_code
     diff = mod((detected_doppler - true_doppler) / (1Hz), alias_period / (1Hz))
     diff_sym = min(diff, alias_period / (1Hz) - diff)
@@ -464,7 +464,7 @@ end
     for plan in (plan_no_search, plan_with_search)
         result = only(acquire!(plan, signal_f32, [prn]; interm_freq = 0.0Hz))
         detected_doppler = result.carrier_doppler
-        doppler_bin_spacing = step(plan.doppler_freqs)
+        doppler_bin_spacing = step(plan.doppler_bins)
         # FM-DBZP alias ambiguity: check detected Doppler is a valid alias
         diff = mod((detected_doppler - true_doppler) / (1Hz), alias_period / (1Hz))
         diff_sym = min(diff, alias_period / (1Hz) - diff)
@@ -483,12 +483,12 @@ end
     # (the sign-search kernels fold fftshift into their cell-write loops, so the
     # buf reaches `_apply_code_drift!` already in sorted order — see
     # `_sign_search_step_with_rotations!`). The per-row Doppler is therefore
-    # `doppler_freqs[row]` directly, no `fftshift_perm` lookup needed. To test
+    # `doppler_bins[row]` directly, no `fftshift_perm` lookup needed. To test
     # "shift at 7000 Hz Doppler" plant the spike at the sorted-Doppler bin for
     # 7 kHz.
-    sorted_bin_7khz = findfirst(f -> abs(f / (1Hz) - 7000) < 1, plan.doppler_freqs)
+    sorted_bin_7khz = findfirst(f -> abs(f / (1Hz) - 7000) < 1, plan.doppler_bins)
 
-    doppler_hz_7khz       = plan.doppler_freqs[sorted_bin_7khz] / (1Hz)    # ≈ 7000 Hz
+    doppler_hz_7khz       = plan.doppler_bins[sorted_bin_7khz] / (1Hz)    # ≈ 7000 Hz
     sampling_freq_hz_val  = plan.sampling_freq / (1Hz)
     carrier_freq_hz_val   = get_center_frequency(plan.signal) / (1Hz)
     coherent_duration_s   = plan.num_coherently_integrated_code_periods * plan.samples_per_code / sampling_freq_hz_val  # 0.04 s
@@ -720,7 +720,7 @@ end
     for (label, plan, step_idx) in cases
         @testset "$label" begin
             scratch = Acquisition._default_scratch(plan)
-            ndop = length(plan.doppler_freqs)
+            ndop = length(plan.doppler_bins)
             (; samples) = generate_test_signal(plan.signal, prn;
                 num_samples = plan.num_coherently_integrated_code_periods * plan.samples_per_code,
                 carrier_doppler = 1300Hz, code_phase = 210.7,
@@ -787,7 +787,7 @@ end
                 max_doppler_passes = 1)   # the reference dispatcher needs one grid
             @test plan.bit_edge_search_steps == edges
             scratch = Acquisition._default_scratch(plan)
-            ndop = length(plan.doppler_freqs)
+            ndop = length(plan.doppler_bins)
             (; samples) = generate_test_signal(signal, prn;
                 num_samples = ncoh * plan.samples_per_code,
                 carrier_doppler = 1270Hz, code_phase = 321.4,
@@ -855,7 +855,7 @@ end
             @test plan.num_bits == 1
             @test plan.num_secondary_rotations == 1
             scratch = Acquisition._default_scratch(plan)
-            ndop = length(plan.doppler_freqs)
+            ndop = length(plan.doppler_bins)
             (; samples) = generate_test_signal(GPSL1CA(), prn;
                 num_samples = ncoh * plan.samples_per_code,
                 carrier_doppler = 1270Hz, code_phase = 321.4,

@@ -6,8 +6,8 @@
         plan = plan_acquire(signal, fs, [1];
             num_coherently_integrated_code_periods = N_coh, use_secondary_code = false)
         @test plan.num_doppler_passes > 1
-        @test first(plan.doppler_freqs) <= -7000Hz
-        @test last(plan.doppler_freqs) >= 7000Hz
+        @test first(plan.doppler_bins) <= -7000Hz
+        @test last(plan.doppler_bins) >= 7000Hz
         # Include half a bin beyond the most distant kept bin.
         residual = (plan.doppler_bins_per_pass ÷ 2 + 0.5) *
             get_chip_rate_to_center_frequency_ratio(signal)

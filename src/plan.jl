@@ -126,7 +126,7 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     # The searched Doppler grid: `num_doppler_passes * doppler_bins_per_pass`
     # Hz values at multiples of the bin spacing, from `-(n÷2)·spacing` (the
     # fftshifted FFT-bin order). Every result row indexes into this grid.
-    doppler_freqs::DS
+    doppler_bins::DS
     # Doppler passes (issue #101, see src/doppler_passes.jl). The range is
     # searched by `num_doppler_passes` FM-DBZP passes of `pass_fft_bins`
     # (= num_coh * num_blocks) bins each. Pass `k` runs on the signal
@@ -134,7 +134,7 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     # `doppler_bins_per_pass` central bins — sorted rows
     # `pass_row_offset+1 : pass_row_offset+doppler_bins_per_pass` of its own
     # grid — to rows `(k-1)*doppler_bins_per_pass+1 : k*doppler_bins_per_pass`
-    # of `doppler_freqs`. One pass with `doppler_bins_per_pass ==
+    # of `doppler_bins`. One pass with `doppler_bins_per_pass ==
     # pass_fft_bins` is the classic single-grid search.
     num_doppler_passes::Int
     doppler_bins_per_pass::Int
@@ -769,7 +769,7 @@ function _plan_acquire(
 
     # Doppler grid (fftshift order: bin multiples of the spacing, from
     # -(n÷2)·spacing) and the centre frequency each pass is downconverted by.
-    doppler_freqs = _doppler_grid_hz(layout, bin_width, num_coherently_integrated_code_periods) .* Hz
+    doppler_bins = _doppler_grid_hz(layout, bin_width, num_coherently_integrated_code_periods) .* Hz
     doppler_pass_offsets_hz = _doppler_pass_offsets_hz(layout, bin_width,
         num_coherently_integrated_code_periods)
 
@@ -915,7 +915,7 @@ function _plan_acquire(
     # Pre-allocate concrete-typed results buffer to avoid boxing allocations in acquire!
     dummy_result = AcquisitionResults(
         signal, 0, convert(typeof(1.0Hz), sampling_freq), 0.0Hz, 0.0, nothing, 0.0,
-        0f0, 0f0, 0, nothing, doppler_freqs, num_blocks, block_size, num_secondary_rotations,
+        0f0, 0f0, 0, nothing, doppler_bins, num_blocks, block_size, num_secondary_rotations,
         nothing)
     acq_results_buf = Vector{typeof(dummy_result)}(undef, length(prns))
 
@@ -960,7 +960,7 @@ function _plan_acquire(
         samples_per_code, samples_per_code_eff, num_blocks, block_size, num_coherently_integrated_code_periods, num_bits, bit_edge_search_steps, num_noncoherent_integrations,
         prn_conj_ffts,
         double_block_fft_plan,
-        doppler_freqs,
+        doppler_bins,
         num_doppler_passes,
         doppler_bins_per_pass,
         pass_fft_bins,

@@ -12,7 +12,7 @@
     # The production pipeline is tiled and never materialises the full coherent
     # integration matrix; for inspection the test allocates one locally and
     # fills it via the reference wrapper (which loops the tiled builder).
-    cim = zeros(ComplexF32, length(plan.doppler_freqs), plan.samples_per_code)
+    cim = zeros(ComplexF32, length(plan.doppler_bins), plan.samples_per_code)
     # min_doppler_coverage=5000 → span 10000 Hz → num_blocks=16, block_size=128
 
     # code_phase=991 chips → tau_samples = round((1023-991)*2048/1023) = 64 samples

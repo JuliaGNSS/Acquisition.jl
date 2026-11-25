@@ -51,7 +51,7 @@ end
     fs     = Float64(ustrip(Hz, sampling_freq))
 
     # Build a dummy power_bins matrix (all ones — shape correctness test)
-    num_doppler_bins = length(plan.doppler_freqs)
+    num_doppler_bins = length(plan.doppler_bins)
     dummy_bins = ones(Float32, num_doppler_bins, plan.samples_per_code)
 
     chip_axis, ordered = Acquisition._fmdbzp_sort_by_chip(
@@ -94,15 +94,15 @@ end
     rd = only(recipe_list)
 
     doppler_hz, chip_axis, z = rd.args
-    @test length(doppler_hz) == length(plan.doppler_freqs)
+    @test length(doppler_hz) == length(plan.doppler_bins)
     @test length(chip_axis)  == plan.samples_per_code
-    @test size(z)            == (plan.samples_per_code, length(plan.doppler_freqs))
+    @test size(z)            == (plan.samples_per_code, length(plan.doppler_bins))
 
     # chip_axis is sorted
     @test all(diff(chip_axis) .>= 0)
 
     # doppler_hz matches plan (in Hz, not Unitful)
-    @test doppler_hz ≈ ustrip.(Hz, plan.doppler_freqs)
+    @test doppler_hz ≈ ustrip.(Hz, plan.doppler_bins)
 
     # log_scale=true variant — z values should all be finite (no -Inf from log(0))
     recipe_list_log = RecipesBase.apply_recipe(Dict{Symbol,Any}(), result, true)

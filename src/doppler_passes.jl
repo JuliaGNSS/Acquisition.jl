@@ -294,7 +294,7 @@ end
 # past it is not on the grid, and wrapping would pair the edge with a Doppler
 # on the far side of the range.
 @inline function _doppler_neighbour_rows(plan::AcquisitionPlan, row::Int)
-    n = length(plan.doppler_freqs)
+    n = length(plan.doppler_bins)
     wraps = plan.num_doppler_passes == 1 && plan.doppler_bins_per_pass == plan.pass_fft_bins
     left = row > 1 ? row - 1 : (wraps ? n : 0)
     right = row < n ? row + 1 : (wraps ? 1 : 0)

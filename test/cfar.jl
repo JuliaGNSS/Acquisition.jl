@@ -72,7 +72,7 @@ end
         plan = plan_acquire(signal, float(sampling_freq), collect(1:32);
             num_coherently_integrated_code_periods = num_code_cycles,
             num_noncoherent_integrations = M)
-        num_cells = length(plan.doppler_freqs) * plan.num_blocks * plan.block_size
+        num_cells = length(plan.doppler_bins) * plan.num_blocks * plan.block_size
         threshold = cfar_threshold(pfa, num_cells; num_noncoherent_integrations = M)
         for _ in 1:n_trials
             noise = randn(ComplexF64, seg_len)

@@ -50,14 +50,14 @@ end
     @test length(plan.scratch_free) == length(plan.thread_scratch)
     @test all(iszero, plan.signal_block_ffts)
     @test all(iszero, plan.sig_buf)
-    @test first(plan.doppler_freqs) <= -10000Hz
-    @test last(plan.doppler_freqs) >= 10000Hz
+    @test first(plan.doppler_bins) <= -10000Hz
+    @test last(plan.doppler_bins) >= 10000Hz
     (; samples) = generate_test_signal(signal, 2; sampling_freq = 2.048e6Hz,
         num_samples = 20 * plan.samples_per_code, carrier_doppler = 3000Hz,
         interm_freq = 243Hz, CN0 = 60)
     result = acquire!(plan, samples, 2; interm_freq = 243Hz)
     @test is_detected(result)
-    @test abs(result.carrier_doppler - 3000Hz) <= step(plan.doppler_freqs)
+    @test abs(result.carrier_doppler - 3000Hz) <= step(plan.doppler_bins)
     @test !plan.in_use[]
     @test acquire!(plan, samples, 2; interm_freq = 243Hz).carrier_doppler == result.carrier_doppler
     # Also exercise the full multistep pipeline while tuning, with the

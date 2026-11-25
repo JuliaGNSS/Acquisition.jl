@@ -202,7 +202,7 @@ end
 
         @test is_detected(result)
         @test result.code_phase ≈ true_cp atol = 1.0
-        @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, true_doppler)) < ustrip(Hz, step(plan.doppler_freqs))
+        @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, true_doppler)) < ustrip(Hz, step(plan.doppler_bins))
     end
 
     @testset "L5I rotation search — multi-bit N≥2L (bit × rotation; segfault regression)" begin
@@ -251,7 +251,7 @@ end
 
         @test is_detected(result)
         @test result.code_phase ≈ true_cp atol = 1.0
-        @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, true_doppler)) < ustrip(Hz, step(plan.doppler_freqs))
+        @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, true_doppler)) < ustrip(Hz, step(plan.doppler_bins))
         # NH10 starts at chip 0 here (mod(k, L)); the estimator must recover it even
         # across the bit boundary at the 10 ms mark.
         @test result.secondary_code_phase == 0
@@ -324,7 +324,7 @@ end
 
         @test is_detected(result)
         @test result.code_phase ≈ true_cp atol = 1.5
-        @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, true_doppler)) < ustrip(Hz, step(plan.doppler_freqs))
+        @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, true_doppler)) < ustrip(Hz, step(plan.doppler_bins))
     end
 
     @testset "L5I rotation search — worst-case code-phase (block / NH10 misalignment fixed)" begin
@@ -382,7 +382,7 @@ end
 
         @test is_detected(result)
         @test result.code_phase ≈ true_cp atol = 1.0
-        @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, true_doppler)) < ustrip(Hz, step(plan.doppler_freqs))
+        @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, true_doppler)) < ustrip(Hz, step(plan.doppler_bins))
     end
 
     @testset "L5I rotation search — matches LongL5I (full 10 ms FFT) on off-grid Doppler" begin
@@ -501,7 +501,7 @@ end
         @test result.num_secondary_rotations == plan.num_secondary_rotations
         # … and `get_num_cells` is the full expanded count, which equals the stored
         # power-surface size (num_doppler_bins × samples_per_code × num_rotations).
-        num_dop = length(result.dopplers)
+        num_dop = length(result.doppler_bins)
         @test get_num_cells(result) ==
               num_dop * plan.samples_per_code * plan.num_secondary_rotations
         @test get_num_cells(result) == length(result.power_bins)
@@ -532,6 +532,6 @@ end
 
         @test result.num_secondary_rotations == 1
         @test get_num_cells(result) ==
-              length(result.dopplers) * result.num_blocks * result.block_size
+              length(result.doppler_bins) * result.num_blocks * result.block_size
     end
 end

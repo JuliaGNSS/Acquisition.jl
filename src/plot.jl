@@ -79,9 +79,9 @@ end
     noise_floor = log_scale ? 10 * log10(Float64(result.noise_power)) : Float64(result.noise_power)
     clims --> (noise_floor, maximum(z))
 
-    doppler_hz = ustrip.(Hz, result.dopplers)
+    doppler_hz = ustrip.(Hz, result.doppler_bins)
 
-    # surface: x=dopplers, y=chip_axis, z matrix must be (length(y), length(x))
+    # surface: x=doppler_bins, y=chip_axis, z matrix must be (length(y), length(x))
     # chip_sorted_power_bins is (num_doppler_bins, samples_per_code)
     # → transpose to (samples_per_code, num_doppler_bins)
     doppler_hz, chip_axis, collect(z')

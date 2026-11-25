@@ -14,12 +14,12 @@
     @test plan.num_bits == 1            # pilot/short: no bit search
     @test plan.bit_edge_search_steps == 1
     @test plan.num_noncoherent_integrations == 1
-    @test length(plan.doppler_freqs) == 32   # num_doppler_bins = 1*32
-    @test step(plan.doppler_freqs) ≈ 1000Hz  # doppler_bin_spacing_hz = 32000/32
-    @test first(plan.doppler_freqs) ≈ -16000Hz  # -doppler_coverage_hz/2
+    @test length(plan.doppler_bins) == 32   # num_doppler_bins = 1*32
+    @test step(plan.doppler_bins) ≈ 1000Hz  # doppler_bin_spacing_hz = 32000/32
+    @test first(plan.doppler_bins) ≈ -16000Hz  # -doppler_coverage_hz/2
     # Both ends of the grid must reach the requested coverage
-    @test last(plan.doppler_freqs)  >= 10_000Hz
-    @test first(plan.doppler_freqs) <= -10_000Hz
+    @test last(plan.doppler_bins)  >= 10_000Hz
+    @test first(plan.doppler_bins) <= -10_000Hz
 end
 
 @testset "plan_acquire parameters — GPS L1 multi-ms" begin
@@ -37,10 +37,10 @@ end
     @test plan.num_bits == 2            # 40 code periods / 20 code periods per GPS bit
     @test plan.bit_edge_search_steps == 4
     @test plan.num_noncoherent_integrations == 5
-    @test length(plan.doppler_freqs) == plan.num_doppler_passes * plan.doppler_bins_per_pass
-    @test first(plan.doppler_freqs) <= -10_000Hz
-    @test last(plan.doppler_freqs) >= 10_000Hz
-    @test step(plan.doppler_freqs) ≈ 25Hz    # 32000/1280
+    @test length(plan.doppler_bins) == plan.num_doppler_passes * plan.doppler_bins_per_pass
+    @test first(plan.doppler_bins) <= -10_000Hz
+    @test last(plan.doppler_bins) >= 10_000Hz
+    @test step(plan.doppler_bins) ≈ 25Hz    # 32000/1280
 end
 
 @testset "plan_acquire counts a BeiDou GEO satellite's D2 bits" begin
@@ -363,7 +363,7 @@ end
             @test size(scratch.modulated_tile) ∈ ((0, 0), (plan.block_size, ndop))
             @test size(scratch.hypothesis_power) ∈ ((0, 0), (plan.block_size, ndop))
             # Row sums span the stitched grid of all Doppler passes.
-            @test length(scratch.row_sums_buf) <= length(plan.doppler_freqs)
+            @test length(scratch.row_sums_buf) <= length(plan.doppler_bins)
             @test length(scratch.col_power_buf) <= ndop
             if plan.num_noncoherent_integrations == 1
                 @test size(scratch.noncoherent_accumulator) == (0, 0)
@@ -480,7 +480,7 @@ end
     @test !hasfield(Acquisition.AcquisitionScratch, :sign_search_max_buf)
     @test size(seq_scratch.noncoherent_accumulator) == (0, 0)
     # Streaming stats live in a length-num_doppler_bins row-sum vector.
-    @test length(seq_scratch.row_sums_buf) == length(seq_plan.doppler_freqs)
+    @test length(seq_scratch.row_sums_buf) == length(seq_plan.doppler_bins)
 
     # N_nc>1: accumulation across segments genuinely needs a surface, but the
     # PRN-outer loop bounds it at ONE per scratch slot — min(threads, cores,
@@ -491,7 +491,7 @@ end
     @test length(multi_plan.thread_scratch) <= length(prns)
     for t_scratch in multi_plan.thread_scratch
         @test size(t_scratch.noncoherent_accumulator) ==
-            (length(multi_plan.doppler_freqs), multi_plan.samples_per_code_eff)
+            (length(multi_plan.doppler_bins), multi_plan.samples_per_code_eff)
     end
     @test isempty(multi_scratch.row_sums_buf)
     # The all-segment signal-FFT cache is the multistep trade: 16 bytes per
@@ -520,7 +520,7 @@ end
     @test length(plan.scratch_free) == cap
 
     # All slots are built up front at full geometry — none are empty placeholders.
-    expected = (length(plan.doppler_freqs), plan.block_size)
+    expected = (length(plan.doppler_bins), plan.block_size)
     materialised(p) = count(s -> size(s.coherent_tile, 2) > 0, p.thread_scratch)
     @test materialised(plan) == cap
     for s in plan.thread_scratch
@@ -537,7 +537,7 @@ end
     # PRN 1 is the planted signal; it should acquire to the right cell.
     @test results[1].code_phase ≈ code_phase atol = 2.0
     @test abs(results[1].carrier_doppler / 1Hz - ustrip(Hz, carrier_doppler)) <
-        ustrip(Hz, step(plan.doppler_freqs))
+        ustrip(Hz, step(plan.doppler_bins))
     @test length(plan.scratch_free) == cap   # all slots released, none leaked
 
     # Cap is stable under repeated @spawn-driven calls — the scenario that makes

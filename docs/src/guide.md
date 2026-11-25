@@ -535,7 +535,7 @@ plan = plan_acquire(signal, sampling_freq, prns; min_doppler_coverage = 10_000Hz
 
 #### What `min_doppler_coverage` actually guarantees
 
-The Doppler grid stored in `plan.doppler_freqs` is
+The Doppler grid stored in `plan.doppler_bins` is
 
 ```
 range(-coverage/2, step = bin_spacing, length = num_doppler_bins)
@@ -550,13 +550,13 @@ so the **highest searched bin is `+coverage/2 - bin_spacing`**, not `+coverage/2
 `plan_acquire` chooses `num_blocks` such that
 
 ```
-last(plan.doppler_freqs)  ≥ +min_doppler_coverage
-first(plan.doppler_freqs) ≤ -min_doppler_coverage
+last(plan.doppler_bins)  ≥ +min_doppler_coverage
+first(plan.doppler_bins) ≤ -min_doppler_coverage
 ```
 
 Concretely, with the default `min_doppler_coverage = 7000Hz`:
 
-| `sampling_freq` | `T_coh` | `num_blocks` | `bin_spacing` | `plan.doppler_freqs` |
+| `sampling_freq` | `T_coh` | `num_blocks` | `bin_spacing` | `plan.doppler_bins` |
 |---|---|---|---|---|
 | 2.048 MHz | 1 ms | 16 | 1000 Hz | `-8000 : 1000 : +7000 Hz` |
 | 4 MHz | 1 ms | 16 | 1000 Hz | `-8000 : 1000 : +7000 Hz` |

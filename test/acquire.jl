@@ -190,8 +190,8 @@ end
     @test is_detected(res_multi)
     @test abs(res_seq.code_phase   - code_phase_true) < 1.0
     @test abs(res_multi.code_phase - code_phase_true) < 1.0
-    @test abs(res_seq.carrier_doppler   / 1Hz - ustrip(Hz, doppler_true)) < ustrip(Hz, step(plan_seq.doppler_freqs))
-    @test abs(res_multi.carrier_doppler / 1Hz - ustrip(Hz, doppler_true)) < ustrip(Hz, step(plan_multi.doppler_freqs))
+    @test abs(res_seq.carrier_doppler   / 1Hz - ustrip(Hz, doppler_true)) < ustrip(Hz, step(plan_seq.doppler_bins))
+    @test abs(res_multi.carrier_doppler / 1Hz - ustrip(Hz, doppler_true)) < ustrip(Hz, step(plan_multi.doppler_bins))
 end
 
 @testset "acquire! — sign-search path reports correct Doppler (no half-band fftshift offset)" begin
@@ -226,7 +226,7 @@ end
     @test result.code_phase ≈ code_phase_true atol = 1.0
     # The bug shifted Doppler by half the band (8000 Hz here); a correct result
     # lands within one Doppler bin of the truth.
-    @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, doppler_true)) < ustrip(Hz, step(plan.doppler_freqs))
+    @test abs(result.carrier_doppler / 1Hz - ustrip(Hz, doppler_true)) < ustrip(Hz, step(plan.doppler_bins))
 end
 
 @testset "acquire! — PRN not in plan throws ArgumentError" begin
@@ -328,7 +328,7 @@ end
         fft_flag = FFTL.ESTIMATE)
     @test plan.num_bits == 1
     @test plan.bit_edge_search_steps == 1
-    @test length(plan.doppler_freqs) > 320
+    @test length(plan.doppler_bins) > 320
 
     (; samples) = generate_test_signal(signal, prn;
         num_samples = 10 * plan.samples_per_code,
@@ -455,7 +455,7 @@ end
     @test result.code_phase ≈ true_cp atol = 1.0
     @test result.power_bins isa Matrix{Float32}
     @test size(result.power_bins) ==
-        (length(plan.doppler_freqs), plan.samples_per_code_eff)
+        (length(plan.doppler_bins), plan.samples_per_code_eff)
     # The stored surface is reproducible: a second identical run stores the
     # same accumulated power.
     result2 = acquire!(plan, ComplexF32.(samples), prn;

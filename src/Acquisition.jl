@@ -53,7 +53,7 @@ Results from GNSS signal acquisition for a single PRN.
     (for plotting). Only populated when `acquire!` was called with
     `store_power_bins = true`; `nothing` otherwise — by default the pipeline
     streams the reduction and never materialises this surface.
-  - `dopplers`: Doppler frequencies searched
+  - `doppler_bins`: Doppler bins searched (their centre frequencies)
   - `num_blocks::Int`: FM-DBZP number of blocks per code period
   - `block_size::Int`: FM-DBZP samples per block
   - `num_secondary_rotations::Int`: Secondary-code rotation hypotheses per cell (`1` off
@@ -96,7 +96,7 @@ struct AcquisitionResults{S<:AbstractGNSSSignal,T,D<:AbstractRange}
     peak_to_noise_ratio::T
     num_noncoherent_integrations::Int
     power_bins::Union{Matrix{T}, Nothing}
-    dopplers::D
+    doppler_bins::D
     num_blocks::Int
     block_size::Int
     # Number of secondary-code rotation hypotheses searched per (Doppler, code
@@ -124,7 +124,7 @@ factor understates the cell count `num_secondary_rotations`-fold, which sets the
 threshold too low and inflates the realised false-alarm rate (issue #70).
 """
 get_num_cells(result::AcquisitionResults) =
-    length(result.dopplers) * result.num_blocks * result.block_size *
+    length(result.doppler_bins) * result.num_blocks * result.block_size *
     result.num_secondary_rotations
 
 """
