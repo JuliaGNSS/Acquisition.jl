@@ -42,17 +42,17 @@ end
 """
     _signal_length(plan, num_accumulations)
 
-Return the number of samples the signal needs for the given plan and number of
+Return the number of samples the search needs for the given plan and number of
 noncoherent accumulation steps.
 """
 _signal_length(plan, num_accumulations) =
     num_accumulations * plan.num_coherently_integrated_code_periods * plan.samples_per_code
 
-function _make_signal(plan, num_accumulations)
+function _make_samples(plan, num_accumulations)
     ComplexF32.(randn(ComplexF64, _signal_length(plan, num_accumulations)))
 end
 
-_acquire!(plan, signal, prns) = acquire!(plan, signal, collect(prns); interm_freq = 0.0Hz)
+_acquire!(plan, samples, prns) = acquire!(plan, samples, collect(prns); interm_freq = 0.0Hz)
 
 # ============================================================================
 # Acquire — varying sampling frequency, integration length, and PRN count
@@ -69,7 +69,7 @@ for (fs, fs_label) in [(2.048e6Hz, "2.048MHz"), (5.0e6Hz, "5MHz")]
         for num_prns in [1, 32]
             prns   = collect(1:num_prns)
             plan   = _make_plan(fs, N_ms; prns = 1:32, num_noncoherent_accumulations = 1)
-            signal = _make_signal(plan, 1)
+            samples = _make_samples(plan, 1)
             if fs == 2.048e6Hz && N_ms == 20 && num_prns == 1
                 # Keep this subset-search workload intact and expose the
                 # planner's choices alongside the CI timing comparison.
@@ -77,7 +77,7 @@ for (fs, fs_label) in [(2.048e6Hz, "2.048MHz"), (5.0e6Hz, "5MHz")]
             end
 
             SUITE["Acquire"][fs_label]["$(N_ms)ms"]["$(num_prns)prns"] =
-                @benchmarkable _acquire!($plan, $signal, $prns)
+                @benchmarkable _acquire!($plan, $samples, $prns)
         end
     end
 end
@@ -90,10 +90,10 @@ SUITE["NonCoherent"] = BenchmarkGroup()
 
 for M in [1, 5, 10]
     plan   = _make_plan(2.048e6Hz, 1; prns = [1], num_noncoherent_accumulations = M)
-    signal = _make_signal(plan, M)
+    samples = _make_samples(plan, M)
 
     SUITE["NonCoherent"]["M=$(M)"] =
-        @benchmarkable _acquire!($plan, $signal, $([1]))
+        @benchmarkable _acquire!($plan, $samples, $([1]))
 end
 
 # ============================================================================
@@ -104,10 +104,10 @@ SUITE["LongCoherent"] = BenchmarkGroup()
 
 for N_ms in [1, 5, 10, 20, 40]
     plan   = _make_plan(2.048e6Hz, N_ms; prns = [1], num_noncoherent_accumulations = 1)
-    signal = _make_signal(plan, 1)
+    samples = _make_samples(plan, 1)
 
     SUITE["LongCoherent"]["$(N_ms)ms"] =
-        @benchmarkable _acquire!($plan, $signal, $([1]))
+        @benchmarkable _acquire!($plan, $samples, $([1]))
 end
 
 # ============================================================================
@@ -127,10 +127,10 @@ for N_be in [1, 2, 5, 10]
         num_coherently_integrated_code_periods = 20,
         bit_edge_search_steps = N_be,
         num_noncoherent_accumulations = 1)
-    signal = _make_signal(plan, 1)
+    samples = _make_samples(plan, 1)
 
     SUITE["BitEdgeSearch"]["N_be=$(N_be)"] =
-        @benchmarkable _acquire!($plan, $signal, $([1]))
+        @benchmarkable _acquire!($plan, $samples, $([1]))
 end
 
 # ============================================================================
@@ -192,9 +192,9 @@ for (sys_ctor, fs, label) in signal_cases
 
     plan = plan_acquire(sig_obj, fs, bench_prns;
         min_doppler_coverage = bench_min_doppler)
-    signal = _make_signal(plan, 1)
+    samples = _make_samples(plan, 1)
     SUITE["AcquireSignals"][label] =
-        @benchmarkable acquire!($plan, $signal, $bench_prns; interm_freq = 0.0Hz)
+        @benchmarkable acquire!($plan, $samples, $bench_prns; interm_freq = 0.0Hz)
 end
 
 # Multistep simple path — exercises the fused FFT+|x|²+code-drift+fftshift
@@ -210,9 +210,9 @@ let
     plan = plan_acquire(sig_obj, fs, bench_prns;
         min_doppler_coverage = bench_min_doppler,
         num_noncoherent_accumulations = N_nc)
-    signal = _make_signal(plan, N_nc)
+    samples = _make_samples(plan, N_nc)
     SUITE["AcquireSignals"][label] =
-        @benchmarkable acquire!($plan, $signal, $bench_prns; interm_freq = 0.0Hz)
+        @benchmarkable acquire!($plan, $samples, $bench_prns; interm_freq = 0.0Hz)
     SUITE["PlanAcquire"][label] =
         @benchmarkable plan_acquire($sig_obj, $fs, $bench_prns;
             min_doppler_coverage = $bench_min_doppler,
@@ -234,9 +234,9 @@ let
     plan = plan_acquire(sig_obj, fs, bench_prns;
         min_doppler_coverage = bench_min_doppler,
         num_coherently_integrated_code_periods = N_coh)
-    signal = _make_signal(plan, 1)
+    samples = _make_samples(plan, 1)
     SUITE["AcquireSignals"][label] =
-        @benchmarkable acquire!($plan, $signal, $bench_prns; interm_freq = 0.0Hz)
+        @benchmarkable acquire!($plan, $samples, $bench_prns; interm_freq = 0.0Hz)
     SUITE["PlanAcquire"][label] =
         @benchmarkable plan_acquire($sig_obj, $fs, $bench_prns;
             min_doppler_coverage = $bench_min_doppler,
@@ -256,9 +256,9 @@ SUITE["SparseDivisorRates"] = BenchmarkGroup()
 for (fs, fs_label) in [(1.5e6Hz, "1.500MHz"), (1.542e6Hz, "1.542MHz"),
                        (3.069e6Hz, "3.069MHz")]
     plan = plan_acquire(l1ca, fs, collect(1:32))
-    signal = _make_signal(plan, 1)
+    samples = _make_samples(plan, 1)
     SUITE["SparseDivisorRates"][fs_label] =
-        @benchmarkable _acquire!($plan, $signal, $(1:32))
+        @benchmarkable _acquire!($plan, $samples, $(1:32))
 end
 
 # ============================================================================
@@ -274,7 +274,7 @@ for num_prns in (1, 32)
     plan = plan_acquire(sig_obj, 10.24e6Hz, prns;
         min_doppler_coverage = 15_000Hz,
         num_coherently_integrated_code_periods = 20)
-    signal = _make_signal(plan, 1)
+    samples = _make_samples(plan, 1)
     SUITE["CodeDoppler"]["L5I_10.24MHz_20ms_15kHz_$(num_prns)prns"] =
-        @benchmarkable acquire!($plan, $signal, $prns; interm_freq = 0.0Hz)
+        @benchmarkable acquire!($plan, $samples, $prns; interm_freq = 0.0Hz)
 end

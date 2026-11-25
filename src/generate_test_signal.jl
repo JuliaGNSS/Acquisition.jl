@@ -1,10 +1,10 @@
 """
-    generate_test_signal(system, prn; kwargs...) -> NamedTuple
+    generate_test_signal(signal, prn; kwargs...) -> NamedTuple
 
 Generate a synthetic noisy GNSS signal. Useful for testing acquisition and
 demonstrating the API.
 
-Returns a NamedTuple with fields: `signal`, `code`, `carrier`, `num_samples`,
+Returns a NamedTuple with fields: `samples`, `code`, `carrier`, `num_samples`,
 `doppler`, `code_phase`, `sampling_freq`, `interm_freq`, `CN0`, `prn`.
 
 # Keywords
@@ -24,13 +24,13 @@ Returns a NamedTuple with fields: `signal`, `code`, `carrier`, `num_samples`,
 ```julia
 using Acquisition, GNSSSignals
 
-(; signal, prn, sampling_freq, interm_freq) = generate_test_signal(GPSL1CA(), 1)
-result = acquire(GPSL1CA(), signal, sampling_freq, prn; interm_freq)
+(; samples, prn, sampling_freq, interm_freq) = generate_test_signal(GPSL1CA(), 1)
+result = acquire(GPSL1CA(), samples, sampling_freq, prn; interm_freq)
 is_detected(result)  # true
 ```
 """
 function generate_test_signal(
-    system,
+    signal,
     prn;
     seed = 2345,
     num_samples = 120000,
@@ -44,10 +44,10 @@ function generate_test_signal(
 )
     Random.seed!(seed)
 
-    code_frequency = get_chip_rate(system) + doppler * get_chip_rate_to_center_frequency_ratio(system)
+    code_frequency = get_chip_rate(signal) + doppler * get_chip_rate_to_center_frequency_ratio(signal)
     code = gen_code(
         num_samples,
-        system,
+        signal,
         prn,
         sampling_freq,
         code_frequency,
@@ -66,10 +66,10 @@ function generate_test_signal(
     end
 
     noise = randn(ComplexF64, num_samples)
-    signal = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
+    samples = (carrier .* code) * 10^(signal_power / 20) + noise * 10^(noise_power / 20)
 
     return (;
-        signal,
+        samples,
         code,
         carrier,
         num_samples,

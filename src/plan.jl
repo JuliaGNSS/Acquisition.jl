@@ -97,7 +97,7 @@ Pre-computed acquisition plan for FM-DBZP (Heckler & Garrison 2009).
 See [`plan_acquire`](@ref) and [`acquire`](@ref).
 """
 struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEstimator}
-    system::S
+    signal::S
     sampling_freq::typeof(1.0Hz)
     samples_per_code::Int       # paper N_τ  — samples per code period
     # Effective columns in the noncoherent buffer / result matrix. Equal to
@@ -216,7 +216,7 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     use_secondary_code::Bool
     max_secondary_code_rotations::Int
     # Derived: number of secondary-code rotation phases to enumerate. Equals
-    # get_secondary_code_length(system) when the search is active, else 1.
+    # get_secondary_code_length(signal) when the search is active, else 1.
     num_secondary_rotations::Int
     # Pre-computed ±1 secondary-code pattern per rotation, (num_coh_periods,
     # num_secondary_rotations) per PRN — a single all-+1 column without a
@@ -354,7 +354,7 @@ end
 end
 
 """
-    _precompute_prn_ffts!(prn_ffts, system, prn, sampling_freq, samples_per_code, num_blocks, block_size, fft_size, fft_plan)
+    _precompute_prn_ffts!(prn_ffts, signal, prn, sampling_freq, samples_per_code, num_blocks, block_size, fft_size, fft_plan)
 
 Populate `prn_ffts[prn]` with a `(fft_size, num_blocks)` matrix.
 Column `k+1` (1-indexed) holds `FFT([code[k*block_size+1:(k+1)*block_size] ; zeros(fft_size-block_size)])`,
@@ -372,7 +372,7 @@ than the block_size gain that would result from using a single sub-block for all
 """
 function _precompute_prn_ffts!(
     prn_conj_ffts::Dict{Int,Matrix{ComplexF32}},
-    system,
+    signal,
     prn::Int,
     sampling_freq,
     samples_per_code::Int,
@@ -381,7 +381,7 @@ function _precompute_prn_ffts!(
     fft_size::Int,
     fft_plan,
 )
-    prn_code = gen_code(samples_per_code, system, prn, sampling_freq, get_chip_rate(system), 0.0)
+    prn_code = gen_code(samples_per_code, signal, prn, sampling_freq, get_chip_rate(signal), 0.0)
     conj_fft_matrix = zeros(ComplexF32, fft_size, num_blocks)
     fft_buf = zeros(ComplexF32, fft_size)
     for block_idx in 0:num_blocks-1
@@ -401,11 +401,11 @@ end
 # (see `_edge_alignment`), so the step count must divide the window. A longer
 # window must span a whole number of bit periods so the FM-DBZP sub-block
 # structure is consistent, and the step count must divide the bit period.
-function _num_bits(system, code_periods_per_bit, num_coherently_integrated_code_periods,
+function _num_bits(signal, code_periods_per_bit, num_coherently_integrated_code_periods,
                    bit_edge_search_steps)
     if code_periods_per_bit == 0
         bit_edge_search_steps == 1 || throw(ArgumentError(
-            "bit_edge_search_steps must be 1 for $(typeof(system).name.name), a pilot, which broadcasts no bits, " *
+            "bit_edge_search_steps must be 1 for $(typeof(signal).name.name), a pilot, which broadcasts no bits, " *
             "got $bit_edge_search_steps."))
         return 1
     end
@@ -425,7 +425,7 @@ function _num_bits(system, code_periods_per_bit, num_coherently_integrated_code_
 end
 
 """
-    plan_acquire(system, sampling_freq, prns; kwargs...) -> AcquisitionPlan
+    plan_acquire(signal, sampling_freq, prns; kwargs...) -> AcquisitionPlan
 
 Pre-compute an acquisition plan for FM-DBZP acquisition.
 
@@ -445,7 +445,7 @@ multi-threaded acquisition. Scratch buffers are tile-sized (nothing scales with
 
 # Arguments
 
-- `system`: GNSS system (e.g. `GPSL1CA()`)
+- `signal`: GNSS signal (e.g. `GPSL1CA()`)
 - `sampling_freq`: Sampling frequency
 - `prns`: PRN numbers to pre-compute (e.g. `1:32`). On BeiDou B1I and B3I, a
   coherent window longer than two code periods spans a different number of bits
@@ -464,16 +464,16 @@ multi-threaded acquisition. Scratch buffers are tile-sized (nothing scales with
 - `bit_edge_search_steps`: Number of bit-edge alignment candidates to search
   (default: `1`, disabled). Only valid for data signals and
   `num_coherently_integrated_code_periods > 1`. When the window holds at most
-  one bit (`num_coherently_integrated_code_periods ≤ get_code_periods_per_bit(system)`),
+  one bit (`num_coherently_integrated_code_periods ≤ get_code_periods_per_bit(signal)`),
   it searches for one bit transition at `bit_edge_search_steps − 1` evenly
   spaced code-period boundaries, plus the no-transition hypothesis, and must
-  divide `min(num_coherently_integrated_code_periods, get_code_periods_per_bit(system))`. For
+  divide `min(num_coherently_integrated_code_periods, get_code_periods_per_bit(signal))`. For
   longer windows it places the first bit edge at `bit_edge_search_steps` evenly
-  spaced positions within a bit period, must divide `get_code_periods_per_bit(system)`, and
+  spaced positions within a bit period, must divide `get_code_periods_per_bit(signal)`, and
   searches every sign of the partial bits at both ends and the whole bits in
   between.
 - `num_noncoherent_accumulations`: Number of successive incoherent integration
-  steps (default: `1`). Signal passed to `acquire!` must contain at least
+  steps (default: `1`). The samples passed to `acquire!` must contain at least
   `num_noncoherent_accumulations` full segments.
 - `use_secondary_code`: enable the secondary-code rotation search (default: `true`).
   When the signal has a secondary code of length `L > 1` and
@@ -566,7 +566,7 @@ multi-threaded acquisition. Scratch buffers are tile-sized (nothing scales with
 [`acquire!`](@ref), [`acquire`](@ref)
 """
 function plan_acquire(
-    system::AbstractGNSSSignal,
+    signal::AbstractGNSSSignal,
     sampling_freq,
     prns::AbstractVector{<:Integer};
     tune::Bool = false,
@@ -582,10 +582,10 @@ function plan_acquire(
         isfinite(ustrip(Hz, tuning_interm_freq)) || throw(ArgumentError(
             "tuning_interm_freq must be finite"))
     end
-    plan = _plan_acquire(system, sampling_freq, prns;
+    plan = _plan_acquire(signal, sampling_freq, prns;
         max_blocking_time = max_blocking_time, kwargs...)
     if tune
-        build(layout) = _plan_acquire(system, sampling_freq, prns;
+        build(layout) = _plan_acquire(signal, sampling_freq, prns;
             max_blocking_time = max_blocking_time, _doppler_layout = layout, kwargs...)
         plan = _tune_acquisition_plan(plan, tuning_prns, tuning_interm_freq, build;
             min_doppler_coverage = get(kwargs, :min_doppler_coverage, 7000Hz),
@@ -595,7 +595,7 @@ function plan_acquire(
 end
 
 function _plan_acquire(
-    system::AbstractGNSSSignal,
+    signal::AbstractGNSSSignal,
     sampling_freq,
     prns::AbstractVector{<:Integer};
     min_doppler_coverage = 7000Hz,
@@ -620,12 +620,12 @@ function _plan_acquire(
     # Secondary-code rotation search cap. Fires before any heavy allocation so a
     # user who hits the cap on a large-L signal (e.g. GPS L1C-P, L=1800) is not
     # paying the cost of the plan's buffers just to learn that the search is too big.
-    let L = get_secondary_code_length(system)
+    let L = get_secondary_code_length(signal)
         if use_secondary_code && L > 1 && num_coherently_integrated_code_periods > 1 && L > max_secondary_code_rotations
             throw(ArgumentError(
                 "Secondary-code rotation search size exceeds the per-plan cap for " *
-                "$(typeof(system).name.name): " *
-                "get_secondary_code_length(system)=$L > max_secondary_code_rotations=$max_secondary_code_rotations " *
+                "$(typeof(signal).name.name): " *
+                "get_secondary_code_length(signal)=$L > max_secondary_code_rotations=$max_secondary_code_rotations " *
                 "at num_coherently_integrated_code_periods=$num_coherently_integrated_code_periods. " *
                 "Remedies (in order): " *
                 "(1) reduce num_coherently_integrated_code_periods; " *
@@ -671,7 +671,7 @@ function _plan_acquire(
     end
 
     # Samples per code period
-    samples_per_code = ceil(Int, get_code_length(system) / get_chip_rate(system) * sampling_freq)
+    samples_per_code = ceil(Int, get_code_length(signal) / get_chip_rate(signal) * sampling_freq)
 
     # Blocks per code period and Doppler passes (src/doppler_passes.jl).
     #
@@ -699,7 +699,7 @@ function _plan_acquire(
     layout = _doppler_layout === nothing ?
         _doppler_search_layout(samples_per_code, bin_width, min_doppler_coverage_hz,
             num_coherently_integrated_code_periods, max_doppler_passes, length(prns),
-            get_chip_rate_to_center_frequency_ratio(system)) : _doppler_layout
+            get_chip_rate_to_center_frequency_ratio(signal)) : _doppler_layout
     if isnothing(layout)
         throw(ArgumentError(
             "No valid num_blocks found: samples_per_code=$samples_per_code has no divisor " *
@@ -716,12 +716,12 @@ function _plan_acquire(
     # shorter than the other satellites' D1; one plan holds one num_bits, so the
     # satellites it is built for must agree on it. Agreement is checked first, so a
     # window that only some of the bit periods reject names the mix of PRNs.
-    code_periods_per_bit_by_prn = isempty(prns) ? [get_code_periods_per_bit(system)] :
-                                     sort!(unique(get_code_periods_per_bit(system, prn) for prn in prns))
+    code_periods_per_bit_by_prn = isempty(prns) ? [get_code_periods_per_bit(signal)] :
+                                     sort!(unique(get_code_periods_per_bit(signal, prn) for prn in prns))
     if length(code_periods_per_bit_by_prn) > 1
         num_bits_by_period = map(code_periods_per_bit_by_prn) do code_periods_per_bit
             try
-                _num_bits(system, code_periods_per_bit, num_coherently_integrated_code_periods,
+                _num_bits(signal, code_periods_per_bit, num_coherently_integrated_code_periods,
                           bit_edge_search_steps)
             catch e
                 e isa ArgumentError || rethrow()
@@ -730,13 +730,13 @@ function _plan_acquire(
         end
         allequal(num_bits_by_period) || throw(ArgumentError(
             "The PRNs span $(join(code_periods_per_bit_by_prn, " and ")) code periods per bit " *
-            "(get_code_periods_per_bit(system, prn); BeiDou GEO satellites broadcast D2 " *
+            "(get_code_periods_per_bit(signal, prn); BeiDou GEO satellites broadcast D2 " *
             "bits ten times shorter than D1), so " *
             "num_coherently_integrated_code_periods=$num_coherently_integrated_code_periods " *
             "does not span the same whole number of bits on each. Plan the GEO PRNs separately, or set " *
             "num_coherently_integrated_code_periods <= $(minimum(code_periods_per_bit_by_prn))."))
     end
-    num_bits = _num_bits(system, first(code_periods_per_bit_by_prn),
+    num_bits = _num_bits(signal, first(code_periods_per_bit_by_prn),
         num_coherently_integrated_code_periods, bit_edge_search_steps)
 
     block_size = samples_per_code ÷ num_blocks
@@ -762,7 +762,7 @@ function _plan_acquire(
     # Precompute conjugated PRN FFTs
     prn_conj_ffts = Dict{Int,Matrix{ComplexF32}}()
     for prn in prns
-        _precompute_prn_ffts!(prn_conj_ffts, system, prn, sampling_freq,
+        _precompute_prn_ffts!(prn_conj_ffts, signal, prn, sampling_freq,
             samples_per_code, num_blocks, block_size, fft_size, double_block_fft_plan)
     end
 
@@ -773,11 +773,11 @@ function _plan_acquire(
         num_coherently_integrated_code_periods)
 
     compensate = _code_doppler_compensation(min_doppler_coverage_hz,
-        get_chip_rate_to_center_frequency_ratio(system), num_coherently_integrated_code_periods,
+        get_chip_rate_to_center_frequency_ratio(signal), num_coherently_integrated_code_periods,
         bin_width)
     code_doppler_shifts_per_period = compensate ?
-        doppler_pass_offsets_hz .* (get_chip_rate_to_center_frequency_ratio(system) *
-            samples_per_code / ustrip(Hz, get_chip_rate(system))) :
+        doppler_pass_offsets_hz .* (get_chip_rate_to_center_frequency_ratio(signal) *
+            samples_per_code / ustrip(Hz, get_chip_rate(signal))) :
         zeros(Float64, num_doppler_passes)
     code_doppler_phasors = Union{Nothing,Matrix{ComplexF32}}[
         _code_doppler_phasors(fft_size, num_coherently_integrated_code_periods, shift)
@@ -799,7 +799,7 @@ function _plan_acquire(
     # signal segments into one per-claimed-scratch surface (PRN-outer loop).
     # Derive the secondary-code rotation search size. No-op for signals without a
     # secondary code (L = 1) or when the user opts out.
-    secondary_code_length = get_secondary_code_length(system)
+    secondary_code_length = get_secondary_code_length(signal)
     rotation_search_active = use_secondary_code &&
                              secondary_code_length > 1 &&
                              num_coherently_integrated_code_periods > 1
@@ -913,7 +913,7 @@ function _plan_acquire(
 
     # Pre-allocate concrete-typed results buffer to avoid boxing allocations in acquire!
     dummy_result = AcquisitionResults(
-        system, 0, convert(typeof(1.0Hz), sampling_freq), 0.0Hz, 0.0, nothing, 0.0,
+        signal, 0, convert(typeof(1.0Hz), sampling_freq), 0.0Hz, 0.0, nothing, 0.0,
         0f0, 0f0, 0, nothing, doppler_freqs, num_blocks, block_size, num_secondary_rotations,
         nothing)
     acq_results_buf = Vector{typeof(dummy_result)}(undef, length(prns))
@@ -923,7 +923,7 @@ function _plan_acquire(
     # entry — the underlying matrix object is shared to avoid duplicate storage.
     sign_patterns_by_prn = Dict{Int,Matrix{Float32}}()
     if sign_search_path_active
-        secondary_code_obj = use_secondary_code ? get_secondary_code(system) : nothing
+        secondary_code_obj = use_secondary_code ? get_secondary_code(signal) : nothing
         # When patterns are PRN-independent, build once and alias under every key.
         prn_independent = !rotation_search_active ||
                           !(secondary_code_obj isa GNSSSignals.PerPRNSecondaryCode)
@@ -955,7 +955,7 @@ function _plan_acquire(
     end
 
     plan = AcquisitionPlan(
-        system, convert(typeof(1.0Hz), sampling_freq),
+        signal, convert(typeof(1.0Hz), sampling_freq),
         samples_per_code, samples_per_code_eff, num_blocks, block_size, num_coherently_integrated_code_periods, num_bits, bit_edge_search_steps, num_noncoherent_accumulations,
         prn_conj_ffts,
         double_block_fft_plan,

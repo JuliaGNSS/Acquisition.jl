@@ -263,7 +263,7 @@ end
 end
 
 @testset "Column FFT accumulation — Tier 2: code delay and Doppler alias check" begin
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
     # 1050 Hz: f_D*samples_per_code/sampling_freq = 1.05 (non-integer → non-degenerate), 1050 mod 1000 = 50 Hz
@@ -271,20 +271,20 @@ end
     code_phase = 973.0  # tau = 1023 - 973 = 50 chips → tau_samples = round(50*2048/1023) = 100
 
     # num_coherently_integrated_code_periods=20 = one GPS bit period (num_bits=1, pilot path)
-    plan = plan_acquire(system, sampling_freq, [prn];
+    plan = plan_acquire(signal, sampling_freq, [prn];
         max_doppler_passes = 1, min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 20)
     scratch = Acquisition._default_scratch(plan)
     # Full CIM materialised locally via the reference wrapper (production is tiled).
     cim = zeros(ComplexF32, plan.num_coherently_integrated_code_periods * plan.num_blocks, plan.samples_per_code)
     doppler_bin_spacing = step(plan.doppler_freqs)
-    tau_samples = round(Int, (get_code_length(system) - code_phase) * plan.samples_per_code / get_code_length(system))
+    tau_samples = round(Int, (get_code_length(signal) - code_phase) * plan.samples_per_code / get_code_length(signal))
 
-    (; signal) = generate_test_signal(system, prn;
+    (; samples) = generate_test_signal(signal, prn;
         num_samples = 20 * plan.samples_per_code,
         doppler = true_doppler, code_phase = code_phase,
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
 
-    signal_f32 = ComplexF32.(signal)
+    signal_f32 = ComplexF32.(samples)
     Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, signal_f32,
         plan.samples_per_code, plan.num_blocks, plan.block_size,
         plan.num_coherently_integrated_code_periods, scratch.double_block_buf,
@@ -327,13 +327,13 @@ end
 end
 
 @testset "Bit combination search — num_bits=2, no bit transitions in test signal" begin
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
     true_doppler = 1500Hz
 
     # num_coherently_integrated_code_periods=40 → num_bits=2 (two GPS bit periods)
-    plan = plan_acquire(system, sampling_freq, [prn];
+    plan = plan_acquire(signal, sampling_freq, [prn];
         max_doppler_passes = 1, min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
     scratch = Acquisition._default_scratch(plan)
     # Full CIM materialised locally via the reference wrapper (production is tiled).
@@ -341,14 +341,14 @@ end
     num_doppler_bins = plan.num_coherently_integrated_code_periods * plan.num_blocks  # 640
 
     code_phase = 100.0
-    tau_samples = round(Int, (get_code_length(system) - code_phase) * plan.samples_per_code / get_code_length(system))
+    tau_samples = round(Int, (get_code_length(signal) - code_phase) * plan.samples_per_code / get_code_length(signal))
 
-    (; signal) = generate_test_signal(system, prn;
+    (; samples) = generate_test_signal(signal, prn;
         num_samples = plan.num_coherently_integrated_code_periods * plan.samples_per_code,
         doppler = true_doppler, code_phase = code_phase,
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 60)
 
-    signal_f32 = ComplexF32.(signal)
+    signal_f32 = ComplexF32.(samples)
     Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, signal_f32,
         plan.samples_per_code, plan.num_blocks, plan.block_size,
         plan.num_coherently_integrated_code_periods, scratch.double_block_buf,
@@ -383,12 +383,12 @@ end
 end
 
 @testset "Bit combination search — bit transition recovery" begin
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
     true_doppler = 1050Hz  # 1050 mod 1000 = 50 Hz: non-degenerate
 
-    plan = plan_acquire(system, sampling_freq, [prn];
+    plan = plan_acquire(signal, sampling_freq, [prn];
         max_doppler_passes = 1, min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
     scratch = Acquisition._default_scratch(plan)
     # Full CIM materialised locally via the reference wrapper (production is tiled).
@@ -399,11 +399,11 @@ end
     # transition at code period 20.  With a perfect polarity flip, the pilot
     # path (naive sum over all 40 periods) cancels to ~0, whereas the bit
     # search with pattern (+1,−1) recombines both halves coherently.
-    (; signal) = generate_test_signal(system, prn;
+    (; samples) = generate_test_signal(signal, prn;
         num_samples = plan.num_coherently_integrated_code_periods * plan.samples_per_code,
         doppler = true_doppler, code_phase = 100.0,
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 60)
-    signal_flipped = ComplexF32.(signal)
+    signal_flipped = ComplexF32.(samples)
     half = (plan.num_coherently_integrated_code_periods ÷ plan.num_bits) * plan.samples_per_code  # = 20 * 2048 = 40960
     signal_flipped[half+1:end] .*= -1
 
@@ -438,22 +438,22 @@ end
 end
 
 @testset "Bit edge search — bit_edge_search_steps=4 does not degrade strong signal" begin
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
     # 3050 Hz: 3050/1000 = 3.05 (non-degenerate alias), 3050 mod 1000 = 50 Hz
     true_doppler = 3050Hz
 
-    plan_no_search = plan_acquire(system, sampling_freq, [prn];
+    plan_no_search = plan_acquire(signal, sampling_freq, [prn];
         max_doppler_passes = 1, min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
-    plan_with_search = plan_acquire(system, sampling_freq, [prn];
+    plan_with_search = plan_acquire(signal, sampling_freq, [prn];
         max_doppler_passes = 1, min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4, num_noncoherent_accumulations = 1)
 
-    (; signal) = generate_test_signal(system, prn;
+    (; samples) = generate_test_signal(signal, prn;
         num_samples = 40 * 2048,
         doppler = true_doppler, code_phase = 100.0,
         sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 60)
-    signal_f32 = ComplexF32.(signal)
+    signal_f32 = ComplexF32.(samples)
 
     alias_period = plan_no_search.sampling_freq / plan_no_search.samples_per_code  # 1000 Hz
 
@@ -473,9 +473,9 @@ end
 end
 
 @testset "Code drift correction — _apply_code_drift! shifts row by expected amount" begin
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
-    plan = plan_acquire(system, sampling_freq, [1];
+    plan = plan_acquire(signal, sampling_freq, [1];
         max_doppler_passes = 1, min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 200)
     num_doppler_bins = plan.num_coherently_integrated_code_periods * plan.num_blocks  # 640
 
@@ -490,7 +490,7 @@ end
 
     doppler_hz_7khz       = plan.doppler_freqs[sorted_bin_7khz] / (1Hz)    # ≈ 7000 Hz
     sampling_freq_hz_val  = plan.sampling_freq / (1Hz)
-    carrier_freq_hz_val   = get_center_frequency(plan.system) / (1Hz)
+    carrier_freq_hz_val   = get_center_frequency(plan.signal) / (1Hz)
     coherent_duration_s   = plan.num_coherently_integrated_code_periods * plan.samples_per_code / sampling_freq_hz_val  # 0.04 s
     expected_shift = round(Int, doppler_hz_7khz * 100 * coherent_duration_s * sampling_freq_hz_val / carrier_freq_hz_val)  # ≈ 36
 
@@ -520,7 +520,7 @@ end
     # (below) are reproducible. Signal generation already takes explicit `seed=`
     # arguments; the noise calls use randn() which reads the global RNG.
     Random.seed!(20260423)
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn = 1
     false_alarm_rate = 0.01
@@ -529,11 +529,11 @@ end
     num_coherent_periods = 10
     samples_per_code = 2048
 
-    plan_ni1 = plan_acquire(system, sampling_freq, [prn];
+    plan_ni1 = plan_acquire(signal, sampling_freq, [prn];
         max_doppler_passes = 1, min_doppler_coverage = 10_000Hz,
         num_coherently_integrated_code_periods = num_coherent_periods,
         num_noncoherent_accumulations = 1)
-    plan_ni8 = plan_acquire(system, sampling_freq, [prn];
+    plan_ni8 = plan_acquire(signal, sampling_freq, [prn];
         max_doppler_passes = 1, min_doppler_coverage = 10_000Hz,
         num_coherently_integrated_code_periods = num_coherent_periods,
         num_noncoherent_accumulations = 8)
@@ -542,16 +542,16 @@ end
     num_false_alarms_ni1 = 0; num_false_alarms_ni8 = 0
 
     for seed in 1:num_trials
-        (; signal_ni1) = (; signal_ni1 = generate_test_signal(system, prn;
+        (; signal_ni1) = (; signal_ni1 = generate_test_signal(signal, prn;
             num_samples = 1 * num_coherent_periods * samples_per_code,
             doppler = 1500Hz, code_phase = 100.0,
             sampling_freq = sampling_freq, interm_freq = 0.0Hz,
-            CN0 = CN0, seed = seed).signal)
-        (; signal_ni8) = (; signal_ni8 = generate_test_signal(system, prn;
+            CN0 = CN0, seed = seed).samples)
+        (; signal_ni8) = (; signal_ni8 = generate_test_signal(signal, prn;
             num_samples = 8 * num_coherent_periods * samples_per_code,
             doppler = 1500Hz, code_phase = 100.0,
             sampling_freq = sampling_freq, interm_freq = 0.0Hz,
-            CN0 = CN0, seed = seed).signal)
+            CN0 = CN0, seed = seed).samples)
 
         result_ni1 = only(acquire!(plan_ni1, signal_ni1, [prn]))
         result_ni8 = only(acquire!(plan_ni8, signal_ni8, [prn]))
@@ -582,18 +582,18 @@ end
 end
 
 @testset "Bit transition at 0 Hz Doppler — bit search recovers same peak as no-transition signal" begin
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn    = 1
 
-    signal_no_transition = generate_test_signal(system, prn;
+    signal_no_transition = generate_test_signal(signal, prn;
         num_samples = 40 * 2048, doppler = 0Hz, code_phase = 0.0,
-        sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 60, seed = 42).signal
+        sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 60, seed = 42).samples
 
     signal_with_transition = copy(signal_no_transition)
     signal_with_transition[20*2048+1:end] .*= -1
 
-    plan = plan_acquire(system, sampling_freq, [prn];
+    plan = plan_acquire(signal, sampling_freq, [prn];
         max_doppler_passes = 1, min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
     scratch = Acquisition._default_scratch(plan)
     # Full CIM materialised locally via the reference wrapper (production is tiled).
@@ -630,18 +630,18 @@ end
 end
 
 @testset "Multiple bit transitions at 0 Hz Doppler — 3 bits with pattern +1 −1 +1" begin
-    system = GPSL1CA()
+    signal = GPSL1CA()
     sampling_freq = 2.048e6Hz
     prn    = 1
 
-    signal_no_transition = generate_test_signal(system, prn;
+    signal_no_transition = generate_test_signal(signal, prn;
         num_samples = 60 * 2048, doppler = 0Hz, code_phase = 0.0,
-        sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 60, seed = 42).signal
+        sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 60, seed = 42).samples
 
     signal_with_transition = copy(signal_no_transition)
     signal_with_transition[20*2048+1:40*2048] .*= -1
 
-    plan = plan_acquire(system, sampling_freq, [prn];
+    plan = plan_acquire(signal, sampling_freq, [prn];
         max_doppler_passes = 1, min_doppler_coverage = 10_000Hz, num_coherently_integrated_code_periods = 60, bit_edge_search_steps = 1, num_noncoherent_accumulations = 1)
     scratch = Acquisition._default_scratch(plan)
     # Full CIM materialised locally via the reference wrapper (production is tiled).
@@ -721,11 +721,11 @@ end
         @testset "$label" begin
             scratch = Acquisition._default_scratch(plan)
             ndop = length(plan.doppler_freqs)
-            (; signal) = generate_test_signal(plan.system, prn;
+            (; samples) = generate_test_signal(plan.signal, prn;
                 num_samples = plan.num_coherently_integrated_code_periods * plan.samples_per_code,
                 doppler = 1300Hz, code_phase = 210.7,
                 sampling_freq = plan.sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 11)
-            plan.sig_buf .= ComplexF32.(signal)
+            plan.sig_buf .= ComplexF32.(samples)
             # One segment's slice of the plan's all-segment signal-FFT cache.
             seg_ffts = Acquisition._signal_block_ffts_for_step(plan, 1, 1)
             Acquisition._precompute_signal_block_ffts!(seg_ffts, plan.sig_buf,
@@ -779,20 +779,20 @@ end
         ("3 bits+bitedge (Gray)", GPSL1CA(), 2.048e6Hz, 60, 5),
         ("4 bits (Gray)", GPSL1CA(), 2.048e6Hz, 80, 1),
     ]
-    for (label, system, fs, ncoh, edges) in cases
+    for (label, signal, fs, ncoh, edges) in cases
         @testset "$label" begin
-            plan = plan_acquire(system, fs, [prn];
+            plan = plan_acquire(signal, fs, [prn];
                 num_coherently_integrated_code_periods = ncoh,
                 bit_edge_search_steps = edges, fft_flag = FFTL.ESTIMATE,
                 max_doppler_passes = 1)   # the reference dispatcher needs one grid
             @test plan.bit_edge_search_steps == edges
             scratch = Acquisition._default_scratch(plan)
             ndop = length(plan.doppler_freqs)
-            (; signal) = generate_test_signal(system, prn;
+            (; samples) = generate_test_signal(signal, prn;
                 num_samples = ncoh * plan.samples_per_code,
                 doppler = 1270Hz, code_phase = 321.4,
                 sampling_freq = fs, interm_freq = 0.0Hz, CN0 = 45, seed = 3)
-            plan.sig_buf .= ComplexF32.(signal)
+            plan.sig_buf .= ComplexF32.(samples)
             plan.sig_buf[end ÷ 3:end] .*= -1   # a bit transition
             Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, plan.sig_buf,
                 plan.samples_per_code, plan.num_blocks, plan.block_size, ncoh,
@@ -856,11 +856,11 @@ end
             @test plan.num_secondary_rotations == 1
             scratch = Acquisition._default_scratch(plan)
             ndop = length(plan.doppler_freqs)
-            (; signal) = generate_test_signal(GPSL1CA(), prn;
+            (; samples) = generate_test_signal(GPSL1CA(), prn;
                 num_samples = ncoh * plan.samples_per_code,
                 doppler = 1270Hz, code_phase = 321.4,
                 sampling_freq = 2.048e6Hz, interm_freq = 0.0Hz, CN0 = 45, seed = 3)
-            plan.sig_buf .= ComplexF32.(signal)
+            plan.sig_buf .= ComplexF32.(samples)
             Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, plan.sig_buf,
                 plan.samples_per_code, plan.num_blocks, plan.block_size, ncoh,
                 scratch.double_block_buf, plan.double_block_fft_plan)
@@ -894,7 +894,7 @@ end
     # bit_edge_search_steps = 10 one hypothesis flips there and the full
     # coherent power returns. Without a transition the search never loses
     # power (its no-transition hypothesis is the simple path's FFT).
-    system = GPSL1CA()
+    signal = GPSL1CA()
     fs = 2.048e6Hz
     prn = 1
     code_phase = 300.25
@@ -902,16 +902,16 @@ end
     spc = 2048
     common = (; min_doppler_coverage = 5000Hz,
         num_coherently_integrated_code_periods = 20, fft_flag = FFTL.ESTIMATE)
-    plan_plain = plan_acquire(system, fs, [prn]; common...)
-    plan_search = plan_acquire(system, fs, [prn]; common..., bit_edge_search_steps = 10)
-    (; signal) = generate_test_signal(system, prn; num_samples = 20 * spc,
+    plan_plain = plan_acquire(signal, fs, [prn]; common...)
+    plan_search = plan_acquire(signal, fs, [prn]; common..., bit_edge_search_steps = 10)
+    (; samples) = generate_test_signal(signal, prn; num_samples = 20 * spc,
         doppler = true_doppler, code_phase, sampling_freq = fs, interm_freq = 0.0Hz,
         CN0 = 42, seed = 7)
     first_boundary = round(Int, (1023 - code_phase) / 1023 * spc) + 1
 
     peak_power(r) = r.peak_to_noise_ratio * r.noise_power
 
-    flipped = ComplexF32.(signal)
+    flipped = ComplexF32.(samples)
     flipped[first_boundary + 10 * spc:end] .*= -1
     plain = only(acquire!(plan_plain, flipped, [prn]; interm_freq = 0.0Hz))
     search = only(acquire!(plan_search, flipped, [prn]; interm_freq = 0.0Hz))
@@ -922,7 +922,7 @@ end
     @test abs(search.code_phase - code_phase) < 0.5
     @test peak_power(search) > 2 * peak_power(plain)
 
-    unflipped = ComplexF32.(signal)
+    unflipped = ComplexF32.(samples)
     plain = only(acquire!(plan_plain, unflipped, [prn]; interm_freq = 0.0Hz))
     search = only(acquire!(plan_search, unflipped, [prn]; interm_freq = 0.0Hz))
     @test search.carrier_doppler == true_doppler
@@ -968,23 +968,23 @@ end
     # and every sign of the three segments, so the peak keeps the power of a
     # transition-free signal. (A cyclic model tying both partial bits to one
     # sign loses ≈ 2.5 dB here: amplitude (35 − 5) / 40.)
-    system = GPSL1CA()
+    signal = GPSL1CA()
     fs = 2.048e6Hz
     prn = 1
     code_phase = 300.25
     true_doppler = 1250Hz
     spc = 2048
-    plan = plan_acquire(system, fs, [prn]; min_doppler_coverage = 5000Hz,
+    plan = plan_acquire(signal, fs, [prn]; min_doppler_coverage = 5000Hz,
         num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4,
         fft_flag = FFTL.ESTIMATE)
-    (; signal) = generate_test_signal(system, prn; num_samples = 40 * spc,
+    (; samples) = generate_test_signal(signal, prn; num_samples = 40 * spc,
         doppler = true_doppler, code_phase, sampling_freq = fs, interm_freq = 0.0Hz,
         CN0 = 50, seed = 9)
     first_boundary = round(Int, (1023 - code_phase) / 1023 * spc) + 1
     peak_power(r) = r.peak_to_noise_ratio * r.noise_power
 
-    clean = only(acquire!(plan, ComplexF32.(signal), [prn]; interm_freq = 0.0Hz))
-    flipped_signal = ComplexF32.(signal)
+    clean = only(acquire!(plan, ComplexF32.(samples), [prn]; interm_freq = 0.0Hz))
+    flipped_signal = ComplexF32.(samples)
     flipped_signal[first_boundary + 5 * spc:end] .*= -1
     flipped = only(acquire!(plan, flipped_signal, [prn]; interm_freq = 0.0Hz))
     @test flipped.carrier_doppler == clean.carrier_doppler

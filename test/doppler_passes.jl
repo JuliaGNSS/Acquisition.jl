@@ -4,12 +4,12 @@
 
 # A single-grid plan with exactly `num_blocks` blocks: the smallest divisor
 # reaching the coverage is `num_blocks` when the coverage asks for just under it.
-function _single_grid_plan(system, sampling_freq, prns, num_blocks; kwargs...)
+function _single_grid_plan(signal, sampling_freq, prns, num_blocks; kwargs...)
     N_coh = get(kwargs, :num_coherently_integrated_code_periods, 1)
-    spc = ceil(Int, get_code_length(system) / get_chip_rate(system) * sampling_freq)
+    spc = ceil(Int, get_code_length(signal) / get_chip_rate(signal) * sampling_freq)
     bin_width = sampling_freq / spc
     coverage = ((num_blocks - 2 / N_coh) / 2 - 0.01) * bin_width
-    plan = plan_acquire(system, sampling_freq, prns; kwargs...,
+    plan = plan_acquire(signal, sampling_freq, prns; kwargs...,
         min_doppler_coverage = coverage, max_doppler_passes = 1)
     @assert plan.num_blocks == num_blocks
     return plan
@@ -108,10 +108,10 @@ end
     @test first(plan.doppler_freqs) == -128_000.0Hz
     @test 0.0Hz in plan.doppler_freqs
     for doppler in (0Hz, 3000Hz, -2000Hz)
-        (; signal) = generate_test_signal(GPSL1CA(), 1; sampling_freq = 1.542e6Hz,
+        (; samples) = generate_test_signal(GPSL1CA(), 1; sampling_freq = 1.542e6Hz,
             num_samples = 3084, doppler, code_phase = 400.3, CN0 = 90,
             interm_freq = 0.0Hz)
-        @test acquire!(plan, signal, 1).carrier_doppler == doppler
+        @test acquire!(plan, samples, 1).carrier_doppler == doppler
     end
 end
 
@@ -119,18 +119,18 @@ end
     # The stitched surface must be exactly the concatenation of single-grid
     # searches with the same num_blocks, each downconverted by its pass's
     # offset and trimmed to its central bins.
-    function check_stitching(system, fs, prn, signal; kwargs...)
-        plan = plan_acquire(system, fs, [prn]; kwargs...)
+    function check_stitching(signal, fs, prn, samples; kwargs...)
+        plan = plan_acquire(signal, fs, [prn]; kwargs...)
         @test plan.num_doppler_passes > 1
-        stitched = acquire!(plan, signal, prn; store_power_bins = true).power_bins
-        ref_plan = _single_grid_plan(system, fs, [prn], plan.num_blocks; kwargs...)
+        stitched = acquire!(plan, samples, prn; store_power_bins = true).power_bins
+        ref_plan = _single_grid_plan(signal, fs, [prn], plan.num_blocks; kwargs...)
         K = plan.doppler_bins_per_pass
         rows = plan.pass_row_offset+1 : plan.pass_row_offset+K
         for (k, offset) in enumerate(plan.doppler_pass_offsets_hz)
             ref_plan.doppler_pass_offsets_hz[1] = offset
             ref_plan.code_doppler_shifts_per_period[1] = plan.code_doppler_shifts_per_period[k]
             ref_plan.code_doppler_phasors[1] = plan.code_doppler_phasors[k]
-            ref = acquire!(ref_plan, signal, prn;
+            ref = acquire!(ref_plan, samples, prn;
                 store_power_bins = true)
             @test stitched[(k-1)*K+1 : k*K, :] == ref.power_bins[rows, :]
             # Each single grid of a sign search also matches the per-column
@@ -145,37 +145,37 @@ end
         end
     end
     fs = 1.542e6Hz
-    (; signal) = generate_test_signal(GPSL1CA(), 3; sampling_freq = fs,
+    (; samples) = generate_test_signal(GPSL1CA(), 3; sampling_freq = fs,
         num_samples = 45 * 1542, doppler = 2300Hz, code_phase = 123.4, CN0 = 45,
         interm_freq = 0.0Hz, seed = 3)
-    signal = ComplexF32.(signal)
-    @testset "simple path" check_stitching(GPSL1CA(), fs, 3, signal)
-    @testset "multistep" check_stitching(GPSL1CA(), fs, 3, signal;
+    samples = ComplexF32.(samples)
+    @testset "simple path" check_stitching(GPSL1CA(), fs, 3, samples)
+    @testset "multistep" check_stitching(GPSL1CA(), fs, 3, samples;
         num_noncoherent_accumulations = 3)
-    @testset "bit + bit-edge search" check_stitching(GPSL1CA(), fs, 3, signal;
+    @testset "bit + bit-edge search" check_stitching(GPSL1CA(), fs, 3, samples;
         num_coherently_integrated_code_periods = 40, bit_edge_search_steps = 4)
-    @testset "bit transition (one-bit window)" check_stitching(GPSL1CA(), fs, 3, signal;
+    @testset "bit transition (one-bit window)" check_stitching(GPSL1CA(), fs, 3, samples;
         num_coherently_integrated_code_periods = 20, bit_edge_search_steps = 5)
     @testset "3 bits + bit edges (Gray code)" check_stitching(GPSL1CA(), fs, 3,
         ComplexF32.(generate_test_signal(GPSL1CA(), 3; sampling_freq = fs,
             num_samples = 61 * 1542, doppler = 2300Hz, code_phase = 123.4, CN0 = 45,
-            interm_freq = 0.0Hz, seed = 3).signal);
+            interm_freq = 0.0Hz, seed = 3).samples);
         num_coherently_integrated_code_periods = 60, bit_edge_search_steps = 5)
-    @testset "GlobalMean estimator" check_stitching(GPSL1CA(), fs, 3, signal;
+    @testset "GlobalMean estimator" check_stitching(GPSL1CA(), fs, 3, samples;
         noise_estimator = GlobalMeanNoiseEstimator())
 
     # Secondary-code rotation search (GPS L5I NH10). 10.238 MHz → 10238 = 2·5119.
     fs5 = 10.238e6Hz
-    (; signal) = generate_test_signal(GPSL5I(), 1; sampling_freq = fs5,
+    (; samples) = generate_test_signal(GPSL5I(), 1; sampling_freq = fs5,
         num_samples = 11 * 10238, doppler = -1700Hz, code_phase = 5115.3, CN0 = 50,
         interm_freq = 0.0Hz, seed = 6)
-    @testset "rotation search" check_stitching(GPSL5I(), fs5, 1, ComplexF32.(signal);
+    @testset "rotation search" check_stitching(GPSL5I(), fs5, 1, ComplexF32.(samples);
         num_coherently_integrated_code_periods = 10)
-    (; signal) = generate_test_signal(GPSL5I(), 1; sampling_freq = fs5,
+    (; samples) = generate_test_signal(GPSL5I(), 1; sampling_freq = fs5,
         num_samples = 21 * 10238, doppler = -1700Hz, code_phase = 5115.3, CN0 = 50,
         interm_freq = 0.0Hz, seed = 6)
     @testset "rotation × bits × bit edges" check_stitching(GPSL5I(), fs5, 1,
-        ComplexF32.(signal); num_coherently_integrated_code_periods = 20,
+        ComplexF32.(samples); num_coherently_integrated_code_periods = 20,
         bit_edge_search_steps = 2)
 end
 
@@ -188,12 +188,12 @@ end
     # applies the drift of the true Doppler itself: step m's row r moves by
     # `round(f_r · m · T_coh · fs / f_carrier)` samples, wrapping within each
     # rotation's `samples_per_code`-wide slice.
-    function check_multistep_drift(system, fs, prn, signal; N_nc, kwargs...)
-        plan = plan_acquire(system, fs, [prn]; num_noncoherent_accumulations = N_nc,
+    function check_multistep_drift(signal, fs, prn, samples; N_nc, kwargs...)
+        plan = plan_acquire(signal, fs, [prn]; num_noncoherent_accumulations = N_nc,
             kwargs...)
         @test plan.num_doppler_passes > 1
-        stitched = acquire!(plan, signal, prn; store_power_bins = true).power_bins
-        ref_plan = _single_grid_plan(system, fs, [prn], plan.num_blocks; kwargs...)
+        stitched = acquire!(plan, samples, prn; store_power_bins = true).power_bins
+        ref_plan = _single_grid_plan(signal, fs, [prn], plan.num_blocks; kwargs...)
         spc = plan.samples_per_code
         step_len = plan.num_coherently_integrated_code_periods * spc
         K = plan.doppler_bins_per_pass
@@ -204,7 +204,7 @@ end
             dest = (k-1)*K+1 : k*K
             shifts = zeros(Int, K)
             for m in 0:N_nc-1
-                segment = signal[m*step_len+1 : end]
+                segment = samples[m*step_len+1 : end]
                 ref_plan.doppler_pass_offsets_hz[1] = offset
                 ref_plan.code_doppler_shifts_per_period[1] = plan.code_doppler_shifts_per_period[k]
                 ref_plan.code_doppler_phasors[1] = plan.code_doppler_phasors[k]
@@ -223,17 +223,17 @@ end
         @test stitched ≈ expected rtol = 1e-5
     end
     fs5 = 10.238e6Hz
-    (; signal) = generate_test_signal(GPSL5I(), 1; sampling_freq = fs5,
+    (; samples) = generate_test_signal(GPSL5I(), 1; sampling_freq = fs5,
         num_samples = 21 * 10238, doppler = 6400Hz, code_phase = 5115.3, CN0 = 50,
         interm_freq = 0.0Hz, seed = 6)
-    signal = ComplexF32.(signal)
-    @testset "rotation search" check_multistep_drift(GPSL5I(), fs5, 1, signal;
+    samples = ComplexF32.(samples)
+    @testset "rotation search" check_multistep_drift(GPSL5I(), fs5, 1, samples;
         N_nc = 2, num_coherently_integrated_code_periods = 10)
-    (; signal) = generate_test_signal(GPSL5I(), 1; sampling_freq = fs5,
+    (; samples) = generate_test_signal(GPSL5I(), 1; sampling_freq = fs5,
         num_samples = 41 * 10238, doppler = 6400Hz, code_phase = 5115.3, CN0 = 50,
         interm_freq = 0.0Hz, seed = 6)
     @testset "rotation × bits × bit edges" check_multistep_drift(GPSL5I(), fs5, 1,
-        ComplexF32.(signal); N_nc = 2, num_coherently_integrated_code_periods = 20,
+        ComplexF32.(samples); N_nc = 2, num_coherently_integrated_code_periods = 20,
         bit_edge_search_steps = 2)
 end
 
@@ -247,7 +247,7 @@ end
     @test plan.num_doppler_passes > 1
     peak(doppler) = maximum(acquire!(plan, generate_test_signal(GPSL1CA(), 7;
             sampling_freq = fs, num_samples = 3084, doppler, code_phase = 400.3,
-            CN0 = 90, interm_freq = 0.0Hz).signal, 7; store_power_bins = true).power_bins)
+            CN0 = 90, interm_freq = 0.0Hz).samples, 7; store_power_bins = true).power_bins)
     p0 = peak(0Hz)
     reference_loss_db = 20 * log10(sinc(7 / 16))
     for doppler in (-7000:1000:7000) .* Hz
@@ -255,31 +255,31 @@ end
     end
     # Off-grid Dopplers land on the nearest bin, across pass boundaries too.
     for doppler in (-6400, -2600, -2400, 2400, 2600, 6900) .* Hz
-        (; signal) = generate_test_signal(GPSL1CA(), 7; sampling_freq = fs,
+        (; samples) = generate_test_signal(GPSL1CA(), 7; sampling_freq = fs,
             num_samples = 3084, doppler, code_phase = 400.3, CN0 = 90,
             interm_freq = 0.0Hz)
-        @test acquire!(plan, signal, 7).carrier_doppler == round(doppler / 1000Hz) * 1000Hz
+        @test acquire!(plan, samples, 7).carrier_doppler == round(doppler / 1000Hz) * 1000Hz
     end
 end
 
 @testset "Doppler passes — detection and estimates through the public API" begin
     fs = 1.542e6Hz
     prns = 1:8
-    (; signal) = generate_test_signal(GPSL1CA(), 7; sampling_freq = fs,
+    (; samples) = generate_test_signal(GPSL1CA(), 7; sampling_freq = fs,
         num_samples = 4 * 1542, doppler = 5300Hz, code_phase = 400.3, CN0 = 50,
         interm_freq = 120Hz, seed = 7)
-    signal = ComplexF32.(signal)
+    samples = ComplexF32.(samples)
     for N_nc in (1, 3)
         plan = plan_acquire(GPSL1CA(), fs, prns; num_noncoherent_accumulations = N_nc)
         @test plan.num_doppler_passes > 1
-        results = acquire!(plan, signal, prns; interm_freq = 120Hz)
+        results = acquire!(plan, samples, prns; interm_freq = 120Hz)
         r7 = results[findfirst(==(7), prns)]
         @test is_detected(r7)
         @test abs(r7.carrier_doppler - 5300Hz) <= 500Hz
         @test abs(r7.code_phase - 400.3) < 1
         # Same result whether the PRN is searched alone or alongside others
         # (different scratch slots / threads).
-        alone = acquire!(plan, signal, 7; interm_freq = 120Hz)
+        alone = acquire!(plan, samples, 7; interm_freq = 120Hz)
         @test alone.carrier_doppler == r7.carrier_doppler
         @test alone.code_phase == r7.code_phase
         @test alone.peak_to_noise_ratio == r7.peak_to_noise_ratio
@@ -293,11 +293,11 @@ end
     # recompute must read it from there and agree exactly with the stored run.
     fs = 1.542e6Hz
     plan = plan_acquire(GPSL1CA(), fs, [2])
-    (; signal) = generate_test_signal(GPSL1CA(), 2; sampling_freq = fs,
+    (; samples) = generate_test_signal(GPSL1CA(), 2; sampling_freq = fs,
         num_samples = 1542, doppler = 2400Hz, code_phase = 300.7, CN0 = 50,
         interm_freq = 0.0Hz, seed = 5)
-    r_nostore = acquire!(plan, signal, 2; subsample_interpolation = true)
-    r_store = acquire!(plan, signal, 2; subsample_interpolation = true,
+    r_nostore = acquire!(plan, samples, 2; subsample_interpolation = true)
+    r_store = acquire!(plan, samples, 2; subsample_interpolation = true,
         store_power_bins = true)
     peak_row = findfirst(==(2000.0Hz), plan.doppler_freqs)
     @test Acquisition._doppler_row_to_pass(plan, peak_row)[1] !=
@@ -323,11 +323,11 @@ end
     @test Acquisition._doppler_neighbour_rows(single, m) == (m - 1, 1)
 
     for (doppler, edge) in ((7300Hz, 7000Hz), (-7300Hz, -7000Hz))
-        (; signal) = generate_test_signal(GPSL1CA(), 4; sampling_freq = fs,
+        (; samples) = generate_test_signal(GPSL1CA(), 4; sampling_freq = fs,
             num_samples = 1542, doppler, code_phase = 300.7, CN0 = 60,
             interm_freq = 0.0Hz, seed = 9)
         for store_power_bins in (false, true)
-            r = acquire!(plan, signal, 4; subsample_interpolation = true, store_power_bins)
+            r = acquire!(plan, samples, 4; subsample_interpolation = true, store_power_bins)
             @test r.carrier_doppler == edge
         end
     end
@@ -335,16 +335,16 @@ end
 
 @testset "Doppler passes — the convenience wrappers forward max_doppler_passes" begin
     fs = 1.542e6Hz
-    (; signal) = generate_test_signal(GPSL1CA(), 1; sampling_freq = fs,
+    (; samples) = generate_test_signal(GPSL1CA(), 1; sampling_freq = fs,
         num_samples = 1542, doppler = 1000Hz, code_phase = 100.2, CN0 = 50,
         interm_freq = 0.0Hz, seed = 2)
     grid_rows(r) = size(r.power_bins, 1)
-    @test grid_rows(acquire(GPSL1CA(), signal, fs, 1; store_power_bins = true)) == 15
-    @test grid_rows(acquire(GPSL1CA(), signal, fs, 1; store_power_bins = true,
+    @test grid_rows(acquire(GPSL1CA(), samples, fs, 1; store_power_bins = true)) == 15
+    @test grid_rows(acquire(GPSL1CA(), samples, fs, 1; store_power_bins = true,
         max_doppler_passes = 1)) == 257
-    @test grid_rows(only(collect(acquire_stream(GPSL1CA(), signal, fs, [1];
+    @test grid_rows(only(collect(acquire_stream(GPSL1CA(), samples, fs, [1];
         store_power_bins = true, max_doppler_passes = 1)))) == 257
-    rows = acquire_stream(GPSL1CA(), signal, fs, [1]; store_power_bins = true,
+    rows = acquire_stream(GPSL1CA(), samples, fs, [1]; store_power_bins = true,
             max_doppler_passes = 1) do results
         grid_rows(only(collect(results)))
     end
@@ -355,12 +355,12 @@ end
     plan = plan_acquire(GPSL1CA(), 1.542e6Hz, 1:4; max_blocking_time = 1u"s")
     @test plan.num_doppler_passes > 1
     @test plan.preempt_block_stride[] == plan.num_blocks * plan.num_doppler_passes
-    (; signal) = generate_test_signal(GPSL1CA(), 1; sampling_freq = 1.542e6Hz,
+    (; samples) = generate_test_signal(GPSL1CA(), 1; sampling_freq = 1.542e6Hz,
         num_samples = 1542, CN0 = 45, interm_freq = 0.0Hz)
     yielding = plan_acquire(GPSL1CA(), 1.542e6Hz, 1:4; max_blocking_time = 1u"ns")
     @test yielding.preempt_block_stride[] == 1
     summary(r) = (r.prn, r.carrier_doppler, r.code_phase, r.peak_to_noise_ratio)
-    @test summary.(acquire!(yielding, signal, 1:4)) == summary.(acquire!(plan, signal, 1:4))
+    @test summary.(acquire!(yielding, samples, 1:4)) == summary.(acquire!(plan, samples, 1:4))
 end
 
 @testset "downconversion keeps its phase accurate deep into a long signal" begin
@@ -370,11 +370,11 @@ end
     # `index × step` (the former implementation) was off by up to 2e-2.
     fs = 2.048e6
     n = 40_960
-    signal = ComplexF32.(cis.(range(0, 3, length = 50n)))
+    samples = ComplexF32.(cis.(range(0, 3, length = 50n)))
     buf = Vector{ComplexF32}(undef, n)
     for f in (1234.0, -6000.0, 250_000.0), seg_start in (1, 40n + 1)
-        Acquisition._downconvert!(buf, signal, seg_start, n, f, fs)
-        exact = [ComplexF64(signal[seg_start + i - 1]) *
+        Acquisition._downconvert!(buf, samples, seg_start, n, f, fs)
+        exact = [ComplexF64(samples[seg_start + i - 1]) *
                  cispi(-2 * mod(f / fs * (seg_start + i - 2), 1.0)) for i in 1:n]
         @test maximum(abs.(buf .- exact)) < 1e-6
     end

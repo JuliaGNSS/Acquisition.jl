@@ -11,7 +11,7 @@ function _tuning_layouts(plan::AcquisitionPlan, num_prns::Int,
     N = plan.num_coherently_integrated_code_periods
     width = ustrip(Hz, plan.sampling_freq) / plan.samples_per_code
     coverage = ustrip(Hz, min_doppler_coverage)
-    ratio = get_chip_rate_to_center_frequency_ratio(plan.system)
+    ratio = get_chip_rate_to_center_frequency_ratio(plan.signal)
     candidates = DopplerLayout[]
     _doppler_search_layout(plan.samples_per_code, width, coverage, N,
         max_doppler_passes, num_prns, ratio, candidates)
@@ -41,12 +41,12 @@ function _select_measured_plan(best, candidates, build, measure_pair)
 end
 
 function _measure_plan_pair(incumbent::AcquisitionPlan, challenger::AcquisitionPlan,
-                            signal, prns, interm_freq)
+                            samples, prns, interm_freq)
     # Compile and touch buffers before timing. Alternate the order to reduce
     # bias from changes in host load. Timings include preparation and the full
     # requested PRN batch, including task scheduling and result extraction.
-    acquire!(incumbent, signal, prns; interm_freq)
-    acquire!(challenger, signal, prns; interm_freq)
+    acquire!(incumbent, samples, prns; interm_freq)
+    acquire!(challenger, samples, prns; interm_freq)
     GC.gc(false)
     incumbent_ns = challenger_ns = typemax(UInt64)
     elapsed_ns = UInt64(0)
@@ -54,7 +54,7 @@ function _measure_plan_pair(incumbent::AcquisitionPlan, challenger::AcquisitionP
         plans = isodd(round) ? (incumbent, challenger) : (challenger, incumbent)
         for plan in plans
             start = time_ns()
-            acquire!(plan, signal, prns; interm_freq)
+            acquire!(plan, samples, prns; interm_freq)
             elapsed = time_ns() - start
             elapsed_ns += elapsed
             if plan === incumbent
@@ -78,8 +78,8 @@ function _tune_acquisition_plan(plan::AcquisitionPlan, prns, interm_freq, build;
     n = plan.num_coherently_integrated_code_periods * plan.samples_per_code *
         plan.num_noncoherent_accumulations
     # A private RNG keeps planning from changing the caller's random stream.
-    signal = randn(Xoshiro(0x107), ComplexF32, n)
-    measure_pair(a, b) = _measure_plan_pair(a, b, signal, prns, interm_freq)
+    samples = randn(Xoshiro(0x107), ComplexF32, n)
+    measure_pair(a, b) = _measure_plan_pair(a, b, samples, prns, interm_freq)
     best = _select_measured_plan(plan, candidates, build, measure_pair)
     fill!(best.signal_block_ffts, 0f0)
     fill!(best.sig_buf, 0f0)

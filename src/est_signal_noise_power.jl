@@ -18,10 +18,10 @@ subsequent `acquire!` call.
 Pass to [`plan_acquire`](@ref) via the `noise_estimator` keyword:
 
 ```julia
-plan = plan_acquire(system, sampling_freq, prns;
+plan = plan_acquire(signal, sampling_freq, prns;
     noise_estimator = OppositeRowNoiseEstimator())  # default
 
-plan = plan_acquire(system, sampling_freq, prns;
+plan = plan_acquire(signal, sampling_freq, prns;
     noise_estimator = GlobalMeanNoiseEstimator())   # alternative
 ```
 

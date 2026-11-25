@@ -8,10 +8,10 @@ The simplest way to acquire GNSS signals is with the [`acquire`](@ref) function:
 using Acquisition, GNSSSignals
 import Unitful: Hz
 
-system = GPSL1CA()
+signal = GPSL1CA()
 
-# Generate a synthetic GPS L1 signal for PRN 1 (1 ms, 4 MHz)
-(; signal, sampling_freq, interm_freq) = generate_test_signal(system, 1;
+# Generate synthetic GPS L1 C/A samples for PRN 1 (1 ms, 4 MHz)
+(; samples, sampling_freq, interm_freq) = generate_test_signal(signal, 1;
     num_samples = 4096, sampling_freq = 4e6Hz)
 nothing # hide
 ```
@@ -19,13 +19,13 @@ nothing # hide
 Acquire multiple PRNs at once:
 
 ```@example guide
-results = acquire(system, signal, sampling_freq, 1:3; interm_freq)
+results = acquire(signal, samples, sampling_freq, 1:3; interm_freq)
 ```
 
 Acquire a single PRN:
 
 ```@example guide
-result = acquire(system, signal, sampling_freq, 1; interm_freq)
+result = acquire(signal, samples, sampling_freq, 1; interm_freq)
 ```
 
 Each result contains:
@@ -139,14 +139,14 @@ Pick the estimator at plan-construction time:
 
 ```julia
 # Default — robust to Doppler-conditional noise variation
-plan = plan_acquire(system, sampling_freq, prns)
+plan = plan_acquire(signal, sampling_freq, prns)
 
 # Explicit form
-plan = plan_acquire(system, sampling_freq, prns;
+plan = plan_acquire(signal, sampling_freq, prns;
     noise_estimator = OppositeRowNoiseEstimator())
 
 # AWGN test path
-plan = plan_acquire(system, sampling_freq, prns;
+plan = plan_acquire(signal, sampling_freq, prns;
     noise_estimator = GlobalMeanNoiseEstimator())
 ```
 
@@ -160,14 +160,14 @@ For repeated acquisitions — e.g. tracking many epochs or processing a file —
 a plan once to avoid repeated FFT planning and memory allocation:
 
 ```@example guide
-plan = plan_acquire(system, sampling_freq, collect(1:3))
+plan = plan_acquire(signal, sampling_freq, collect(1:3))
 
-results = acquire!(plan, signal, 1:3; interm_freq)
+results = acquire!(plan, samples, 1:3; interm_freq)
 ```
 
 ### Avoiding first-call latency
 
-The search is compiled for each plan *shape* — signal system, sampling frequency,
+The search is compiled for each plan *shape* — signal, sampling frequency,
 coherent and non-coherent lengths, Doppler grid and search options — and for the
 sample type you pass. Shapes covered by Acquisition's own precompile workload are
 ready when the package loads. For any other shape, compilation happens on first use:
@@ -199,8 +199,8 @@ make_plan() = plan_acquire(GPSL1CA(), 6.5e6Hz, collect(1:32);
         # Same element type and container as your front end delivers; the values do
         # not matter.
         n = plan.num_coherently_integrated_code_periods * plan.samples_per_code
-        signal = Complex{Int16}.(rand(Int16(-100):Int16(100), n), rand(Int16(-100):Int16(100), n))
-        acquire!(plan, signal, collect(1:32); interm_freq = 0.0Hz)
+        samples = Complex{Int16}.(rand(Int16(-100):Int16(100), n), rand(Int16(-100):Int16(100), n))
+        acquire!(plan, samples, collect(1:32); interm_freq = 0.0Hz)
     end
 end
 
@@ -305,7 +305,7 @@ each result the moment its own PRN finishes, so a consumer can start tracking th
 satellite while the rest of the search is still running:
 
 ```julia
-acquire_stream!(plan, signal, 1:32; interm_freq) do results
+acquire_stream!(plan, samples, 1:32; interm_freq) do results
     for result in results
         is_detected(result) && start_tracking(result)
     end
@@ -322,7 +322,7 @@ search is shut down when the block is left, *however* it is left: a normal retur
 reason to stream in the first place:
 
 ```@example guide
-acquire_stream!(plan, signal, 1:3; interm_freq) do results
+acquire_stream!(plan, samples, 1:3; interm_freq) do results
     for result in results
         is_detected(result) && return result.prn   # stop at the first hit
     end
@@ -335,7 +335,7 @@ block hands back the bare channel, which can be read after the fact like any oth
 as long as it is read to the end:
 
 ```@example guide
-channel = acquire_stream!(plan, signal, 1:3; interm_freq)
+channel = acquire_stream!(plan, samples, 1:3; interm_freq)
 
 [result.prn for result in channel]   # completion order
 ```
@@ -417,15 +417,15 @@ waiting.
 At low CN0, accumulate power across multiple successive signal segments:
 
 ```@example guide
-plan_ni = plan_acquire(system, sampling_freq, [1];
+plan_ni = plan_acquire(signal, sampling_freq, [1];
     num_coherently_integrated_code_periods = 10,
     num_noncoherent_accumulations = 8)
 
-long_signal = generate_test_signal(system, 1;
+long_samples = generate_test_signal(signal, 1;
     num_samples = 8 * 10 * 4096,
-    sampling_freq = sampling_freq, CN0 = 30).signal
+    sampling_freq = sampling_freq, CN0 = 30).samples
 
-result_ni = acquire!(plan_ni, long_signal, [1])
+result_ni = acquire!(plan_ni, long_samples, [1])
 nothing # hide
 ```
 
@@ -454,11 +454,11 @@ fs = 4e6Hz
 prn = 1
 doppler = 1500Hz
 
-# Generate one 2 ms signal (8000 samples at 4 MHz) — reused across all three plots
-signal_2ms = generate_test_signal(system, prn;
-    num_samples = 8000, sampling_freq = fs, doppler = doppler).signal
+# Generate 2 ms of samples (8000 at 4 MHz) — reused across all three plots
+signal_2ms = generate_test_signal(signal, prn;
+    num_samples = 8000, sampling_freq = fs, doppler = doppler).samples
 
-plan_1ms = plan_acquire(system, fs, [prn])
+plan_1ms = plan_acquire(signal, fs, [prn])
 result_1ms = acquire!(plan_1ms, signal_2ms[1:4000], [prn]; store_power_bins = true)
 plot(result_1ms[1])
 ```
@@ -469,7 +469,7 @@ plot(result_1ms[1])
 The correlation spike narrows visibly in the Doppler dimension:
 
 ```@example guide
-plan_2ms = plan_acquire(system, fs, [prn];
+plan_2ms = plan_acquire(signal, fs, [prn];
     num_coherently_integrated_code_periods = 2)
 result_2ms = acquire!(plan_2ms, signal_2ms, [prn]; store_power_bins = true)
 plot(result_2ms[1])
@@ -482,7 +482,7 @@ improving sensitivity without requiring longer phase-coherent integration.
 The Doppler resolution stays at ~1000 Hz but the peak-to-noise ratio improves:
 
 ```@example guide
-plan_ni = plan_acquire(system, fs, [prn]; num_noncoherent_accumulations = 2)
+plan_ni = plan_acquire(signal, fs, [prn]; num_noncoherent_accumulations = 2)
 result_ni = acquire!(plan_ni, signal_2ms, [prn]; store_power_bins = true)
 plot(result_ni[1])
 ```
@@ -530,7 +530,7 @@ where `num_blocks` is chosen automatically to cover at least `min_doppler_covera
 on each side (default ±7000 Hz). You can widen the search with:
 
 ```julia
-plan = plan_acquire(system, sampling_freq, prns; min_doppler_coverage = 10_000Hz)
+plan = plan_acquire(signal, sampling_freq, prns; min_doppler_coverage = 10_000Hz)
 ```
 
 #### What `min_doppler_coverage` actually guarantees
@@ -804,15 +804,15 @@ without it. `bit_edge_search_steps` must divide the window length in code
 periods:
 
 ```julia
-plan = plan_acquire(system, sampling_freq, prns;
+plan = plan_acquire(signal, sampling_freq, prns;
     num_coherently_integrated_code_periods = 10,
     bit_edge_search_steps = 10)
 ```
 
 **Multi-bit integration** (`num_coherently_integrated_code_periods ≥ 20`):
 The window spans whole bit periods. Two constraints apply:
-1. `num_coherently_integrated_code_periods` must be divisible by `get_code_periods_per_bit(system)` (= 20 for GPS L1 C/A)
-2. `get_code_periods_per_bit(system)` must be divisible by `bit_edge_search_steps`
+1. `num_coherently_integrated_code_periods` must be divisible by `get_code_periods_per_bit(signal)` (= 20 for GPS L1 C/A)
+2. `get_code_periods_per_bit(signal)` must be divisible by `bit_edge_search_steps`
 
 The algorithm searches all `2^(num_bits - 1)` sign-flip combinations across
 the bits in the window. With `bit_edge_search_steps > 1` the first bit edge
@@ -822,7 +822,7 @@ end, and all `2^num_bits` sign combinations of the partial and whole bits
 are searched.
 
 A BeiDou B1I or B3I GEO satellite broadcasts D2 bits every 2 ms, where the
-other satellites broadcast D1 every 20 ms (`get_code_periods_per_bit(system, prn)`).
+other satellites broadcast D1 every 20 ms (`get_code_periods_per_bit(signal, prn)`).
 A plan whose window spans more than one D2 bit therefore needs the GEO PRNs
 planned separately; `plan_acquire` throws if they are mixed.
 
@@ -840,7 +840,7 @@ Pass `subsample_interpolation = true` to refine both below the grid spacing
 using a parabolic fit across the peak bin and its two neighbours:
 
 ```@example guide
-result_interp = acquire(system, signal, sampling_freq, 1;
+result_interp = acquire(signal, samples, sampling_freq, 1;
     interm_freq, subsample_interpolation = true)
 ```
 
@@ -864,5 +864,5 @@ cached buffer per PRN on first use, which subsequent calls reuse in place, so
 repeated stored acquisitions stay allocation-free too.
 
 ```julia
-result = acquire!(plan, signal, [1]; store_power_bins = true)
+result = acquire!(plan, samples, [1]; store_power_bins = true)
 ```

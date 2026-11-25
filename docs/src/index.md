@@ -17,15 +17,15 @@ Pkg.add("Acquisition")
 using Acquisition, GNSSSignals
 import Unitful: Hz
 
-system = GPSL1CA()
-(; signal, sampling_freq, interm_freq) = generate_test_signal(system, 1)
+signal = GPSL1CA()
+(; samples, sampling_freq, interm_freq) = generate_test_signal(signal, 1)
 
 # Acquire GPS L1 C/A signals for PRNs 1–32
-results = acquire(system, signal, sampling_freq, 1:32; interm_freq)
+results = acquire(signal, samples, sampling_freq, 1:32; interm_freq)
 
 # Reuse a pre-computed plan for repeated acquisitions
-plan = plan_acquire(system, sampling_freq, 1:32)
-results = acquire!(plan, signal, 1:32; interm_freq)
+plan = plan_acquire(signal, sampling_freq, 1:32)
+results = acquire!(plan, samples, 1:32; interm_freq)
 ```
 
 !!! tip "Pick a fast sampling frequency"
