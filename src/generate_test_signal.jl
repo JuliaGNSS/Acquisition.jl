@@ -6,7 +6,7 @@ demonstrating the API. Not exported, as it is test tooling rather than part of a
 receiver: write `Acquisition.generate_test_signal`.
 
 Returns a NamedTuple with fields: `samples`, `code`, `carrier`, `num_samples`,
-`carrier_doppler`, `code_phase`, `sampling_freq`, `interm_freq`, `CN0`, `prn`.
+`carrier_doppler`, `code_phase`, `sampling_freq`, `interm_freq`, `cn0`, `prn`.
 
 # Keywords
 - `seed=2345`: Random seed for reproducibility
@@ -15,7 +15,7 @@ Returns a NamedTuple with fields: `samples`, `code`, `carrier`, `num_samples`,
 - `code_phase=110.613261`: True code phase in chips
 - `sampling_freq=15e6Hz - 1Hz`: Sampling frequency
 - `interm_freq=243.0Hz`: Intermediate frequency
-- `CN0=45`: Carrier-to-noise density ratio (dB-Hz)
+- `cn0=45`: Carrier-to-noise density ratio (dB-Hz)
 - `carrier_phase=1/16`: Carrier phase in cycles, as GNSSSignals and Tracking count it
 - `unit_noise_power=false`: When true, scale so noise power ≈ 1;
   when false, scale so signal power corresponds directly to CN0
@@ -39,7 +39,7 @@ function generate_test_signal(
     code_phase = 110.613261,
     sampling_freq = 15e6Hz - 1Hz,
     interm_freq = 243.0Hz,
-    CN0 = 45,
+    cn0 = 45,
     carrier_phase = 1 / 16,
     unit_noise_power = false,
 )
@@ -62,10 +62,10 @@ function generate_test_signal(
 
     if unit_noise_power
         noise_power = 1
-        signal_power = CN0 - 10 * log10(sampling_freq / 1.0Hz)
+        signal_power = cn0 - 10 * log10(sampling_freq / 1.0Hz)
     else
         noise_power = 10 * log10(sampling_freq / 1.0Hz)
-        signal_power = CN0
+        signal_power = cn0
     end
 
     noise = randn(ComplexF64, num_samples)
@@ -80,7 +80,7 @@ function generate_test_signal(
         code_phase,
         sampling_freq,
         interm_freq,
-        CN0,
+        cn0,
         prn,
     )
 end

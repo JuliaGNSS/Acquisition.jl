@@ -71,7 +71,7 @@ function _precompile_signal(signal)
         num_samples,
         sampling_freq,
         interm_freq = 0.0Hz,
-        CN0 = 45,
+        cn0 = 45,
         unit_noise_power = true,
     )
     ComplexF32.(samples), Complex{Int16}.(round.(samples .* 64)), sampling_freq

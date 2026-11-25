@@ -1024,7 +1024,7 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins, samples, inte
     # `T`; recovering `L` would need it estimated separately. The remaining bias
     # is in the conservative direction for a detection or quality gate.
     coherent_integration_time = plan.num_coherently_integrated_code_periods * code_period
-    CN0 = 10 * log10(signal_power / noise_power / coherent_integration_time / 1.0Hz)
+    cn0 = 10 * log10(signal_power / noise_power / coherent_integration_time / 1.0Hz)
 
     # On the rotation path the cp axis is expanded to
     # `samples_per_code * num_secondary_rotations` and the peak col encodes
@@ -1098,7 +1098,7 @@ function _extract_result!(plan, scratch, prn, prn_idx, power_bins, samples, inte
         doppler,
         code_phase,
         secondary_code_phase,
-        CN0,
+        cn0,
         Float32(noise_power),
         Float32(peak_to_noise),
         plan.num_noncoherent_integrations,
@@ -1140,7 +1140,7 @@ function _extract_result_streamed!(plan, scratch, prn,
     peak_to_noise = (signal_power + noise_power) / noise_power
     # See the first call site for why this is the coherent integration time.
     coherent_integration_time = plan.num_coherently_integrated_code_periods * code_period
-    CN0 = 10 * log10(signal_power / noise_power / coherent_integration_time / 1.0Hz)
+    cn0 = 10 * log10(signal_power / noise_power / coherent_integration_time / 1.0Hz)
 
     # Decode the effective-cp-axis peak column into (cp_within, rotation) — see
     # `_extract_result!` for the layout.
@@ -1221,7 +1221,7 @@ function _extract_result_streamed!(plan, scratch, prn,
         doppler,
         code_phase,
         secondary_code_phase,
-        CN0,
+        cn0,
         Float32(noise_power),
         Float32(peak_to_noise),
         plan.num_noncoherent_integrations,

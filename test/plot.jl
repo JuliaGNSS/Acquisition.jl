@@ -8,7 +8,7 @@
     plan = plan_acquire(signal, sampling_freq, [prn]; fft_flag = FFTL.ESTIMATE)
     (; samples) = generate_test_signal(signal, prn;
         num_samples = plan.samples_per_code, sampling_freq = sampling_freq,
-        interm_freq = 0.0Hz, CN0 = 45)
+        interm_freq = 0.0Hz, cn0 = 45)
     result = only(acquire!(plan, ComplexF32.(samples), [prn]))  # no store_power_bins
 
     @test result.power_bins === nothing
@@ -83,7 +83,7 @@ end
     (; samples) = generate_test_signal(signal, prn;
         num_samples = plan.samples_per_code,
         carrier_doppler = 1000Hz, code_phase = 100.0,
-        sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = 60)
+        sampling_freq = sampling_freq, interm_freq = 0.0Hz, cn0 = 60)
 
     results = acquire!(plan, ComplexF32.(samples), [prn]; interm_freq = 0.0Hz, store_power_bins = true)
     result  = only(results)

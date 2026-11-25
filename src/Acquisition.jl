@@ -43,7 +43,7 @@ Results from GNSS signal acquisition for a single PRN.
     or `num_coherently_integrated_code_periods == 1`) or when the peak does not clear the
     CFAR detection threshold (a non-detected peak has no meaningful secondary phase).
     Useful for seeding a tracking loop's secondary-code alignment.
-  - `CN0::Float64`: Carrier-to-noise density ratio in dB-Hz
+  - `cn0::Float64`: Carrier-to-noise density ratio in dB-Hz
   - `noise_power::T`: Estimated noise power
   - `peak_to_noise_ratio::T`: Ratio of peak correlation power to estimated noise power
     (`peak_power / noise_power`). Compare against [`cfar_threshold`](@ref) to decide
@@ -91,7 +91,7 @@ struct AcquisitionResults{S<:AbstractGNSSSignal,T,D<:AbstractRange}
     # integer in `0:get_secondary_code_length(signal)-1`, suitable for seeding a
     # tracking loop's secondary-code alignment.
     secondary_code_phase::Union{Int, Nothing}
-    CN0::Float64
+    cn0::Float64
     noise_power::T
     peak_to_noise_ratio::T
     num_noncoherent_integrations::Int
@@ -140,7 +140,7 @@ is_detected(result::AcquisitionResults; pfa = 0.01) =
 
 function Base.show(io::IO, ::MIME"text/plain", acq::AcquisitionResults)
     print(io, "AcquisitionResults: PRN $(acq.prn), ")
-    print(io, "CN0 = $(round(acq.CN0, digits=2)) dB-Hz, ")
+    print(io, "CN0 = $(round(acq.cn0, digits=2)) dB-Hz, ")
     print(io, "Doppler = $(acq.carrier_doppler), ")
     print(io, "Code phase = $(round(acq.code_phase, digits=3)) chips")
 end
@@ -157,7 +157,7 @@ function Base.show(
         map(
             acq -> permutedims([
                 acq.prn,
-                acq.CN0,
+                acq.cn0,
                 acq.carrier_doppler,
                 acq.code_phase,
             ]),

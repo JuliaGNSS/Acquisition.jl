@@ -31,7 +31,7 @@ result = acquire(signal, samples, sampling_freq, 1; interm_freq)
 Each result contains:
 - `carrier_doppler`: Estimated Doppler frequency
 - `code_phase`: Code phase in chips
-- `CN0`: Carrier-to-noise density ratio (dB-Hz)
+- `cn0`: Carrier-to-noise density ratio (dB-Hz)
 - `peak_to_noise_ratio`: Peak correlation power divided by noise power
 - `power_bins`: Correlation power matrix (only populated when `store_power_bins=true`)
 
@@ -423,7 +423,7 @@ plan_ni = plan_acquire(signal, sampling_freq, [1];
 
 long_samples = Acquisition.generate_test_signal(signal, 1;
     num_samples = 8 * 10 * 4096,
-    sampling_freq = sampling_freq, CN0 = 30).samples
+    sampling_freq = sampling_freq, cn0 = 30).samples
 
 result_ni = acquire!(plan_ni, long_samples, [1])
 nothing # hide

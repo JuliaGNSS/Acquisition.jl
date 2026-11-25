@@ -98,13 +98,13 @@ end
     samples_per_code = 2048
     pfa = 0.01
 
-    for (M, num_code_cycles, CN0) in [(2, 4, 40), (4, 4, 38), (8, 1, 42)]
+    for (M, num_code_cycles, cn0) in [(2, 4, 40), (4, 4, 38), (8, 1, 42)]
         seg_len = num_code_cycles * samples_per_code * M
         prn = 7
         (; samples, interm_freq) = generate_test_signal(signal, prn;
             num_samples = seg_len,
             sampling_freq, interm_freq = 0.0Hz,
-            CN0, carrier_doppler = 500Hz, code_phase = 100.0,
+            cn0, carrier_doppler = 500Hz, code_phase = 100.0,
             seed = 9999 + M)
         plan = plan_acquire(signal, float(sampling_freq), collect(1:32);
             num_coherently_integrated_code_periods = num_code_cycles,
@@ -119,17 +119,17 @@ end
 
     # Strong signal
     (; samples, prn, sampling_freq, interm_freq) =
-        generate_test_signal(signal, 1; CN0 = 55)
+        generate_test_signal(signal, 1; cn0 = 55)
     strong = acquire(signal, samples, sampling_freq, prn; interm_freq)
 
     # Weak signal
     (; samples, prn, sampling_freq, interm_freq) =
-        generate_test_signal(signal, 1; CN0 = 35)
+        generate_test_signal(signal, 1; cn0 = 35)
     weak = acquire(signal, samples, sampling_freq, prn; interm_freq)
 
     # Strong signal should have higher peak_to_noise_ratio
     @test strong.peak_to_noise_ratio > weak.peak_to_noise_ratio
-    @test strong.CN0 > weak.CN0
+    @test strong.cn0 > weak.cn0
 end
 
 @testset "Sign-search CFAR null distribution" begin

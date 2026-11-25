@@ -9,7 +9,7 @@
         signal, prn;
         num_samples = 2048,   # 1 code period at 2.048 MHz
         carrier_doppler = 1000Hz, code_phase = 200.0,
-        sampling_freq, interm_freq = 0.0Hz, CN0 = 45,
+        sampling_freq, interm_freq = 0.0Hz, cn0 = 45,
     )
 
     result = acquire(signal, samples, sampling_freq, prn; interm_freq)
@@ -29,7 +29,7 @@ end
         signal, prn;
         num_samples = 40 * 2048,   # 20ms coherent × 2 noncoherent
         carrier_doppler = 500Hz, code_phase = 100.0,
-        sampling_freq, interm_freq = 0.0Hz, CN0 = 30,
+        sampling_freq, interm_freq = 0.0Hz, cn0 = 30,
         seed = 7777,
     )
 
@@ -55,7 +55,7 @@ end
         signal, prn;
         num_samples = 2048,
         carrier_doppler = 0Hz, code_phase = true_code_phase,
-        sampling_freq, interm_freq = 0.0Hz, CN0 = 45,
+        sampling_freq, interm_freq = 0.0Hz, cn0 = 45,
         seed = 5555,
     )
 
@@ -80,7 +80,7 @@ end
         signal, prn;
         num_samples = 2048,
         carrier_doppler = 500Hz, code_phase = 150.0,
-        sampling_freq, interm_freq, CN0 = 45,
+        sampling_freq, interm_freq, cn0 = 45,
         seed = 3333,
     )
 
@@ -104,10 +104,10 @@ end
 
     gen1 = generate_test_signal(signal, 1;
         num_samples = 2048, carrier_doppler = 1000Hz, code_phase = 200.0,
-        sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 10)
+        sampling_freq, interm_freq = 0.0Hz, cn0 = 45, seed = 10)
     gen2 = generate_test_signal(signal, 2;
         num_samples = 2048, carrier_doppler = -500Hz, code_phase = 500.0,
-        sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 10)
+        sampling_freq, interm_freq = 0.0Hz, cn0 = 45, seed = 10)
 
     signal_amplitude = 10^(45 / 20)
     noise_amplitude  = 10^(10 * log10(ustrip(Hz, sampling_freq)) / 20)
@@ -146,7 +146,7 @@ end
         num_noncoherent_integrations = 2, fft_flag = FFTL.ESTIMATE)
     (; samples, code_phase) = generate_test_signal(signal, 1;
         num_samples = 2 * plan.samples_per_code, carrier_doppler = 800Hz, code_phase = 150.0,
-        sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 13)
+        sampling_freq, interm_freq = 0.0Hz, cn0 = 45, seed = 13)
     results = acquire!(plan, ComplexF32.(samples), [1, 2]; interm_freq = 0.0Hz)
     @test length(results) == 2
     @test is_detected(results[1])
@@ -172,7 +172,7 @@ end
     (; samples) = generate_test_signal(signal, prn;
         num_samples = 2 * 2048,                  # two full code periods
         carrier_doppler = doppler_true, code_phase = code_phase_true,
-        sampling_freq = sampling_freq, interm_freq = 0.0Hz, CN0 = CN0_dbhz, seed = seed)
+        sampling_freq = sampling_freq, interm_freq = 0.0Hz, cn0 = CN0_dbhz, seed = seed)
 
     plan_seq = plan_acquire(signal, sampling_freq, [prn];
         num_coherently_integrated_code_periods = 1, num_noncoherent_integrations = 1,
@@ -213,7 +213,7 @@ end
     (; samples) = generate_test_signal(signal, prn;
         num_samples = 40 * 2048,
         carrier_doppler = doppler_true, code_phase = code_phase_true,
-        sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
+        sampling_freq, interm_freq = 0.0Hz, cn0 = 45)
 
     plan = plan_acquire(signal, sampling_freq, [prn];
         num_coherently_integrated_code_periods = 40, num_noncoherent_integrations = 1,
@@ -248,7 +248,7 @@ end
 
     plan = plan_acquire(signal, sampling_freq, [prn]; fft_flag = FFTL.ESTIMATE)
     (; samples) = generate_test_signal(signal, prn;
-        num_samples = plan.samples_per_code, sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
+        num_samples = plan.samples_per_code, sampling_freq, interm_freq = 0.0Hz, cn0 = 45)
 
     # Integer (not vector) argument hits the single-PRN acquire! overload
     result = acquire!(plan, ComplexF32.(samples), prn; interm_freq = 0.0Hz)
@@ -262,7 +262,7 @@ end
 
     plan = plan_acquire(signal, sampling_freq, [1, 2]; fft_flag = FFTL.ESTIMATE)
     (; samples) = generate_test_signal(signal, 1;
-        num_samples = plan.samples_per_code, sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
+        num_samples = plan.samples_per_code, sampling_freq, interm_freq = 0.0Hz, cn0 = 45)
     results = acquire!(plan, ComplexF32.(samples), [1, 2]; interm_freq = 0.0Hz)
 
     # Single-result show: uses the (io, MIME"text/plain", AcquisitionResults) method
@@ -304,7 +304,7 @@ end
 
     (; samples) = generate_test_signal(signal, prn;
         num_samples = 40 * plan.samples_per_code,
-        sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
+        sampling_freq, interm_freq = 0.0Hz, cn0 = 45)
 
     result = only(acquire!(plan, ComplexF32.(samples), [prn]; interm_freq = 0.0Hz))
     @test result isa AcquisitionResults
@@ -333,7 +333,7 @@ end
     (; samples) = generate_test_signal(signal, prn;
         num_samples = 10 * plan.samples_per_code,
         carrier_doppler = 1500Hz, code_phase = 100.0,
-        sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
+        sampling_freq, interm_freq = 0.0Hz, cn0 = 45)
 
     result = only(acquire!(plan, ComplexF32.(samples), [prn]; interm_freq = 0.0Hz))
     @test is_detected(result)
@@ -345,7 +345,7 @@ end
 
     out = generate_test_signal(signal, 1;
         num_samples = 4096, sampling_freq = 4e6Hz,
-        unit_noise_power = true, CN0 = 45)
+        unit_noise_power = true, cn0 = 45)
     @test out.samples isa Vector{ComplexF64}
     @test length(out.samples) == 4096
     # Sanity: signal-plus-noise is finite and non-zero
@@ -361,7 +361,7 @@ end
     prn = 4
     (; samples) = generate_test_signal(signal, prn;
         num_samples = 2048, carrier_doppler = 750Hz, code_phase = 512.0,
-        sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 21)
+        sampling_freq, interm_freq = 0.0Hz, cn0 = 45, seed = 21)
 
     plan_gm = plan_acquire(signal, sampling_freq, [prn];
         noise_estimator = GlobalMeanNoiseEstimator(), fft_flag = FFTL.ESTIMATE)
@@ -402,7 +402,7 @@ end
         prn = 2
         (; samples) = generate_test_signal(signal, prn;
             num_samples = 2048, carrier_doppler = 250Hz, code_phase = 300.7,
-            sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 5)
+            sampling_freq, interm_freq = 0.0Hz, cn0 = 45, seed = 5)
         plan = plan_acquire(signal, sampling_freq, [prn]; fft_flag = FFTL.ESTIMATE)
         r_nostore = acquire!(plan, ComplexF32.(samples), prn;
             interm_freq = 0.0Hz, subsample_interpolation = true)
@@ -420,7 +420,7 @@ end
         prn = 1
         (; samples) = generate_test_signal(signal, prn;
             num_samples = 10 * 10240, carrier_doppler = 850Hz, code_phase = 5115.3,
-            sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 6)
+            sampling_freq, interm_freq = 0.0Hz, cn0 = 45, seed = 6)
         plan = plan_acquire(signal, sampling_freq, [prn];
             num_coherently_integrated_code_periods = 10, fft_flag = FFTL.ESTIMATE)
         @test plan.num_secondary_rotations == 10   # rotation search active
@@ -446,7 +446,7 @@ end
     true_cp = 700.4
     (; samples) = generate_test_signal(signal, prn;
         num_samples = 4 * 2048, carrier_doppler = 500Hz, code_phase = true_cp,
-        sampling_freq, interm_freq = 0.0Hz, CN0 = 42, seed = 8)
+        sampling_freq, interm_freq = 0.0Hz, cn0 = 42, seed = 8)
     plan = plan_acquire(signal, sampling_freq, [prn];
         num_noncoherent_integrations = 4, fft_flag = FFTL.ESTIMATE)
     result = acquire!(plan, ComplexF32.(samples), prn;
@@ -497,7 +497,7 @@ end
                 code_phase = (k - 0.5) * 1023 / 8 + 0.137,
                 sampling_freq,
                 interm_freq = 0.0Hz,
-                CN0 = true_cn0,
+                cn0 = true_cn0,
             )
             plan = plan_acquire(
                 signal, sampling_freq, [prn];
@@ -507,7 +507,7 @@ end
             )
             res = acquire!(plan, samples, prn; interm_freq = 0.0Hz,
                            subsample_interpolation = true)
-            is_detected(res) && push!(estimates, res.CN0)
+            is_detected(res) && push!(estimates, res.cn0)
         end
         @test length(estimates) >= 5
         sum(estimates) / length(estimates)
@@ -549,13 +549,13 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
     (; samples, code_phase, interm_freq) = generate_test_signal(
         signal, 1;
         num_samples = 2048, carrier_doppler = 1000Hz, code_phase = 200.0,
-        sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 21,
+        sampling_freq, interm_freq = 0.0Hz, cn0 = 45, seed = 21,
     )
     plan = plan_acquire(signal, sampling_freq, prns; fft_flag = FFTL.ESTIMATE)
 
     # Reference: the same search through the batch API.
     batch = acquire!(plan, samples, prns; interm_freq)
-    reference = [(r.prn, r.code_phase, r.CN0, r.peak_to_noise_ratio) for r in batch]
+    reference = [(r.prn, r.code_phase, r.cn0, r.peak_to_noise_ratio) for r in batch]
 
     @testset "streams every result, and the same ones the batch API returns" begin
         streamed = collect(acquire_stream!(plan, samples, prns; interm_freq))
@@ -566,7 +566,7 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
         # publish, the invariant the concurrently publishing chunks have to keep.
         @test sort(getfield.(streamed, :prn)) == prns
         for r in streamed
-            @test (r.prn, r.code_phase, r.CN0, r.peak_to_noise_ratio) ==
+            @test (r.prn, r.code_phase, r.cn0, r.peak_to_noise_ratio) ==
                 reference[findfirst(==(r.prn), prns)]
         end
         @test is_detected(only(filter(r -> r.prn == 1, streamed)))
@@ -615,7 +615,7 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
             num_noncoherent_integrations = 2, fft_flag = FFTL.ESTIMATE)
         long_signal = generate_test_signal(signal, 1;
             num_samples = 2 * 2048, carrier_doppler = 800Hz, code_phase = 150.0,
-            sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 13).samples
+            sampling_freq, interm_freq = 0.0Hz, cn0 = 45, seed = 13).samples
 
         streamed = collect(acquire_stream!(plan_ms, ComplexF32.(long_signal), prns;
             interm_freq = 0.0Hz))
@@ -679,16 +679,16 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
             segment = generate_test_signal(
                 signal, prn;
                 num_samples = 2048, carrier_doppler = doppler, code_phase = expected_code_phase,
-                sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 21,
+                sampling_freq, interm_freq = 0.0Hz, cn0 = 45, seed = 21,
             ).samples
             expected = acquire!(plan, segment, prns; interm_freq)
-            expected_fields = [(r.prn, r.code_phase, r.CN0) for r in expected]
+            expected_fields = [(r.prn, r.code_phase, r.cn0) for r in expected]
 
             streamed = collect(acquire_stream!(plan, segment, prns; interm_freq))
 
             @test sort(getfield.(streamed, :prn)) == prns
             for r in streamed
-                @test (r.prn, r.code_phase, r.CN0) ==
+                @test (r.prn, r.code_phase, r.cn0) ==
                     expected_fields[findfirst(==(r.prn), prns)]
             end
             @test is_detected(only(filter(r -> r.prn == prn, streamed)))
@@ -710,7 +710,7 @@ Base.getindex(::FaultySignal, ::Int) = error("faulty signal")
         other = generate_test_signal(
             signal, 5;
             num_samples = 2048, carrier_doppler = -500Hz, code_phase = 700.0,
-            sampling_freq, interm_freq = 0.0Hz, CN0 = 45, seed = 21,
+            sampling_freq, interm_freq = 0.0Hz, cn0 = 45, seed = 21,
         ).samples
 
         first_channel = acquire_stream!(plan, samples, prns; interm_freq)

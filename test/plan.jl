@@ -269,7 +269,7 @@ end
                 code_phase    = code_phase,
                 sampling_freq = sampling_freq,
                 interm_freq   = 0.0Hz,
-                CN0           = 45,
+                cn0           = 45,
                 seed          = 42)
 
             results = acquire(signal, ComplexF32.(samples), sampling_freq, [prn];
@@ -395,7 +395,7 @@ end
 
     (; samples) = generate_test_signal(signal, 1;
         num_samples = plan.samples_per_code, sampling_freq = sampling_freq,
-        interm_freq = 0.0Hz, CN0 = 45)
+        interm_freq = 0.0Hz, cn0 = 45)
     sig = ComplexF32.(samples)
 
     # store_power_bins=false leaves the slots empty.
@@ -531,7 +531,7 @@ end
     (; samples, carrier_doppler, code_phase) = generate_test_signal(signal, prns[1];
         num_samples = plan.samples_per_code,
         carrier_doppler = 1234Hz, code_phase = 100.0,
-        sampling_freq, interm_freq = 0.0Hz, CN0 = 45)
+        sampling_freq, interm_freq = 0.0Hz, cn0 = 45)
     results = acquire!(plan, samples, prns; interm_freq = 0.0Hz)
     @test length(results) == length(prns)
     # PRN 1 is the planted signal; it should acquire to the right cell.
@@ -618,7 +618,7 @@ end
         b = acquire!(preempt, samples, prns; subsample_interpolation = true)
         @test all(x.carrier_doppler == y.carrier_doppler for (x, y) in zip(a, b))
         @test all(x.code_phase == y.code_phase for (x, y) in zip(a, b))
-        @test all(x.CN0 == y.CN0 for (x, y) in zip(a, b))
+        @test all(x.cn0 == y.cn0 for (x, y) in zip(a, b))
         @test all(x.noise_power == y.noise_power for (x, y) in zip(a, b))
         @test all(x.peak_to_noise_ratio == y.peak_to_noise_ratio for (x, y) in zip(a, b))
         # Slots are still released even though the block-level yield fires while

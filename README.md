@@ -98,7 +98,7 @@ plan = plan_acquire(signal, sampling_freq, [1];
 
 # 8 × 10 ms of samples at the default 15 MHz
 long_samples = Acquisition.generate_test_signal(signal, 1;
-    num_samples = 8 * 10 * 15_000, sampling_freq, CN0 = 30).samples
+    num_samples = 8 * 10 * 15_000, sampling_freq, cn0 = 30).samples
 
 results = acquire!(plan, long_samples, [1])
 ```
