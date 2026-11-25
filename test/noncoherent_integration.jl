@@ -725,16 +725,16 @@ end
                 num_samples = plan.num_coherently_integrated_code_periods * plan.samples_per_code,
                 carrier_doppler = 1300Hz, code_phase = 210.7,
                 sampling_frequency = plan.sampling_frequency, intermediate_frequency = 0.0Hz, cn0 = 45, seed = 11)
-            plan.sig_buf .= ComplexF32.(samples)
+            plan.downconverted_samples .= ComplexF32.(samples)
             # One segment's slice of the plan's all-segment signal-FFT cache.
             seg_ffts = Acquisition._signal_block_ffts_for_step(plan, 1, 1)
-            Acquisition._precompute_signal_block_ffts!(seg_ffts, plan.sig_buf,
+            Acquisition._precompute_signal_block_ffts!(seg_ffts, plan.downconverted_samples,
                 plan.samples_per_code, plan.num_blocks, plan.block_size,
                 plan.num_coherently_integrated_code_periods, scratch.double_block_buf,
                 plan.double_block_fft_plan)
 
             # Production: tiled driver.
-            nim_tiled = zeros(Float32, ndop, plan.samples_per_code_eff)
+            nim_tiled = zeros(Float32, ndop, plan.num_code_phase_bins)
             Acquisition._accumulate_prn_step_tiled!(nim_tiled, seg_ffts, plan, scratch, prn, step_idx, 1)
 
             # Reference: full CIM + materialised dispatcher.
@@ -743,7 +743,7 @@ end
                 plan.prn_conj_ffts[prn], plan.samples_per_code, plan.num_blocks,
                 plan.block_size, plan.num_coherently_integrated_code_periods,
                 scratch.corr_buf, scratch.double_block_bfft_plan)
-            nim_ref = zeros(Float32, ndop, plan.samples_per_code_eff)
+            nim_ref = zeros(Float32, ndop, plan.num_code_phase_bins)
             Acquisition._accumulate_noncoherent_integration_step!(nim_ref, cim, plan,
                 scratch, prn, step_idx)
 
@@ -792,13 +792,13 @@ end
                 num_samples = ncoh * plan.samples_per_code,
                 carrier_doppler = 1270Hz, code_phase = 321.4,
                 sampling_frequency = fs, intermediate_frequency = 0.0Hz, cn0 = 45, seed = 3)
-            plan.sig_buf .= ComplexF32.(samples)
-            plan.sig_buf[end ÷ 3:end] .*= -1   # a bit transition
-            Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, plan.sig_buf,
+            plan.downconverted_samples .= ComplexF32.(samples)
+            plan.downconverted_samples[end ÷ 3:end] .*= -1   # a bit transition
+            Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, plan.downconverted_samples,
                 plan.samples_per_code, plan.num_blocks, plan.block_size, ncoh,
                 scratch.double_block_buf, plan.double_block_fft_plan)
 
-            stored = zeros(Float32, ndop, plan.samples_per_code_eff)
+            stored = zeros(Float32, ndop, plan.num_code_phase_bins)
             peak_power, peak_row, peak_col =
                 Acquisition._acquire_prn_streamed!(plan, scratch, prn, stored)
 
@@ -806,7 +806,7 @@ end
             Acquisition._build_coherent_integration_matrix!(cim, plan.signal_block_ffts,
                 plan.prn_conj_ffts[prn], plan.samples_per_code, plan.num_blocks,
                 plan.block_size, ncoh, scratch.corr_buf, scratch.double_block_bfft_plan)
-            ref = zeros(Float32, ndop, plan.samples_per_code_eff)
+            ref = zeros(Float32, ndop, plan.num_code_phase_bins)
             Acquisition._accumulate_noncoherent_integration_step!(ref, cim, plan, scratch, prn, 0)
 
             @test maximum(abs.(stored .- ref)) <= 1e-5 * maximum(ref)
@@ -817,7 +817,7 @@ end
                 num_blocks = plan.num_blocks
                 tiled = Acquisition.tile_phase_patterns(Acquisition.combined_phase_patterns(
                     plan.sign_patterns_by_prn[prn], ncoh), ndop)
-                independent = zeros(Float32, ndop, plan.samples_per_code_eff)
+                independent = zeros(Float32, ndop, plan.num_code_phase_bins)
                 Acquisition._sign_search_step_with_rotations!(independent, cim,
                     zeros(ComplexF32, ndop), zeros(Float32, ndop), zeros(Float32, ndop),
                     scratch.col_fft_plan, plan.samples_per_code, ndop, ncoh, 1, num_blocks,
@@ -833,7 +833,7 @@ end
             # The column recompute (subsample interpolation without stored bins)
             # runs the same transform, so it reproduces stored cells exactly.
             col = zeros(Float32, ndop)
-            for c in (peak_col, 1, plan.samples_per_code_eff)
+            for c in (peak_col, 1, plan.num_code_phase_bins)
                 Acquisition._recompute_column_power!(col, plan, scratch, prn, c, 1)
                 @test col == stored[:, c]
             end
@@ -860,12 +860,12 @@ end
                 num_samples = ncoh * plan.samples_per_code,
                 carrier_doppler = 1270Hz, code_phase = 321.4,
                 sampling_frequency = 2.048e6Hz, intermediate_frequency = 0.0Hz, cn0 = 45, seed = 3)
-            plan.sig_buf .= ComplexF32.(samples)
-            Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, plan.sig_buf,
+            plan.downconverted_samples .= ComplexF32.(samples)
+            Acquisition._precompute_signal_block_ffts!(plan.signal_block_ffts, plan.downconverted_samples,
                 plan.samples_per_code, plan.num_blocks, plan.block_size, ncoh,
                 scratch.double_block_buf, plan.double_block_fft_plan)
 
-            stored = zeros(Float32, ndop, plan.samples_per_code_eff)
+            stored = zeros(Float32, ndop, plan.num_code_phase_bins)
             peak_power, peak_row, peak_col =
                 Acquisition._acquire_prn_streamed!(plan, scratch, prn, stored)
 
@@ -873,7 +873,7 @@ end
             Acquisition._build_coherent_integration_matrix!(cim, plan.signal_block_ffts,
                 plan.prn_conj_ffts[prn], plan.samples_per_code, plan.num_blocks,
                 plan.block_size, ncoh, scratch.corr_buf, scratch.double_block_bfft_plan)
-            ref = zeros(Float32, ndop, plan.samples_per_code_eff)
+            ref = zeros(Float32, ndop, plan.num_code_phase_bins)
             Acquisition._accumulate_noncoherent_integration_step!(ref, cim, plan, scratch, prn, 0)
 
             @test maximum(abs.(stored .- ref)) <= 1e-5 * maximum(ref)

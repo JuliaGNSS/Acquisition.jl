@@ -309,11 +309,11 @@ end
         @test !hasfield(typeof(plan), f)
     end
 
-    # `sig_buf` deliberately lives ON the plan as a single instance: it is
+    # `downconverted_samples` deliberately lives ON the plan as a single instance: it is
     # filled before the per-PRN parallel loop, so a per-thread copy would be
     # pure waste ((nthreads-1) × segment_length × 8 bytes).
-    @test hasfield(typeof(plan), :sig_buf)
-    @test !hasfield(Acquisition.AcquisitionScratch, :sig_buf)
+    @test hasfield(typeof(plan), :downconverted_samples)
+    @test !hasfield(Acquisition.AcquisitionScratch, :downconverted_samples)
 
     # _default_scratch names the "thread 1 is the ambient scratch" convention.
     scratch = Acquisition._default_scratch(plan)
@@ -326,7 +326,7 @@ end
 
 @testset "per-thread scratch never scales with samples_per_code (tiled pipeline)" begin
     # THE memory guarantee of the tiled pipeline: no per-thread buffer is
-    # proportional to samples_per_code (or samples_per_code_eff). The largest
+    # proportional to samples_per_code (or num_code_phase_bins). The largest
     # scratch member is the (num_doppler_bins × block_size) coherent tile —
     # num_blocks× smaller than the coherent matrix it replaced. With N threads
     # the old layout multiplied full surfaces by N; this lock keeps that from
@@ -378,10 +378,10 @@ end
     seq_gm_plan = plan_acquire(GPSL1CA(), 5e6Hz, [1];
         noise_estimator = GlobalMeanNoiseEstimator())
     @test length(Acquisition._default_scratch(seq_gm_plan).col_sums_buf) ==
-        seq_gm_plan.samples_per_code_eff
+        seq_gm_plan.num_code_phase_bins
     multi_plan = plan_acquire(GPSL1CA(), 5e6Hz, [1]; num_noncoherent_integrations = 2)
     @test length(Acquisition._default_scratch(multi_plan).col_sums_buf) ==
-        multi_plan.samples_per_code_eff
+        multi_plan.num_code_phase_bins
 end
 
 @testset "result_buffers are lazy — nothing unless store_power_bins=true" begin
@@ -491,7 +491,7 @@ end
     @test length(multi_plan.thread_scratch) <= length(prns)
     for t_scratch in multi_plan.thread_scratch
         @test size(t_scratch.noncoherent_accumulator) ==
-            (length(multi_plan.doppler_bins), multi_plan.samples_per_code_eff)
+            (length(multi_plan.doppler_bins), multi_plan.num_code_phase_bins)
     end
     @test isempty(multi_scratch.row_sums_buf)
     # The all-segment signal-FFT cache is the multistep trade: 16 bytes per

@@ -82,6 +82,6 @@ function _tune_acquisition_plan(plan::AcquisitionPlan, prns, intermediate_freque
     measure_pair(a, b) = _measure_plan_pair(a, b, samples, prns, intermediate_frequency)
     best = _select_measured_plan(plan, candidates, build, measure_pair)
     fill!(best.signal_block_ffts, 0f0)
-    fill!(best.sig_buf, 0f0)
+    fill!(best.downconverted_samples, 0f0)
     return best
 end

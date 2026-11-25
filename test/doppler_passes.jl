@@ -26,7 +26,7 @@ function _reference_surface_error(plan, prn, stored)
     Acquisition._build_coherent_integration_matrix!(cim, plan.signal_block_ffts,
         plan.prn_conj_ffts[prn], plan.samples_per_code, plan.num_blocks,
         plan.block_size, ncoh, scratch.corr_buf, scratch.double_block_bfft_plan)
-    ref = zeros(Float32, ndop, plan.samples_per_code_eff)
+    ref = zeros(Float32, ndop, plan.num_code_phase_bins)
     Acquisition._accumulate_noncoherent_integration_step!(ref, cim, plan, scratch, prn, 0)
     return maximum(abs.(stored .- ref)) / maximum(ref)
 end

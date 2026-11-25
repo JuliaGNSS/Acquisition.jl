@@ -383,7 +383,7 @@ end
     # actually wrong is orders of magnitude away.
     res_stored = acquire!(plan_gm, ComplexF32.(samples), prn;
         intermediate_frequency = 0.0Hz, store_power_bins = true)
-    col_sums = zeros(Float32, plan_gm.samples_per_code_eff)
+    col_sums = zeros(Float32, plan_gm.num_code_phase_bins)
     sp, np, _, _ = Acquisition.est_signal_noise_power(res_stored.power_bins,
         ustrip(Hz, sampling_frequency), ustrip(Hz, get_chip_rate(signal)),
         col_sums, GlobalMeanNoiseEstimator())
@@ -455,7 +455,7 @@ end
     @test result.code_phase ≈ true_cp atol = 1.0
     @test result.power_bins isa Matrix{Float32}
     @test size(result.power_bins) ==
-        (length(plan.doppler_bins), plan.samples_per_code_eff)
+        (length(plan.doppler_bins), plan.num_code_phase_bins)
     # The stored surface is reproducible: a second identical run stores the
     # same accumulated power.
     result2 = acquire!(plan, ComplexF32.(samples), prn;

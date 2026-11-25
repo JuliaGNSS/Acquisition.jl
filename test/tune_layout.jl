@@ -45,11 +45,11 @@ end
     plan = plan_acquire(signal, 2.048e6Hz, [1, 2]; kwargs..., tune = true,
         tuning_prns = [1], tuning_intermediate_frequency = 243Hz)
     @test rand() == expected_random
-    @test plan.avail_prns == [1, 2]
+    @test plan.prns == [1, 2]
     @test !plan.in_use[]
     @test length(plan.scratch_free) == length(plan.thread_scratch)
     @test all(iszero, plan.signal_block_ffts)
-    @test all(iszero, plan.sig_buf)
+    @test all(iszero, plan.downconverted_samples)
     @test first(plan.doppler_bins) <= -10000Hz
     @test last(plan.doppler_bins) >= 10000Hz
     (; samples) = generate_test_signal(signal, 2; sampling_frequency = 2.048e6Hz,

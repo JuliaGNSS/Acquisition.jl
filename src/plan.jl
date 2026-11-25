@@ -7,7 +7,7 @@
 # The FM-DBZP pipeline is tiled: the coherent correlation surface is produced one
 # `(pass_fft_bins, block_size)` column-block tile at a time (per Doppler pass)
 # (`_build_coherent_tile!`) and reduced immediately. The full
-# `(num_doppler_bins, samples_per_code_eff)` power surface is materialised only
+# `(num_doppler_bins, num_code_phase_bins)` power surface is materialised only
 # where it is genuinely needed: one `noncoherent_accumulator` per scratch slot
 # at `num_noncoherent_integrations > 1` (accumulation across signal segments
 # requires the surface; the PRN-outer loop bounds the count by the concurrency,
@@ -42,7 +42,7 @@ struct AcquisitionScratch{P2,P3,P4}
     col_max_row_buf::Matrix{Int}
     col_buf::Vector{ComplexF32}                     # length pass_fft_bins
     # Multistep (N_nc > 1) power accumulator: (num_doppler_bins,
-    # samples_per_code_eff) over the whole stitched Doppler grid. The multistep PRN loop is PRN-outer — one claimed
+    # num_code_phase_bins) over the whole stitched Doppler grid. The multistep PRN loop is PRN-outer — one claimed
     # scratch slot carries one PRN through ALL accumulation steps and extracts
     # its result before moving on — so `min(nthreads, num_cores, num_prns)`
     # accumulators replace the former one-per-PRN matrices (a 32-PRN search on
@@ -77,7 +77,7 @@ struct AcquisitionScratch{P2,P3,P4}
     # running segment signs of that enumeration.
     segment_tiles::Vector{Matrix{ComplexF32}}
     segment_signs::Vector{Float32}
-    # length samples_per_code_eff when per-column sums are consumed — multistep
+    # length num_code_phase_bins when per-column sums are consumed — multistep
     # extraction via `est_signal_noise_power`, or the GlobalMean noise estimator
     # on the streamed path. length 0 at N_nc == 1 with the (default) OppositeRow
     # estimator, where the streaming reduction needs no column sums at all.
@@ -106,7 +106,7 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     # cell instead of being collapsed by a cell-wise max. Equals `samples_per_code`
     # otherwise. Result extraction decodes peak col as
     # `(cp_within, rotation_idx) = ((col-1) % samples_per_code + 1, (col-1) ÷ samples_per_code)`.
-    samples_per_code_eff::Int
+    num_code_phase_bins::Int
     num_blocks::Int             # paper N_step — blocks per code period (power of 2)
     block_size::Int             # paper B_size — samples per block = samples_per_code ÷ num_blocks
     num_coherently_integrated_code_periods::Int       # paper N     — total code periods per coherent integration
@@ -161,13 +161,13 @@ struct AcquisitionPlan{S<:AbstractGNSSSignal,DS,P1,P2,P3,P4,R,E<:AbstractNoiseEs
     # accumulation step BEFORE the per-PRN parallel loop, so a single instance
     # suffices — keeping it out of the per-thread scratch pool saves
     # (nthreads-1) × segment_length × 8 bytes.
-    sig_buf::Vector{ComplexF32}
+    downconverted_samples::Vector{ComplexF32}
     fftshift_perm::Vector{Int}               # length pass_fft_bins — pre-computed fftshift row permutation
     # Per PRN: holds a copy of power_bins when the caller of `acquire!` passes
     # store_power_bins=true. Initialised to `nothing` and allocated on the first
     # opt-in call per PRN; subsequent calls reuse the same matrix in-place.
     result_buffers::Vector{Union{Nothing,Matrix{Float32}}}
-    avail_prns::Vector{Int}
+    prns::Vector{Int}
     # Hard-capped per-thread scratch pool. The per-PRN work runs as
     # `min(nthreads, num_cores)` spawned chunk tasks, so `thread_scratch` holds
     # exactly that many scratches and a chunk claims a free slot for the duration
@@ -813,7 +813,7 @@ function _plan_acquire(
     # (num_doppler_bins × samples_per_code × num_rotations), recovering LongL5I-
     # equivalent CFAR statistics. Result extraction decodes peak col back into
     # `(cp_within, rotation_idx)`.
-    samples_per_code_eff = rotation_search_active ?
+    num_code_phase_bins = rotation_search_active ?
         samples_per_code * num_secondary_rotations : samples_per_code
 
     sequential_prn_mode = num_noncoherent_integrations == 1
@@ -844,13 +844,13 @@ function _plan_acquire(
     # `min(nthreads, num_cores, num_prns)` surfaces bound the footprint instead
     # of one per PRN. 0×0 at N_nc == 1 (streamed, no surface).
     accumulator_rows = sequential_prn_mode ? 0 : num_doppler_bins
-    accumulator_cols = sequential_prn_mode ? 0 : samples_per_code_eff
+    accumulator_cols = sequential_prn_mode ? 0 : num_code_phase_bins
     # Column sums are consumed by multistep extraction (`est_signal_noise_power`
     # always fills them) and by the GlobalMean estimator on the streamed path.
     # At N_nc == 1 with the default OppositeRow estimator nothing reads them,
-    # so the (samples_per_code_eff-long) buffer is dropped entirely.
+    # so the (num_code_phase_bins-long) buffer is dropped entirely.
     col_sums_len = (!sequential_prn_mode || noise_estimator isa GlobalMeanNoiseEstimator) ?
-        samples_per_code_eff : 0
+        num_code_phase_bins : 0
 
     # The multistep path folds code-drift correction into the per-column
     # destination scatter; shifts are pre-filled once per accumulation step.
@@ -908,9 +908,9 @@ function _plan_acquire(
 
     # Single downconversion staging buffer — filled once per accumulation step
     # before the per-PRN parallel loop, so one instance serves every thread.
-    sig_buf = zeros(ComplexF32, segment_length)
+    downconverted_samples = zeros(ComplexF32, segment_length)
 
-    avail_prns_vec = collect(Int, prns)
+    prns_vec = collect(Int, prns)
 
     # Pre-allocate concrete-typed results buffer to avoid boxing allocations in acquire!
     dummy_result = AcquisitionResults(
@@ -957,7 +957,7 @@ function _plan_acquire(
 
     plan = AcquisitionPlan(
         signal, convert(typeof(1.0Hz), sampling_frequency),
-        samples_per_code, samples_per_code_eff, num_blocks, block_size, num_coherently_integrated_code_periods, num_bits, bit_edge_search_steps, num_noncoherent_integrations,
+        samples_per_code, num_code_phase_bins, num_blocks, block_size, num_coherently_integrated_code_periods, num_bits, bit_edge_search_steps, num_noncoherent_integrations,
         prn_conj_ffts,
         double_block_fft_plan,
         doppler_bins,
@@ -969,10 +969,10 @@ function _plan_acquire(
         code_doppler_shifts_per_period,
         code_doppler_phasors,
         signal_block_ffts,
-        sig_buf,
+        downconverted_samples,
         fftshift_perm,
         result_buffers,
-        avail_prns_vec,
+        prns_vec,
         thread_scratch,
         scratch_free,
         scratch_lock,
@@ -1098,7 +1098,7 @@ end
 # measurement tracks the configured search path.
 function _time_prn_pass_ns(plan::AcquisitionPlan)
     scratch = _default_scratch(plan)
-    prn = first(plan.avail_prns)
+    prn = first(plan.prns)
     run_one() =
         if plan.num_noncoherent_integrations == 1
             _acquire_prn_streamed!(plan, scratch, prn, nothing)

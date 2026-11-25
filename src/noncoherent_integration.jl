@@ -319,7 +319,7 @@ Circularly shift each row `w` of `noncoherent_integration_buf` by `S_CD[w]` samp
 code-phase walk-off caused by carrier Doppler during coherent integration.
 
 `accumulation_step_index` is the 0-based incoherent step index (0 → no shift).
-`S_CD[w] = round(doppler_hz[w] * accumulation_step_index * T_coherent * sampling_frequency_hz / carrier_freq_hz)`
+`S_CD[w] = round(doppler_hz[w] * accumulation_step_index * T_coherent * sampling_frequency_hz / center_frequency_hz)`
 
 The buffer is in **sorted-Doppler row order**, so `doppler_bins[w]` directly
 gives the frequency for row `w`.
@@ -334,9 +334,9 @@ function _apply_code_drift!(noncoherent_integration_buf::Matrix{Float32}, plan::
     accumulation_step_index == 0 && return  # no drift on first step
     num_doppler_bins = size(noncoherent_integration_buf, 1)
     sampling_frequency_hz = ustrip(Hz, plan.sampling_frequency)
-    carrier_freq_hz = ustrip(Hz, get_center_frequency(plan.signal))
+    center_frequency_hz = ustrip(Hz, get_center_frequency(plan.signal))
     coherent_duration_s = plan.num_coherently_integrated_code_periods * plan.samples_per_code / sampling_frequency_hz
-    # On the rotation path the cp axis is `samples_per_code_eff` =
+    # On the rotation path the cp axis is `num_code_phase_bins` =
     # `samples_per_code * num_secondary_rotations` wide, with each rotation
     # hypothesis occupying its own `samples_per_code`-wide block. Drift is
     # phase-walk of the primary code within ONE rotation hypothesis, so the
@@ -350,7 +350,7 @@ function _apply_code_drift!(noncoherent_integration_buf::Matrix{Float32}, plan::
     row_shift_buf = zeros(Float32, samples_per_code)
     for doppler_row in 1:num_doppler_bins
         doppler_hz = ustrip(Hz, plan.doppler_bins[doppler_row])
-        shift = round(Int, doppler_hz * accumulation_step_index * coherent_duration_s * sampling_frequency_hz / carrier_freq_hz)
+        shift = round(Int, doppler_hz * accumulation_step_index * coherent_duration_s * sampling_frequency_hz / center_frequency_hz)
         shift == 0 && continue
         for r in 0:num_rotation_blocks-1
             base = r * samples_per_code
@@ -452,13 +452,13 @@ function _fill_code_drift_shifts!(shifts::Vector{Int}, plan::AcquisitionPlan,
         return false
     end
     sampling_frequency_hz = ustrip(Hz, plan.sampling_frequency)
-    carrier_freq_hz = ustrip(Hz, get_center_frequency(plan.signal))
+    center_frequency_hz = ustrip(Hz, get_center_frequency(plan.signal))
     coherent_duration_s = plan.num_coherently_integrated_code_periods * plan.samples_per_code / sampling_frequency_hz
     samples_per_code = plan.samples_per_code
     has_drift = false
     @inbounds for r in 1:length(shifts)
         doppler_hz = ustrip(Hz, plan.doppler_bins[rows.dest_offset + r])
-        raw = round(Int, doppler_hz * accumulation_step_index * coherent_duration_s * sampling_frequency_hz / carrier_freq_hz)
+        raw = round(Int, doppler_hz * accumulation_step_index * coherent_duration_s * sampling_frequency_hz / center_frequency_hz)
         if raw != 0
             has_drift = true
         end
@@ -925,7 +925,7 @@ end
 # thread 1's scratch (see `_default_scratch`) and uses the plan's first avail PRN.
 _accumulate_noncoherent_integration_step!(nim, cim, plan::AcquisitionPlan, accumulation_step_index::Int) =
     _accumulate_noncoherent_integration_step!(nim, cim, plan, _default_scratch(plan),
-        first(plan.avail_prns), accumulation_step_index)
+        first(plan.prns), accumulation_step_index)
 
 # Transposed-tile counterpart of `_accumulate_fftshifted_power_pilot*!` and
 # `_accumulate_fftshifted_power_drift_pilot*!`: accumulate the power of a

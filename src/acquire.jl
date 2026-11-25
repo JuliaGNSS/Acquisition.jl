@@ -26,21 +26,21 @@ end
 # Fill the signal-block FFT cache for every Doppler pass and accumulation step:
 # pass `k` sees the signal downconverted by `intermediate_frequency + doppler_pass_offsets_hz[k]`,
 # which moves the band its FM-DBZP grid searches to baseband. The downconverted
-# segment lives in the plan's single `sig_buf`; the per-FFT temp comes from
+# segment lives in the plan's single `downconverted_samples`; the per-FFT temp comes from
 # thread 1's scratch slot — `_default_scratch(plan)` names that convention.
 function _fill_signal_block_ffts!(plan::AcquisitionPlan, samples, segment_length,
                                   intermediate_frequency_hz, sampling_frequency_hz)
     main_scratch = _default_scratch(plan)
-    sig_buf = plan.sig_buf
+    downconverted_samples = plan.downconverted_samples
     for pass_idx in 1:plan.num_doppler_passes
         pass_freq_hz = intermediate_frequency_hz + plan.doppler_pass_offsets_hz[pass_idx]
         for step_idx in 1:plan.num_noncoherent_integrations
             seg_start = (step_idx - 1) * segment_length + 1
-            _downconvert!(sig_buf, samples, seg_start, segment_length, pass_freq_hz,
+            _downconvert!(downconverted_samples, samples, seg_start, segment_length, pass_freq_hz,
                 sampling_frequency_hz)
             _precompute_signal_block_ffts!(
                 _signal_block_ffts_for_step(plan, step_idx, pass_idx),
-                sig_buf,
+                downconverted_samples,
                 plan.samples_per_code,
                 plan.num_blocks,
                 plan.block_size,
@@ -68,7 +68,7 @@ pass.
 
   - `plan`: Pre-computed [`AcquisitionPlan`](@ref) (from [`plan_acquire`](@ref))
   - `samples`: Complex baseband signal samples
-  - `prns`: PRN numbers to search (must be a subset of `plan.avail_prns`)
+  - `prns`: PRN numbers to search (must be a subset of `plan.prns`)
 
 # Keyword Arguments
 
@@ -116,8 +116,8 @@ end
 # on another task: validating here, on the caller's task, makes a bad PRN or a too
 # short signal throw at the call site rather than surface later out of the channel.
 function _validate_acquire_inputs(plan::AcquisitionPlan, samples, prns)
-    all(prn -> prn in plan.avail_prns, prns) ||
-        throw(ArgumentError("All requested PRNs must be in plan.avail_prns. Got: $prns, available: $(plan.avail_prns)"))
+    all(prn -> prn in plan.prns, prns) ||
+        throw(ArgumentError("All requested PRNs must be in plan.prns. Got: $prns, available: $(plan.prns)"))
 
     segment_length = plan.num_coherently_integrated_code_periods * plan.samples_per_code
     num_segments = length(samples) ÷ segment_length
@@ -198,7 +198,7 @@ cost to throughput.
   - `plan`: Pre-computed [`AcquisitionPlan`](@ref) (from [`plan_acquire`](@ref))
   - `samples`: Complex baseband signal samples. Read by the search task after this
     function has returned, so it must stay unmodified until the channel closes.
-  - `prns`: PRN numbers to search (must be a subset of `plan.avail_prns`)
+  - `prns`: PRN numbers to search (must be a subset of `plan.prns`)
 
 # Keyword Arguments
 
@@ -378,7 +378,7 @@ function _stop_acquire_stream!(plan::AcquisitionPlan, channel::Channel, search::
     return nothing
 end
 
-# Fill `sig_buf` with one downconverted code segment starting at `seg_start`.
+# Fill `downconverted_samples` with one downconverted code segment starting at `seg_start`.
 #
 # The carrier phasor is advanced by a Float64 recurrence and re-anchored with an
 # exact `sincos` every `_DOWNCONVERT_ANCHOR` samples. That is ~2× cheaper than a
@@ -386,9 +386,9 @@ end
 # per Doppler pass — and more accurate: a Float32 phase `index × step` loses
 # precision as the index grows (0.02 error at a 250 kHz IF over 20k samples),
 # whereas the recurrence stays within ~1e-7 of the exact phasor.
-function _downconvert!(sig_buf, samples, seg_start, segment_length, intermediate_frequency_hz, sampling_frequency_hz)
+function _downconvert!(downconverted_samples, samples, seg_start, segment_length, intermediate_frequency_hz, sampling_frequency_hz)
     if iszero(intermediate_frequency_hz)
-        sig_buf .= ComplexF32.(view(samples, seg_start:seg_start + segment_length - 1))
+        downconverted_samples .= ComplexF32.(view(samples, seg_start:seg_start + segment_length - 1))
     else
         phase_step = -2π * intermediate_frequency_hz / sampling_frequency_hz
         s1, c1 = sincos(phase_step)
@@ -397,7 +397,7 @@ function _downconvert!(sig_buf, samples, seg_start, segment_length, intermediate
             s0, c0 = sincos(phase_step * (seg_start - 1 + chunk_start))
             phasor = ComplexF64(c0, s0)
             for sample_idx in chunk_start+1:min(chunk_start + _DOWNCONVERT_ANCHOR, segment_length)
-                sig_buf[sample_idx] =
+                downconverted_samples[sample_idx] =
                     ComplexF32(ComplexF64(samples[seg_start + sample_idx - 1]) * phasor)
                 phasor *= rotation
             end
@@ -469,7 +469,7 @@ end
 #
 # The LAST chunk runs inline on the calling task, as `@batch per=core` did with
 # the calling thread. That is not just a saved spawn: the caller has, just
-# before this, filled `sig_buf` and the signal-block FFT cache, so running a
+# before this, filled `downconverted_samples` and the signal-block FFT cache, so running a
 # chunk on it keeps that cache hot in the same core. Handing every chunk to
 # another thread instead costs ~10% on single-PRN calls, growing with the cache
 # (2 ms on a 20 ms coherent acquire! at 5 MHz), because the correlation then
@@ -609,7 +609,7 @@ function _acquire_one_multistep!(plan, results, prns, result_idx, samples,
         intermediate_frequency_hz, sampling_frequency_hz, chip_rate_hz, code_length, code_period,
         num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
     prn = @inbounds prns[result_idx]
-    prn_idx = findfirst(==(prn), plan.avail_prns)
+    prn_idx = findfirst(==(prn), plan.prns)
     scratch, slot = _claim_scratch!(plan)
     try
         accumulator = scratch.noncoherent_accumulator
@@ -633,7 +633,7 @@ end
 # Sequential path used when num_noncoherent_integrations == 1: per PRN, the
 # tiled build+reduce streams the power cells straight into the result
 # statistics (global peak, per-row sums for the noise estimate) — the
-# (num_doppler_bins × samples_per_code_eff) power surface is only materialised
+# (num_doppler_bins × num_code_phase_bins) power surface is only materialised
 # into the per-PRN result buffer when the caller requests it via
 # `store_power_bins = true`.
 function _acquire_sequential!(plan, samples, prns, segment_length, intermediate_frequency_hz,
@@ -663,7 +663,7 @@ function _acquire_one_sequential!(plan, results, prns, result_idx, samples,
         intermediate_frequency_hz, sampling_frequency_hz, chip_rate_hz, code_length, code_period,
         num_doppler_bins, doppler_step, subsample_interpolation, store_power_bins)
     prn = @inbounds prns[result_idx]
-    prn_idx = findfirst(==(prn), plan.avail_prns)
+    prn_idx = findfirst(==(prn), plan.prns)
     scratch, slot = _claim_scratch!(plan)
     try
         store_buf = store_power_bins ? _get_result_buffer!(plan, prn_idx) : nothing
@@ -684,12 +684,12 @@ end
 
 # Fetch (allocating on first use) the cached per-PRN power-surface buffer used
 # when the caller opts in via `store_power_bins = true`. This is the ONLY place
-# the full (num_doppler_bins × samples_per_code_eff) surface is materialised on
+# the full (num_doppler_bins × num_code_phase_bins) surface is materialised on
 # the sequential path.
 function _get_result_buffer!(plan::AcquisitionPlan, prn_idx::Int)
     cached = plan.result_buffers[prn_idx]
     buf = cached === nothing ?
-        Matrix{Float32}(undef, length(plan.doppler_bins), plan.samples_per_code_eff) :
+        Matrix{Float32}(undef, length(plan.doppler_bins), plan.num_code_phase_bins) :
         cached
     plan.result_buffers[prn_idx] = buf
     return buf
@@ -1124,7 +1124,7 @@ function _extract_result_streamed!(plan, scratch, prn,
                                    store_buf, samples, intermediate_frequency_hz,
                                    sampling_frequency_hz, chip_rate_hz, code_length, code_period,
                                    num_doppler_bins, doppler_step, subsample_interpolation)
-    num_cp_cols = plan.samples_per_code_eff
+    num_cp_cols = plan.num_code_phase_bins
     noise_power = if plan.noise_estimator isa GlobalMeanNoiseEstimator
         samples_per_chip = floor(Int, sampling_frequency_hz / chip_rate_hz)
         _global_mean_from_colsums(scratch.col_sums_buf, num_doppler_bins,
