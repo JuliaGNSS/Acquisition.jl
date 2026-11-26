@@ -256,6 +256,31 @@ end
     @test result.prn == prn
 end
 
+@testset "AcquisitionResults keyword constructor" begin
+    signal = GPSL1CA()
+    sampling_frequency = 2.048e6Hz
+    (; samples) = generate_test_signal(signal, 1; num_samples = 2048, sampling_frequency,
+        intermediate_frequency = 0.0Hz, cn0 = 45)
+    result = acquire(signal, samples, sampling_frequency, 1; fft_flag = FFTL.ESTIMATE)
+
+    # Every field named reproduces the result `acquire` returned
+    rebuilt = AcquisitionResults(; (name => getfield(result, name) for name in fieldnames(AcquisitionResults))...)
+    @test typeof(rebuilt) == typeof(result)
+    @test all(getfield(rebuilt, name) === getfield(result, name) for name in fieldnames(AcquisitionResults))
+
+    # A fake names only the detection; the search fields default to one hypothesis
+    # over one code period
+    fake = AcquisitionResults(; signal, prn = 5, sampling_frequency = 5e6Hz,
+        carrier_doppler = 100.0Hz, code_phase = 10.0, cn0 = 45.0, noise_power = 1.0,
+        peak_to_noise_ratio = 1000.0, doppler_bins = (-5000.0:1000.0:5000.0)Hz)
+    @test fake.secondary_code_phase === nothing
+    @test fake.power_bins === nothing
+    @test fake.num_noncoherent_integrations == 1
+    @test fake.num_blocks * fake.block_size == 5000
+    @test get_num_cells(fake) == 11 * 5000
+    @test is_detected(fake)
+end
+
 @testset "AcquisitionResults show methods" begin
     signal = GPSL1CA()
     sampling_frequency = 2.048e6Hz

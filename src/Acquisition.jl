@@ -64,6 +64,22 @@ Results from GNSS signal acquisition for a single PRN.
     (bit polarities, bit-edge alignments); `nothing` when each cell is a single
     hypothesis. Used by [`cfar_threshold`](@ref)`(result)` and [`is_detected`](@ref).
 
+# Construction
+
+`acquire` and `acquire!` return these. To build one yourself — a test fake, a
+detection replayed from a log — use the keyword constructor, which keeps working when
+fields are added:
+
+```julia
+AcquisitionResults(; signal, prn, sampling_frequency, carrier_doppler, code_phase,
+    cn0, noise_power, peak_to_noise_ratio, doppler_bins)
+```
+
+The other fields are optional and default to a single-hypothesis search over one code
+period: `secondary_code_phase = nothing`, `num_noncoherent_integrations = 1`,
+`power_bins = nothing`, `num_blocks = 1`, `block_size` = samples per code period,
+`num_secondary_rotations = 1` and `sign_search_null = nothing`.
+
 # Plotting
 
 `AcquisitionResults` can be plotted directly using Plots.jl:
@@ -109,6 +125,37 @@ struct AcquisitionResults{S<:AbstractGNSSSignal,T,D<:AbstractRange}
     # Null distribution of `peak_to_noise_ratio` for a cell that is the max over
     # several sign hypotheses (see `SignSearchNull`); `nothing` for one hypothesis.
     sign_search_null::Union{SignSearchNull,Nothing}
+end
+
+# Keyword constructor for results not produced by `acquire!` (test fakes,
+# replayed detections). The fields that describe the search default to a
+# single-hypothesis search over one code period, so a caller names only what
+# it cares about and keeps compiling when a field is added.
+function AcquisitionResults(;
+    signal::AbstractGNSSSignal,
+    prn::Integer,
+    sampling_frequency,
+    carrier_doppler,
+    code_phase,
+    cn0,
+    noise_power,
+    peak_to_noise_ratio,
+    doppler_bins::AbstractRange,
+    secondary_code_phase = nothing,
+    num_noncoherent_integrations = 1,
+    power_bins = nothing,
+    num_blocks = 1,
+    block_size = ceil(Int,
+        get_code_length(signal) / get_chip_rate(signal) * sampling_frequency) ÷ num_blocks,
+    num_secondary_rotations = 1,
+    sign_search_null = nothing,
+)
+    T = promote_type(typeof(noise_power), typeof(peak_to_noise_ratio))
+    return AcquisitionResults{typeof(signal),T,typeof(doppler_bins)}(
+        signal, prn, sampling_frequency, carrier_doppler, code_phase,
+        secondary_code_phase, cn0, noise_power, peak_to_noise_ratio,
+        num_noncoherent_integrations, power_bins, doppler_bins, num_blocks, block_size,
+        num_secondary_rotations, sign_search_null)
 end
 
 """
